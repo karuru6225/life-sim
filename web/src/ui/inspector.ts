@@ -68,6 +68,7 @@ export class Inspector {
           <dt>速度</dt><dd data-k="speed">–</dd>
           <dt>位置</dt><dd data-k="pos">–</dd>
           <dt title="足元の草で、相手から見つかる距離が何割縮むか">隠れ</dt><dd data-k="hidden">–</dd>
+          <dt title="草食は、生まれた場所と大きく違う植生（肥沃度）の草を食べられない">植生</dt><dd data-k="habitat">–</dd>
         </dl>
         <div class="insp-section">脳の判断（直前の tick）</div>
         <div class="priorities" data-k="priorities" title="どの欲求をどれだけ優先しているか。進む向きは、欲求ごとの方向をこの割合で混ぜて決まる。警戒（草食のみ）は高いほど天敵に遠くから気づけるが、一口が小さくなる"></div>
@@ -150,6 +151,9 @@ export class Inspector {
     this.el.children.textContent = `${fmtInt.format(v[INSPECT.children])} 体`;
     this.el.speed.textContent = `${v[INSPECT.speed].toFixed(2)} px/tick`;
     this.el.pos.textContent = `${Math.round(v[INSPECT.x])}, ${Math.round(v[INSPECT.y])}`;
+    this.el.habitat.textContent = herb
+      ? `生まれ ${v[INSPECT.natal].toFixed(2)}・食べやすさ ${Math.round(v[INSPECT.habitatFit] * 100)}%`
+      : '–';
     this.el.hidden.textContent = `見つかる距離 −${Math.round(v[INSPECT.hidden] * 100)}%`;
 
     const pri: [string, number][] = [

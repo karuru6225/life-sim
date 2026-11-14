@@ -130,6 +130,10 @@ export const INSPECT = {
   priFree: 34,
   /** 警戒の度合い（0〜1、草食のみ） */
   vigilance: 35,
+  /** 生まれた場所の植生（肥沃度） */
+  natal: 36,
+  /** 今いる場所の草の食べやすさ（0〜1、植生の違いによる。肉食は常に 1） */
+  habitatFit: 37,
 } as const;
 
 export const HERBIVORE = 0;

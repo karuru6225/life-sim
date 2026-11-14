@@ -33,6 +33,7 @@ export const SIM_PARAMS = {
   cover_strength: 0.85,
   energy_cap_ratio: 2,
   birth_spread: 6,
+  rest_metabolism: 0.5,
   personal_space: 5,
   separation_weight: 1.5,
 
@@ -77,6 +78,8 @@ export const SIM_PARAMS = {
   herb_initial_speed: 1.3,
   herb_initial_vision: 30,
   herb_mate_range: 12,
+  habitat_tolerance: 0.15,
+  habitat_limit: 0.3,
   herb_bite: 0.12,
   herb_efficiency: 0.6,
   herb_metabolism: 0.005,
