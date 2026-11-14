@@ -6,7 +6,7 @@
 //! どの種でも水の量がそろう。
 //!
 //! 平均気温は、緯度（南北の位置）と標高で決まり、小さなむらが乗る。世界は上下がつながっているので、
-//! 緯度による差は cos で表し、暖かい帯と寒い帯が南北に並ぶ。植物は適温から離れるほど育ちにくいので、
+//! 緯度による差は cos で表す。中央（赤道にあたる）が暖かく、上下の端（極にあたる）が寒い。植物は適温から離れるほど育ちにくいので、
 //! 肥沃度（＝植生）には気候の影響も含める。
 
 use crate::rng::Rng;
@@ -62,13 +62,13 @@ impl Terrain {
         let sea_level = if n_water == 0 { f32::NEG_INFINITY } else { sorted[n_water - 1] };
         let water: Vec<bool> = elevation.iter().map(|&e| e <= sea_level).collect();
 
-        // 平均気温: 緯度（cos で上下がつながる）− 標高（海面からの高さ）＋ むら
+        // 平均気温: 緯度（cos で上下がつながる。中央が暖かく上下の端が寒い）− 標高（海面からの高さ）＋ むら
         let temp_noise = fbm(cols, rows, cell_size, spec.elevation_scale * 0.7, rng);
         let land_top = sorted[sorted.len() - 1];
         let temperature: Vec<f32> = (0..cols * rows)
             .map(|k| {
                 let r = k / cols;
-                let latitude = (std::f32::consts::TAU * (r as f32 + 0.5) / rows as f32).cos();
+                let latitude = -(std::f32::consts::TAU * (r as f32 + 0.5) / rows as f32).cos();
                 let height = if water[k] { 0.0 } else { (elevation[k] - sea_level) / (land_top - sea_level).max(1e-6) };
                 spec.temp_mean + spec.temp_latitude * latitude - spec.temp_lapse * height
                     + spec.temp_noise * (2.0 * temp_noise[k] - 1.0)
@@ -185,11 +185,11 @@ mod tests {
     }
 
     #[test]
-    fn 気温は南北で差があり高い所ほど低い() {
+    fn 気温は中央が高く上下の端が低い() {
         let t = Terrain::generate(4800.0, 3200.0, 32.0, &spec(), &mut Rng::new(7));
         let row_mean = |r: usize| (0..t.cols).map(|c| t.temperature[r * t.cols + c]).sum::<f32>() / t.cols as f32;
-        // 上端（cos ≈ 1）は暖かく、中央（cos ≈ −1）は寒い
-        assert!(row_mean(0) > row_mean(t.rows / 2) + 15.0);
+        // 中央は暖かく、上端は寒い
+        assert!(row_mean(t.rows / 2) > row_mean(0) + 15.0);
     }
 
     #[test]
