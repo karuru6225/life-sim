@@ -759,24 +759,64 @@ impl World {
         if self.rng.f32() >= self.hunt_chance(i, j) {
             return Hunt::Failed; // 逃げられた
         }
+        // 仕留めた獲物は、自分と近くの仲間（同じ系統の肉食）で等分する。
+        // 各自の蓄えの上限を超える分と、吸収できない分は熱として失われる
         let prey = self.energy[j];
-        let room = (self.energy_cap(i) - self.energy[i]).max(0.0);
-        // 食べきれない分は捨てる（熱として失われる）
-        let gain = (prey * self.params.carn_efficiency).min(room);
-        self.energy[i] += gain;
-        self.ledger.carn_gain += gain as f64;
-        self.ledger.lost_digestion += (prey - gain) as f64;
+        let (_, mut eaters) = self.carnivore_neighbors(i);
+        eaters.push(i);
+        let share = prey * self.params.carn_efficiency / eaters.len() as f32;
+        let mut gained = 0.0;
+        for &k in &eaters {
+            let room = (self.energy_cap(k) - self.energy[k]).max(0.0);
+            let gain = share.min(room);
+            self.energy[k] += gain;
+            gained += gain;
+        }
+        self.ledger.carn_gain += gained as f64;
+        self.ledger.lost_digestion += (prey - gained) as f64;
         self.energy[j] = 0.0;
         self.die(j, death::EATEN);
         Hunt::Caught
     }
 
+    /// 肉食 i の近く（coop_radius 以内）にいる、生きている肉食を、仲間と系統の違う相手に分ける。
+    /// 仲間は標識色が近い（同じ系統の）肉食。戻り値は (系統の違う相手の数, 仲間の番号)
+    fn carnivore_neighbors(&self, i: usize) -> (u32, Vec<usize>) {
+        let p = &self.params;
+        let (x, y) = (self.xs[i], self.ys[i]);
+        let r2 = p.coop_radius * p.coop_radius;
+        let my_hue = self.traits[i].hue;
+        let mut rivals = 0u32;
+        let mut allies = Vec::new();
+        self.grid.for_each_within(x, y, p.coop_radius, |k, xk, yk, kind_k, _| {
+            if k == i || kind_k != CARNIVORE || !self.alive[k] {
+                return;
+            }
+            let dx = torus_delta(xk - x, self.width);
+            let dy = torus_delta(yk - y, self.height);
+            if dx * dx + dy * dy >= r2 {
+                return;
+            }
+            if genome::hue_distance(my_hue, self.traits[k].hue) <= p.hue_similar {
+                allies.push(k);
+            } else {
+                rivals += 1;
+            }
+        });
+        (rivals, allies)
+    }
+
     /// 肉食 i が獲物 j を襲って成功する確率。
     /// 獲物が自分より大きいほど下がり、獲物の近くに仲間（同じ種類）が多いほど下がる（数で守る）。
-    /// 自分の近くに別の肉食が多いほど下がる（肉食どうしの干渉）
+    /// 近くの仲間（同じ系統の肉食）が多いほど上がり、大きな獲物も狩れる（協力）。
+    /// 近くに系統の違う肉食が多いほど下がる（干渉）
     pub fn hunt_chance(&self, i: usize, j: usize) -> f32 {
         let p = &self.params;
-        let ratio = self.traits[j].size / self.traits[i].size;
+        // 協力して狩る: 近くの仲間（同じ系統の肉食）が多いほど、獲物から見た自分が大きくなる
+        let (rivals, allies) = self.carnivore_neighbors(i);
+        let helpers = (allies.len() as f32).min(p.coop_max_allies);
+        let effective = self.traits[i].size * (1.0 + p.coop_strength * helpers);
+        let ratio = self.traits[j].size / effective;
         let by_size = 1.0 - ((ratio - p.hunt_easy_ratio) / (p.hunt_impossible_ratio - p.hunt_easy_ratio)).clamp(0.0, 1.0);
         if by_size <= 0.0 {
             return 0.0;
@@ -792,17 +832,7 @@ impl World {
                 guards += (dx * dx + dy * dy < r2) as u32;
             }
         });
-        // 肉食どうしの干渉（獲物の横取りや縄張り争い）: 自分の近くに別の肉食が多いほど成功しにくい
-        let (cx, cy) = (self.xs[i], self.ys[i]);
-        let ri2 = p.carn_interference_radius * p.carn_interference_radius;
-        let mut rivals = 0u32;
-        self.grid.for_each_within(cx, cy, p.carn_interference_radius, |k, xk, yk, kind_k, _| {
-            if k != i && kind_k == CARNIVORE && self.alive[k] {
-                let dx = torus_delta(xk - cx, self.width);
-                let dy = torus_delta(yk - cy, self.height);
-                rivals += (dx * dx + dy * dy < ri2) as u32;
-            }
-        });
+        // 肉食どうしの干渉（獲物の横取りや縄張り争い）: 近くに系統の違う肉食が多いほど成功しにくい
         p.hunt_success * by_size / (1.0 + p.guard_strength * guards as f32) / (1.0 + p.carn_interference * rivals as f32)
     }
 
@@ -1322,6 +1352,63 @@ mod tests {
         assert_eq!(chances[0], w.params.hunt_success, "十分小さい獲物は最大の成功率");
         assert!(chances[1] < chances[0] && chances[2] < chances[1], "大きいほど下がる: {chances:?}");
         assert_eq!(chances[3], 0.0, "大きすぎる獲物は狩れない");
+    }
+
+    /// 肉食 1 体（番号 0）と、遠くに獲物 1 体（番号 1、大きさ prey_size）を置いた世界
+    fn hunting_world(prey_size: f32) -> World {
+        let mut w = empty_world();
+        let carn = genome::initial(false, 1.0, 1.0, 40.0, 0.5);
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
+        let herb = genome::initial(true, prey_size, 1.0, 30.0, 0.0);
+        w.spawn(104.0, 100.0, HERBIVORE, 5.0, 0, &herb);
+        w
+    }
+
+    #[test]
+    fn 仲間がいれば1体では狩れない大きな獲物も狩れる() {
+        let mut w = hunting_world(1.6);
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        assert_eq!(w.hunt_chance(0, 1), 0.0, "1 体では狩れない大きさ");
+        let ally = genome::initial(false, 1.0, 1.0, 40.0, 0.5);
+        w.spawn(100.0, 106.0, CARNIVORE, 5.0, 0, &ally);
+        w.spawn(100.0, 94.0, CARNIVORE, 5.0, 0, &ally);
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        assert!(w.hunt_chance(0, 1) > 0.0, "仲間 2 体がいれば狩れる");
+    }
+
+    #[test]
+    fn 邪魔をするのは系統の違う肉食だけ() {
+        let mut w = hunting_world(0.5);
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        let alone = w.hunt_chance(0, 1);
+        // 系統の違う（標識色が遠い）肉食
+        let rival = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        w.spawn(100.0, 106.0, CARNIVORE, 5.0, 0, &rival);
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        assert!(w.hunt_chance(0, 1) < alone, "系統の違う肉食は邪魔をする");
+        // 同じ系統の肉食に入れ替える
+        w.genomes[2 * GENOME_LEN + genome::G_HUE] = 0.5;
+        w.traits[2].hue = 0.5;
+        assert!(w.hunt_chance(0, 1) >= alone, "同じ系統の肉食は邪魔をしない");
+    }
+
+    #[test]
+    fn 仕留めた獲物は近くの仲間と分け合う() {
+        let mut w = hunting_world(0.5);
+        let ally = genome::initial(false, 1.0, 1.0, 40.0, 0.5);
+        w.spawn(100.0, 106.0, CARNIVORE, 5.0, 0, &ally);
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.params.hunt_success = 1.0;
+        let before = w.energy[2];
+        // 確実に成功させるため、成功率 1 で大きさの不利もない状態で何度か試す
+        for _ in 0..20 {
+            w.cooldown[0] = 0;
+            if let Hunt::Caught = w.try_hunt(0, 1, 16.0) {
+                assert!(w.energy[2] > before, "仲間も獲物を食べる");
+                return;
+            }
+        }
+        panic!("狩りに成功しなかった");
     }
 
     #[test]

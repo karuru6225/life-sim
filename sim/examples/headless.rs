@@ -14,6 +14,7 @@
 //!   そろい: 近くの仲間との向きのそろい具合（0 でばらばら、1 で同じ向き）
 //!   同系/他系: そろい具合を、同じ系統どうし・違う系統どうしに分けたもの
 //!   失敗: 区間内で、交配が相性で失敗した割合
+//!   肉食の集まり・そろい・同系: 肉食の群れの度合い（草食と同じ指標）
 
 use sim::params::Params;
 use sim::world::{CARNIVORE, HERBIVORE, World};
@@ -40,8 +41,8 @@ fn main() {
 
     let mut w = World::new(seed, params);
     println!(
-        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} | {:>5} | {:>6}",
-        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "失敗", "ms/tick"
+        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} {:>5} {:>5} {:>5} | {:>5} | {:>6}",
+        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "集まり", "そろい", "同系", "失敗", "ms/tick"
     );
     let mut t = Instant::now();
     let mut last = w.ledger.clone();
@@ -53,6 +54,7 @@ fn main() {
             let h = w.trait_means(HERBIVORE);
             let c = w.trait_means(CARNIVORE);
             let hh = w.herd_stats(HERBIVORE);
+            let ch = w.herd_stats(CARNIVORE);
             let ratio = w.biomass(CARNIVORE) / w.biomass(HERBIVORE).max(1e-9);
             let l = &w.ledger;
             let plant_to_herb = (l.herb_gain - last.herb_gain) / (l.sunlight_in - last.sunlight_in).max(1e-9);
@@ -67,9 +69,9 @@ fn main() {
             (last_matings, last_failed) = (w.matings, w.failed_matings);
             let fail = if matings > 0 { failed as f64 / matings as f64 } else { 0.0 };
             println!(
-                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} | {:>5.3} | {ms:>6.2}",
+                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.3} | {ms:>6.2}",
                 h[0], c[0], w.plants.total(), 1.0 / ratio.max(1e-9), plant_to_herb, herb_to_carn,
-                h[1], h[2], h[3], h[5], vig, hh[0], hh[1], hh[2], hh[3], c[1], c[2], fail
+                h[1], h[2], h[3], h[5], vig, hh[0], hh[1], hh[2], hh[3], c[1], c[2], ch[0], ch[1], ch[2], fail
             );
             if w.count_kind(HERBIVORE) == 0 && w.count_kind(CARNIVORE) == 0 {
                 println!("全滅");

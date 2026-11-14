@@ -45,9 +45,11 @@ export const SIM_PARAMS = {
   vigilance_min_range: 0.5,
   vigilance_bite_cost: 0.5,
 
-  // 肉食どうしの干渉
+  // 肉食どうしの協力と干渉
+  coop_radius: 20,
+  coop_strength: 0.3,
+  coop_max_allies: 4,
   carn_interference: 0.3,
-  carn_interference_radius: 24,
 
   // 系統
   compat_full_distance: 1.2,
