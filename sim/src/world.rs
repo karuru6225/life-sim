@@ -35,6 +35,8 @@ pub mod state {
     pub const EAT: u8 = 5;
     /// 獲物を襲ったが逃げられた
     pub const MISSED: u8 = 6;
+    /// 繁殖相手へ向かっている
+    pub const COURT: u8 = 7;
 }
 
 /// 死因（観察用）
@@ -89,6 +91,8 @@ pub struct Watch {
     pub cost: f32,
     /// 直前の tick の脳の出力
     pub output: [f32; genome::N_OUT],
+    /// 直前の tick の欲求ごとの優先度（0〜1）。[食べる, 繁殖, 逃げる, 自由]
+    pub priorities: [f32; genome::N_DRIVES],
     /// 直前の tick に曲がった角度（ラジアン、揺れを除く。正で右）
     pub turn: f32,
     /// 直前の tick の速さ（最高速度に対する割合）
@@ -100,6 +104,9 @@ pub struct Watch {
     /// 死んだときの (死因, tick)
     pub death: Option<(u8, u64)>,
 }
+
+/// 欲求の番号（genome::mix_drives の並び）
+const DRIVE_MATE: usize = 1;
 
 /// 狩りの結果
 enum Hunt {
@@ -135,6 +142,8 @@ struct Senses {
     /// 標識色が自分と近い仲間のうち最寄り、とその数
     similar: Seen,
     similar_count: u32,
+    /// 繁殖相手の候補（成熟した仲間のうち、標識色が近い個体の最寄り。いなければ成熟した仲間の最寄り）
+    mate: Seen,
 }
 
 struct Birth {
@@ -419,6 +428,9 @@ impl World {
         let mut best_d2 = [f32::MAX; 3];
         let (mut kin_count, mut kin_hx, mut kin_hy, mut kin_alert) = (0u32, 0.0f32, 0.0f32, 0u32);
         let (mut similar, mut similar_d2, mut similar_count): (Seen, f32, u32) = (None, f32::MAX, 0);
+        // 成熟した仲間の最寄り（[標識色が近い, 問わない]）
+        let mut mate: [Seen; 2] = [None, None];
+        let mut mate_d2 = [f32::MAX; 2];
         let my_hue = self.traits[i].hue;
         let hue_similar = self.params.hue_similar;
         let vision2 = vision * vision;
@@ -451,11 +463,20 @@ impl World {
                     // 草食なら天敵が、肉食なら獲物が見えている仲間
                     let s = self.state[j];
                     kin_alert += (s == state::FLEE || s == state::CHASE) as u32;
-                    if genome::hue_distance(my_hue, self.traits[j].hue) <= hue_similar {
+                    let is_similar = genome::hue_distance(my_hue, self.traits[j].hue) <= hue_similar;
+                    if is_similar {
                         similar_count += 1;
                         if d2 < similar_d2 {
                             similar_d2 = d2;
                             similar = Some((j, dx, dy, d2));
+                        }
+                    }
+                    if self.growth[j] >= 1.0 {
+                        for (k, ok) in [is_similar, true].into_iter().enumerate() {
+                            if ok && d2 < mate_d2[k] {
+                                mate_d2[k] = d2;
+                                mate[k] = Some((j, dx, dy, d2));
+                            }
                         }
                     }
                 }
@@ -471,6 +492,7 @@ impl World {
             kin_alert,
             similar,
             similar_count,
+            mate: mate[0].or(mate[1]),
         }
     }
 
@@ -524,14 +546,40 @@ impl World {
             input[genome::IN_SIM_RIGHT] = r;
         }
 
+        let ready = self.growth[i] >= 1.0 && self.energy[i] >= self.repro_threshold(i);
+        input[genome::IN_READY] = ready as u8 as f32;
+        if let Some((_, _, _, d2)) = senses.mate {
+            input[genome::IN_MATE_NEAR] = 1.0 - 0.5 * (d2.sqrt() / t.vision).min(1.0);
+        }
+
         let out = genome::think(self.genome(i), &input);
+
+        // 欲求ごとの方向（自分基準の単位ベクトル。対象がいなければ (0, 0)）
+        let unit = |seen: Seen| match seen {
+            Some((_, dx, dy, d2)) => {
+                let d = d2.sqrt().max(1e-3);
+                to_local(dx / d, dy / d)
+            }
+            None => (0.0, 0.0),
+        };
+        let food = if self.kind[i] == HERBIVORE {
+            (input[genome::IN_GRAD_FWD], input[genome::IN_GRAD_RIGHT])
+        } else {
+            unit(senses.prey)
+        };
+        let (pf, pr) = unit(senses.predator);
+        let drives = [food, unit(senses.mate), (-pf, -pr), (0.0, 0.0)];
+        let (df, dr) = genome::mix_drives(&out, &drives);
+        let dominant = self.dominant_drive(&out, &drives);
+
         let is_watched = self.id[i] == self.watch.id;
         if is_watched {
             self.watch.output = out;
+            self.watch.priorities = genome::priorities(&out);
         }
 
         // 行きたい方向へ曲がる。1 tick に曲がれる角度には上限があり、大きいほど小回りが利かない
-        let (lf, lr) = steer(out[genome::OUT_DIR_FWD], out[genome::OUT_DIR_RIGHT], t.turn_cos, t.turn_sin);
+        let (lf, lr) = steer(df, dr, t.turn_cos, t.turn_sin);
         // 自分基準の (前方, 右方) を世界の向きに戻し、小さな揺れを加える
         let (mut nx, mut ny) = (lf * hx - lr * hy, lf * hy + lr * hx);
         let noise = self.rng.range(-self.params.turn_noise, self.params.turn_noise);
@@ -564,6 +612,8 @@ impl World {
             let ate = wants_eat && self.graze(i);
             self.state[i] = if senses.predator.is_some() {
                 state::FLEE
+            } else if dominant == DRIVE_MATE {
+                state::COURT
             } else if ate {
                 state::GRAZE
             } else {
@@ -584,19 +634,40 @@ impl World {
                     Hunt::NoAttempt => {}
                 }
             }
-            self.state[i] = if senses.prey.is_some() { state::CHASE } else { state::WANDER };
+            self.state[i] = if dominant == DRIVE_MATE {
+                state::COURT
+            } else if senses.prey.is_some() {
+                state::CHASE
+            } else {
+                state::WANDER
+            };
             (speed, wants_child, mate)
         }
     }
 
-    /// 繁殖相手を探す。繁殖相手を探せる距離以内に見えている最寄りの仲間が相手になる。
-    /// その距離が 0 以下なら無性生殖（相手は要らない）
+    /// いちばん効いている欲求（優先度 × 方向の長さ が最大のもの）。観察用
+    fn dominant_drive(&self, out: &[f32; genome::N_OUT], drives: &[(f32, f32); genome::N_DRIVES]) -> usize {
+        let p = genome::priorities(out);
+        let free = (softsign(out[genome::OUT_DIR_FWD]), softsign(out[genome::OUT_DIR_RIGHT]));
+        let mut best = (0, -1.0f32);
+        for k in 0..genome::N_DRIVES {
+            let (f, r) = if k == genome::N_DRIVES - 1 { free } else { drives[k] };
+            let strength = p[k] * (f * f + r * r).sqrt();
+            if strength > best.1 {
+                best = (k, strength);
+            }
+        }
+        best.0
+    }
+
+    /// 繁殖相手を決める。繁殖相手を探せる距離以内にいる、繁殖相手の候補（成熟した仲間で、
+    /// 標識色が近い個体を優先）が相手になる。その距離が 0 以下なら無性生殖（相手は要らない）
     fn find_mate(&self, i: usize, senses: &Senses) -> Mate {
         let range = if self.kind[i] == HERBIVORE { self.params.herb_mate_range } else { self.params.carn_mate_range };
         if range <= 0.0 {
             return Mate::Asexual;
         }
-        match senses.kin {
+        match senses.mate {
             Some((j, _, _, d2)) if d2 <= range * range => Mate::Partner(j),
             _ => Mate::Missing,
         }
@@ -1237,6 +1308,28 @@ mod tests {
         assert_eq!(w.count(), 2, "遠い相手と繁殖した");
         assert_eq!(w.failed_matings, 1);
         assert!(w.energy[0] < 15.0, "失敗しても繁殖のコストは払う");
+    }
+
+    #[test]
+    fn 繁殖できる個体は相手へ近づく() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        // 相手は繁殖できる距離（12px）の外、視野（30px）の内側
+        w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &g);
+        w.spawn(125.0, 100.0, HERBIVORE, 2.0, 0, &g);
+        let (a, b) = (w.id[0], w.id[1]);
+        let dist = |w: &World| {
+            let (i, j) = (w.index_of(a).unwrap(), w.index_of(b).unwrap());
+            (torus_delta(w.xs[j] - w.xs[i], w.width).powi(2) + torus_delta(w.ys[j] - w.ys[i], w.height).powi(2)).sqrt()
+        };
+        let before = dist(&w);
+        for _ in 0..15 {
+            w.step();
+            if w.count() > 2 {
+                return; // 近づいて繁殖できた
+            }
+        }
+        assert!(dist(&w) < before, "相手へ近づいていない: {before} → {}", dist(&w));
     }
 
     #[test]
