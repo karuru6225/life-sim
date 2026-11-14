@@ -107,10 +107,15 @@ pub struct Traits {
     pub size_pow075: f32,
     /// size の平方根（寿命と小回りの計算用）
     pub size_sqrt: f32,
+    /// 1 tick に曲がれる最大の角度の cos と sin（大きいほど小回りが利かない）
+    pub turn_cos: f32,
+    pub turn_sin: f32,
 }
 
-pub fn traits(genome: &[f32]) -> Traits {
+/// 遺伝子から形質を読み出す。max_turn は大きさ 1 のときの最大旋回角（ラジアン）
+pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
     let size = genome[G_SIZE].clamp(SIZE_RANGE.0, SIZE_RANGE.1);
+    let (turn_sin, turn_cos) = (max_turn / size.sqrt()).min(std::f32::consts::PI).sin_cos();
     Traits {
         size,
         max_speed: genome[G_SPEED].clamp(SPEED_RANGE.0, SPEED_RANGE.1),
@@ -119,6 +124,8 @@ pub fn traits(genome: &[f32]) -> Traits {
         hue: genome[G_HUE].rem_euclid(1.0),
         size_pow075: size.powf(0.75),
         size_sqrt: size.sqrt(),
+        turn_cos,
+        turn_sin,
     }
 }
 

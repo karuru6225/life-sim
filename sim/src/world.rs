@@ -124,8 +124,9 @@ pub struct World {
     pub id: Vec<u32>,
     pub xs: Vec<f32>,
     pub ys: Vec<f32>,
-    /// 進行方向（ラジアン）
-    pub headings: Vec<f32>,
+    /// 進行方向の単位ベクトル (hx, hy)。角度で持つと毎 tick 三角関数が要り、WASM では遅いので、ベクトルで持つ
+    pub hx: Vec<f32>,
+    pub hy: Vec<f32>,
     pub energy: Vec<f32>,
     pub age: Vec<u32>,
     pub kind: Vec<u8>,
@@ -175,7 +176,8 @@ impl World {
             id: Vec::new(),
             xs: Vec::new(),
             ys: Vec::new(),
-            headings: Vec::new(),
+            hx: Vec::new(),
+            hy: Vec::new(),
             energy: Vec::new(),
             age: Vec::new(),
             kind: Vec::new(),
@@ -223,7 +225,9 @@ impl World {
         self.next_id += 1;
         self.xs.push(x);
         self.ys.push(y);
-        self.headings.push(self.rng.range(0.0, std::f32::consts::TAU));
+        let (sin, cos) = self.rng.range(0.0, std::f32::consts::TAU).sin_cos();
+        self.hx.push(cos);
+        self.hy.push(sin);
         self.energy.push(energy);
         self.age.push(0);
         self.kind.push(kind);
@@ -231,7 +235,7 @@ impl World {
         self.generation.push(generation);
         self.children.push(0);
         self.genomes.extend_from_slice(genome);
-        self.traits.push(genome::traits(genome));
+        self.traits.push(genome::traits(genome, self.params.max_turn));
         self.cover.push(0.0);
         self.alive.push(true);
     }
@@ -365,9 +369,9 @@ impl World {
         let senses = self.sense(i);
         let t = self.traits[i];
         let (x, y) = (self.xs[i], self.ys[i]);
-        let (sin, cos) = self.headings[i].sin_cos();
-        // 世界の向き (dx, dy) を、自分の向きを基準にした (前方, 右方) に直す
-        let to_local = |dx: f32, dy: f32| (dx * cos + dy * sin, -dx * sin + dy * cos);
+        let (hx, hy) = (self.hx[i], self.hy[i]);
+        // 世界の向き (dx, dy) を、自分の向きを基準にした (前方, 右方) に直す。右方は (−hy, hx)
+        let to_local = |dx: f32, dy: f32| (dx * hx + dy * hy, -dx * hy + dy * hx);
 
         let mut input = [0.0f32; N_IN];
         input[genome::IN_ENERGY] = self.energy[i] / self.repro_threshold(i);
@@ -401,15 +405,19 @@ impl World {
         }
 
         // 行きたい方向へ曲がる。1 tick に曲がれる角度には上限があり、大きいほど小回りが利かない
-        let desired = out[genome::OUT_DIR_RIGHT].atan2(out[genome::OUT_DIR_FWD]);
-        let max_turn = self.params.max_turn / t.size_sqrt;
-        let turn = desired.clamp(-max_turn, max_turn);
-        let noise = self.params.turn_noise;
-        self.headings[i] += turn + self.rng.range(-noise, noise);
+        let (lf, lr) = steer(out[genome::OUT_DIR_FWD], out[genome::OUT_DIR_RIGHT], t.turn_cos, t.turn_sin);
+        // 自分基準の (前方, 右方) を世界の向きに戻し、小さな揺れを加える
+        let (mut nx, mut ny) = (lf * hx - lr * hy, lf * hy + lr * hx);
+        let noise = self.rng.range(-self.params.turn_noise, self.params.turn_noise);
+        // 小さな角度 ε の回転は (x − εy, y + εx) で近似できる。ずれた長さは直後に 1 に戻す
+        (nx, ny) = (nx - noise * ny, ny + noise * nx);
+        let len = (nx * nx + ny * ny).sqrt();
+        self.hx[i] = nx / len;
+        self.hy[i] = ny / len;
         let throttle = 0.5 + 0.5 * softsign(out[genome::OUT_THROTTLE]);
         let speed = t.max_speed * throttle;
         if is_watched {
-            self.watch.turn = turn;
+            self.watch.turn = lr.atan2(lf);
             self.watch.throttle = throttle;
         }
         let wants_eat = out[genome::OUT_EAT] > 0.0;
@@ -480,9 +488,8 @@ impl World {
         if speed == 0.0 {
             return;
         }
-        let h = self.headings[i];
-        self.xs[i] = wrap(self.xs[i] + h.cos() * speed, self.width);
-        self.ys[i] = wrap(self.ys[i] + h.sin() * speed, self.height);
+        self.xs[i] = wrap(self.xs[i] + self.hx[i] * speed, self.width);
+        self.ys[i] = wrap(self.ys[i] + self.hy[i] * speed, self.height);
     }
 
     /// 個体 i を死亡扱いにする。エネルギーは呼び出し側で 0 にしておくこと
@@ -590,7 +597,8 @@ impl World {
             self.id.swap_remove(i);
             self.xs.swap_remove(i);
             self.ys.swap_remove(i);
-            self.headings.swap_remove(i);
+            self.hx.swap_remove(i);
+            self.hy.swap_remove(i);
             self.energy.swap_remove(i);
             self.age.swap_remove(i);
             self.kind.swap_remove(i);
@@ -642,6 +650,23 @@ impl World {
             }
         }
         sum
+    }
+}
+
+/// 行きたい方向 (fwd, right)（自分基準）へ、最大旋回角までだけ向きを変えた後の向き（自分基準の単位ベクトル）。
+/// turn_cos, turn_sin は最大旋回角の cos と sin
+fn steer(fwd: f32, right: f32, turn_cos: f32, turn_sin: f32) -> (f32, f32) {
+    let len = (fwd * fwd + right * right).sqrt();
+    if len < 1e-6 {
+        return (1.0, 0.0); // 行きたい方向がなければ、まっすぐ
+    }
+    let (f, r) = (fwd / len, right / len);
+    if f >= turn_cos {
+        (f, r) // 最大旋回角より内側なので、そのまま向ける
+    } else if r >= 0.0 {
+        (turn_cos, turn_sin) // 右へ最大まで
+    } else {
+        (turn_cos, -turn_sin) // 左へ最大まで
     }
 }
 
@@ -749,7 +774,7 @@ mod tests {
             w.step();
             assert_eq!(w.genomes.len(), w.count() * GENOME_LEN);
             for i in (0..w.count()).step_by(37) {
-                let t = genome::traits(w.genome(i));
+                let t = genome::traits(w.genome(i), w.params.max_turn);
                 assert_eq!(t.size, w.traits[i].size, "個体 {i} の遺伝子と形質がずれている");
                 assert_eq!(t.hue, w.traits[i].hue);
             }
