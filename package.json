@@ -1,0 +1,22 @@
+{
+  "name": "life-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "数万体の生物が暮らす 2D 生態系シミュレーション",
+  "type": "module",
+  "scripts": {
+    "build:sim": "cargo build --release --target wasm32-unknown-unknown --manifest-path sim/Cargo.toml && node scripts/copy-wasm.mjs",
+    "dev": "npm run build:sim && vite",
+    "build": "npm run build:sim && tsc -p . && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p .",
+    "test": "cargo test --manifest-path sim/Cargo.toml"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "pixi.js": "^8.23.0"
+  }
+}
