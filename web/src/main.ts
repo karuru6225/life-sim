@@ -112,6 +112,7 @@ const hud = new Hud(document.getElementById('hud')!, {
     params.sunlight = value;
     send({ type: 'setParam', name: 'sunlight', value });
   },
+  onAutoSunlight: (enabled) => send({ type: 'setAutoSunlight', enabled }),
   onColorMode: (mode) => {
     colorMode = mode;
     hud.setColorMode(mode);

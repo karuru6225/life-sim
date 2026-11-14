@@ -2,7 +2,7 @@
 // 描画用データはバッファにコピーしてメインスレッドへ転送（transfer）する。
 
 import wasmUrl from './wasm/sim.wasm?url';
-import { TICK_HZ } from './config';
+import { AUTO_SUNLIGHT, TICK_HZ } from './config';
 import type { FromWorker, ToWorker } from './protocol';
 
 interface SimExports {
@@ -52,6 +52,15 @@ let paused = false;
 /** 個体を選択中か（選択中ならフレームごとに個体の情報を添える） */
 let watching = false;
 
+// 日射量の自動調整（config.ts の AUTO_SUNLIGHT を参照）
+let autoSunlight = true;
+/** スライダーで設定された日射量 */
+let baseSunlight = 0;
+/** 設定値に掛ける倍率。計算が重いと 1 から下がる */
+let sunlightFactor = 1;
+/** 計算時間の移動平均（ms/tick）。0 はまだ測っていない */
+let smoothedMs = 0;
+
 let pool: ArrayBuffer[] = [];
 let allocated = 0;
 let dirty = false;
@@ -68,6 +77,21 @@ function post(msg: FromWorker, transfer: Transferable[] = []): void {
   self.postMessage(msg, { transfer });
 }
 
+/** 日射量だけは自動調整の倍率を掛けてから渡す */
+function setSunlight(s: SimExports): void {
+  setParam(s, 'sunlight', baseSunlight * sunlightFactor);
+}
+
+/** パラメータを設定する。日射量は設定値として受け取り、自動調整の倍率を掛けて渡す */
+function applyParam(s: SimExports, name: string, value: number): void {
+  if (name === 'sunlight') {
+    baseSunlight = value;
+    setSunlight(s);
+  } else {
+    setParam(s, name, value);
+  }
+}
+
 function setParam(s: SimExports, name: string, value: number): void {
   const bytes = encoder.encode(name);
   const ptr = s.scratch_ptr(bytes.length);
@@ -80,7 +104,9 @@ function setParam(s: SimExports, name: string, value: number): void {
 function handle(s: SimExports, msg: ToWorker): void {
   switch (msg.type) {
     case 'init':
-      for (const [name, value] of Object.entries(msg.params)) setParam(s, name, value);
+      sunlightFactor = 1;
+      smoothedMs = 0;
+      for (const [name, value] of Object.entries(msg.params)) applyParam(s, name, value);
       s.init(msg.seed);
       sim = s;
       generation++;
@@ -92,7 +118,7 @@ function handle(s: SimExports, msg: ToWorker): void {
       post({ type: 'ready', generation });
       break;
     case 'setParam':
-      setParam(s, msg.name, msg.value);
+      applyParam(s, msg.name, msg.value);
       break;
     case 'setSpeed':
       speed = msg.speed;
@@ -100,6 +126,13 @@ function handle(s: SimExports, msg: ToWorker): void {
       break;
     case 'setPaused':
       paused = msg.paused;
+      break;
+    case 'setAutoSunlight':
+      autoSunlight = msg.enabled;
+      if (!autoSunlight) {
+        sunlightFactor = 1;
+        setSunlight(s);
+      }
       break;
     case 'select': {
       if (!sim) break;
@@ -188,9 +221,25 @@ function publish(s: SimExports, now: number): void {
   lastPublish = now;
 }
 
+/** 計算時間に合わせて日射量の倍率を少しずつ動かす */
+function adjustSunlight(s: SimExports, msPerTick: number, ticks: number): void {
+  smoothedMs = smoothedMs === 0 ? msPerTick : smoothedMs + AUTO_SUNLIGHT.smoothing * (msPerTick - smoothedMs);
+  if (!autoSunlight) return;
+  const before = sunlightFactor;
+  const step = Math.min(AUTO_SUNLIGHT.maxStep, AUTO_SUNLIGHT.stepPerTick * ticks);
+  if (smoothedMs > AUTO_SUNLIGHT.targetMs) {
+    sunlightFactor = Math.max(AUTO_SUNLIGHT.minFactor, sunlightFactor * (1 - step));
+  } else if (smoothedMs < AUTO_SUNLIGHT.targetMs * AUTO_SUNLIGHT.recoverBelow) {
+    sunlightFactor = Math.min(1, sunlightFactor * (1 + step));
+  }
+  if (sunlightFactor !== before) setSunlight(s);
+}
+
 function reportStats(s: SimExports, now: number): void {
   const elapsed = now - statStart;
   if (elapsed < STATS_INTERVAL_MS) return;
+  // 一時停止中は計っていないので、調整もしない
+  if (statTicks > 0) adjustSunlight(s, statStepMs / statTicks, statTicks);
   // 並びは sim/src/lib.rs の summary() を参照
   const v = new Float64Array(s.memory.buffer, s.summary(), s.summary_len());
   const means = (o: number, herd: number) => ({
@@ -208,6 +257,8 @@ function reportStats(s: SimExports, now: number): void {
     ticksPerSecond: (statTicks * 1000) / elapsed,
     msPerTick: statTicks > 0 ? statStepMs / statTicks : 0,
     plantTotal: v[0],
+    sunlight: baseSunlight * sunlightFactor,
+    sunlightFactor,
     herbivore: means(1, 13),
     carnivore: means(7, 15),
   });

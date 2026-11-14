@@ -8,6 +8,8 @@ export type ToWorker =
   /** Infinity は「処理できる限り速く」 */
   | { type: 'setSpeed'; speed: number }
   | { type: 'setPaused'; paused: boolean }
+  /** 日射量の自動調整のオン・オフ */
+  | { type: 'setAutoSunlight'; enabled: boolean }
   /** 世界座標 (x, y) から radius 以内で最も近い個体を選択する */
   | { type: 'select'; x: number; y: number; radius: number }
   | { type: 'deselect' }
@@ -40,6 +42,10 @@ export type FromWorker =
       ticksPerSecond: number;
       msPerTick: number;
       plantTotal: number;
+      /** 実際に使っている日射量（自動調整の結果） */
+      sunlight: number;
+      /** 自動調整で設定値の何倍にしているか（1 なら下げていない） */
+      sunlightFactor: number;
       herbivore: TraitMeans;
       carnivore: TraitMeans;
     };
@@ -93,6 +99,8 @@ export const INSPECT = {
   /** 足元の草で、相手の視野が何割縮むか */
   hidden: 25,
   energyCap: 26,
+  /** 1 なら繁殖相手が近くにいる */
+  mateNearby: 27,
 } as const;
 
 export const HERBIVORE = 0;

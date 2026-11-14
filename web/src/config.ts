@@ -10,8 +10,8 @@ export const SIM_PARAMS = {
   world_width: 7200,
   world_height: 4800,
   plant_cell: 32,
-  herb_initial: 45000,
-  carn_initial: 3400,
+  herb_initial: 25000,
+  carn_initial: 1500,
   plant_initial_ratio: 0.5,
 
   // 植物
@@ -37,6 +37,7 @@ export const SIM_PARAMS = {
   herb_initial_size: 1,
   herb_initial_speed: 1.3,
   herb_initial_vision: 30,
+  herb_mate_range: 12,
   herb_bite: 0.12,
   herb_efficiency: 0.6,
   herb_metabolism: 0.0076,
@@ -49,6 +50,7 @@ export const SIM_PARAMS = {
   carn_initial_size: 1,
   carn_initial_speed: 1.8,
   carn_initial_vision: 48,
+  carn_mate_range: 20,
   carn_attack_range: 6,
   prey_size_ratio: 1.3,
   carn_efficiency: 0.5,
@@ -68,6 +70,31 @@ export const SUNLIGHT_RANGE = { min: 0, max: 0.2, step: 0.005 };
 
 /** 等倍のときの 1 秒あたりの tick 数 */
 export const TICK_HZ = 30;
+
+/**
+ * 日射量の自動調整。計算が重くなったら日射量を少しずつ下げ、個体数を減らして計算量を抑える。
+ * 軽くなったら、スライダーで設定した値まで少しずつ戻す。
+ * 日射量を変えてから個体数が変わるまで数百〜数千 tick の遅れがあるので、急に動かすと行き過ぎて
+ * 個体数が大きく揺れる。そのため変化はゆっくりにしている
+ */
+export const AUTO_SUNLIGHT = {
+  /** 目標の計算時間（ms/tick）。等倍の 1 tick に使える時間の 6 割 */
+  targetMs: (1000 / TICK_HZ) * 0.6,
+  /** 計算時間の移動平均の重み（0.5 秒ごとに更新）。小さいほど一時的な揺れに反応しない */
+  smoothing: 0.2,
+  /**
+   * 1 tick あたりに変える割合（30 tick で 0.25%）。
+   * 生態系の反応の遅れは tick 単位なので、実時間ではなく tick 数に比例させる
+   * （実時間で決めると、倍速のときに生態系から見て調整が速すぎる）
+   */
+  stepPerTick: 0.0025 / 30,
+  /** 1 回（0.5 秒ごと）に変える割合の上限。最大速度で一度に大きく動かないように */
+  maxStep: 0.01,
+  /** これより下げない（設定値に対する割合） */
+  minFactor: 0.3,
+  /** 目標のこの割合を下回ったら戻し始める（上げ下げを繰り返さないための余裕） */
+  recoverBelow: 0.8,
+};
 
 /** 倍速の選択肢。Infinity は「処理できる限り速く」 */
 export const SPEEDS = [1, 2, 4, 8, Infinity] as const;

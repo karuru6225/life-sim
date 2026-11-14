@@ -69,6 +69,7 @@ export class Inspector {
           <dt>速さ</dt><dd data-k="throttle">–</dd>
           <dt>食べる</dt><dd data-k="wantEat">–</dd>
           <dt>繁殖</dt><dd data-k="wantChild">–</dd>
+          <dt title="この距離以内に見えている同じ種類の個体がいないと繁殖できない">相手</dt><dd data-k="mate">–</dd>
         </dl>
         <div class="insp-section">遺伝子</div>
         <dl class="hud-rows">
@@ -144,6 +145,7 @@ export class Inspector {
     this.el.throttle.textContent = `最高速度の ${Math.round(v[INSPECT.throttle] * 100)}%`;
     this.el.wantEat.textContent = v[INSPECT.wantEat] > 0 ? '食べたい' : '食べない';
     this.el.wantChild.textContent = v[INSPECT.wantChild] > 0 ? 'したい' : 'しない';
+    this.el.mate.textContent = v[INSPECT.mateNearby] > 0 ? '近くにいる' : '近くにいない';
 
     this.el.size.textContent = v[INSPECT.size].toFixed(2);
     this.el.maxSpeed.textContent = `${v[INSPECT.maxSpeed].toFixed(2)} px/tick`;

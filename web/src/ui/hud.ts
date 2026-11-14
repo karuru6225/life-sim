@@ -13,6 +13,7 @@ export interface HudHandlers {
   onSpeed(speed: number): void;
   onSunlight(value: number): void;
   onColorMode(mode: ColorMode): void;
+  onAutoSunlight(enabled: boolean): void;
 }
 
 const fmtInt = new Intl.NumberFormat('ja-JP');
@@ -62,6 +63,11 @@ export class Hud {
           <input type="range" data-k="sun" min="${SUNLIGHT_RANGE.min}" max="${SUNLIGHT_RANGE.max}" step="${SUNLIGHT_RANGE.step}" aria-label="日射量" />
           <span data-k="sunValue">–</span>
         </dd>
+        <dt title="計算が重くなったら日射量を少しずつ下げて個体数を減らし、軽くなったら設定値まで戻す">自動調整</dt>
+        <dd>
+          <label class="check"><input type="checkbox" data-k="auto" checked /> 重いとき下げる</label>
+          <div class="auto-state" data-k="autoState">–</div>
+        </dd>
       </dl>
       <div class="hud-controls">
         <div class="group">
@@ -98,6 +104,8 @@ export class Hud {
 
     this.el.pause.addEventListener('click', handlers.onTogglePause);
     this.el.reset.addEventListener('click', handlers.onReset);
+    const auto = this.el.auto as HTMLInputElement;
+    auto.addEventListener('change', () => handlers.onAutoSunlight(auto.checked));
     const sun = this.el.sun as HTMLInputElement;
     sun.addEventListener('input', () => {
       this.el.sunValue.textContent = Number(sun.value).toFixed(3);
@@ -142,6 +150,10 @@ export class Hud {
     this.el.herb.textContent = fmtInt.format(s.herbivore.count);
     this.el.carn.textContent = fmtInt.format(s.carnivore.count);
     this.el.plant.textContent = fmtInt.format(Math.round(s.plantTotal));
+    this.el.autoState.textContent =
+      s.sunlightFactor < 1
+        ? `実効 ${s.sunlight.toFixed(3)}（設定値の −${((1 - s.sunlightFactor) * 100).toFixed(1)}%）`
+        : '設定値のまま';
 
     TRAIT_ROWS.forEach(([, get, digits], r) => {
       [s.herbivore, s.carnivore].forEach((m, c) => {
