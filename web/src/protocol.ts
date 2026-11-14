@@ -10,8 +10,11 @@ export type ToWorker =
   | { type: 'setPaused'; paused: boolean }
   /** 日射量の自動調整のオン・オフ */
   | { type: 'setAutoSunlight'; enabled: boolean }
-  /** 世界座標 (x, y) から radius 以内で最も近い個体を選択する */
-  | { type: 'select'; x: number; y: number; radius: number }
+  /**
+   * 世界座標 (x, y) から radius 以内で最も近い個体を選択する。
+   * kind を指定するとその種類を優先し、いなければ種類を問わず選ぶ
+   */
+  | { type: 'select'; x: number; y: number; radius: number; kind?: number }
   | { type: 'deselect' }
   /** 描画し終えたバッファを Worker に返して再利用させる */
   | { type: 'returnBuffer'; buffer: ArrayBuffer };

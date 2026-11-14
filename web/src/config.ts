@@ -156,3 +156,9 @@ export const MIN_SELECT_SCALE = 0.8;
 
 /** クリック位置からこの距離（画面上の px）以内の個体を選ぶ */
 export const SELECT_RADIUS_PX = 14;
+
+/**
+ * 選択中の個体が死んだとき、代わりに近くの個体を自動で選ぶ。
+ * 死んだ場所から radius（世界座標の px）以内で、同じ種類の最寄りを優先する
+ */
+export const AUTO_RESELECT = { delayMs: 2000, radius: 300 };

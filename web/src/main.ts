@@ -1,5 +1,5 @@
 import { Application, Container, Graphics } from 'pixi.js';
-import { BODY_RADIUS, COLORS, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
+import { AUTO_RESELECT, BODY_RADIUS, COLORS, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
 import { CARNIVORE, HERBIVORE, INSPECT, type FromWorker, type ToWorker } from './protocol';
 import { AgentLayer, type ColorMode } from './render/agents';
 import { Camera } from './render/camera';
@@ -66,6 +66,43 @@ let paused = false;
 let colorMode: ColorMode = 'kind';
 /** 選択中の個体をカメラで追うか */
 let following = false;
+/**
+ * 選択中の個体の id（0 は選択なし）。選び直した直後には、前の個体の情報が入った古いフレームが
+ * 届くことがあるので、これと違う id の情報は無視する
+ */
+let selectedId = 0;
+
+// 選択中の個体が死んだときの自動選び直し（config.ts の AUTO_RESELECT）
+/** 予定しているタイマー。null なら予定なし */
+let reselectTimer: number | null = null;
+/** 自動選び直しを予定済みの、死んだ個体の id（同じ死亡で二重に予定しないため） */
+let reselectScheduledFor = 0;
+/** 自動選び直しの後も追従を続けるか（死んだ時点で追従していたか） */
+let followAfterReselect = false;
+/** 結果待ちの選択が、自動選び直しによるものか */
+let pendingAutoSelect = false;
+
+function cancelReselect(): void {
+  if (reselectTimer !== null) {
+    clearTimeout(reselectTimer);
+    reselectTimer = null;
+  }
+  pendingAutoSelect = false;
+  inspector.setNote('');
+}
+
+/** 死んだ場所 (x, y) の近くから、同じ種類の個体を少し待ってから選び直す */
+function scheduleReselect(deadId: number, x: number, y: number, kind: number): void {
+  if (reselectTimer !== null || reselectScheduledFor === deadId) return;
+  reselectScheduledFor = deadId;
+  followAfterReselect = following;
+  inspector.setNote(`${AUTO_RESELECT.delayMs / 1000} 秒後に近くの個体に切り替えます`);
+  reselectTimer = window.setTimeout(() => {
+    reselectTimer = null;
+    pendingAutoSelect = true;
+    send({ type: 'select', x, y, radius: AUTO_RESELECT.radius, kind });
+  }, AUTO_RESELECT.delayMs);
+}
 
 const toast = new Toast(document.getElementById('toast')!);
 const inspector = new Inspector(document.getElementById('inspector')!, {
@@ -80,6 +117,7 @@ const camera = new Camera(world, app.canvas, params.world_width, params.world_he
       return;
     }
     const { x, y } = camera.toWorld(px, py);
+    cancelReselect();
     send({ type: 'select', x, y, radius: SELECT_RADIUS_PX / camera.scale });
   },
   // 自分で視点を動かしたら追従をやめる
@@ -94,6 +132,8 @@ function setFollowing(on: boolean): void {
 }
 
 function deselect(): void {
+  cancelReselect();
+  selectedId = 0;
   send({ type: 'deselect' });
   inspector.hide();
   marker.hide();
@@ -126,6 +166,8 @@ function setPaused(p: boolean): void {
 }
 
 function start(): void {
+  cancelReselect();
+  selectedId = 0;
   hud.clearHistory();
   inspector.hide();
   marker.hide();
@@ -144,12 +186,16 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       generation = msg.generation;
       break;
     case 'selected':
+      selectedId = msg.id;
       if (msg.id === 0) {
-        toast.show('近くに個体がいません');
+        toast.show(pendingAutoSelect ? '近くに代わりの個体がいません' : '近くに個体がいません');
         inspector.hide();
         marker.hide();
       }
-      setFollowing(false);
+      inspector.setNote('');
+      // 自動選び直しなら、死んだ個体を追従していたときは新しい個体も追う
+      setFollowing(pendingAutoSelect && followAfterReselect && msg.id !== 0);
+      pendingAutoSelect = false;
       break;
     case 'frame':
       if (msg.generation !== generation) return returnBuffer(msg); // リセット前の古いフレーム
@@ -180,9 +226,12 @@ app.ticker.add(() => {
 function showSelection(v: number[]): void {
   const status = v[INSPECT.status];
   if (status === 0) return; // 選択直後で、まだ結果が来ていない
+  if (v[INSPECT.id] !== selectedId) return; // 選び直す前の個体の情報（古いフレーム）
   inspector.update(v);
   if (status === 2) {
     marker.hide(); // 死んだ個体はもういない
+    // 位置と種類は死ぬ直前の値が残っている
+    scheduleReselect(v[INSPECT.id], v[INSPECT.x], v[INSPECT.y], v[INSPECT.kind]);
     setFollowing(false);
     return;
   }

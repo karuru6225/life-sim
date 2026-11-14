@@ -21,6 +21,7 @@ interface SimExports {
   plant_cols(): number;
   plant_rows(): number;
   select_at(x: number, y: number, radius: number): number;
+  select_near_kind(x: number, y: number, radius: number, kind: number): number;
   deselect(): void;
   inspect(): number;
   inspect_len(): number;
@@ -136,7 +137,10 @@ function handle(s: SimExports, msg: ToWorker): void {
       break;
     case 'select': {
       if (!sim) break;
-      const id = s.select_at(msg.x, msg.y, msg.radius);
+      const id =
+        msg.kind === undefined
+          ? s.select_at(msg.x, msg.y, msg.radius)
+          : s.select_near_kind(msg.x, msg.y, msg.radius, msg.kind);
       watching = id !== 0;
       dirty = true; // 一時停止中でも選択結果をすぐ描けるようにする
       post({ type: 'selected', id });

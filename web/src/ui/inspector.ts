@@ -47,6 +47,7 @@ export class Inspector {
         <button type="button" class="insp-close" data-k="close" aria-label="閉じる">×</button>
       </div>
       <div class="insp-death" data-k="death"></div>
+      <div class="insp-note" data-k="reselect"></div>
       <div class="insp-body" data-k="body">
         <div class="insp-state" data-k="state">–</div>
         <div class="insp-hunger">
@@ -93,6 +94,11 @@ export class Inspector {
 
   hide(): void {
     this.root.hidden = true;
+  }
+
+  /** 死んだ個体の代わりを自動で選ぶ予定などのお知らせ（空文字で消す） */
+  setNote(text: string): void {
+    this.el.reselect.textContent = text;
   }
 
   setFollow(on: boolean): void {
