@@ -1,7 +1,10 @@
 // メインスレッドと Worker の間で交わすメッセージの型
 
 export type ToWorker =
-  | { type: 'init'; seed: number; count: number; width: number; height: number }
+  /** params の値をすべて設定してから世界を作り直す */
+  | { type: 'init'; seed: number; params: Record<string, number> }
+  /** 実行中にパラメータを変える（世界の大きさなどはリセットまで効かない） */
+  | { type: 'setParam'; name: string; value: number }
   /** Infinity は「処理できる限り速く」 */
   | { type: 'setSpeed'; speed: number }
   | { type: 'setPaused'; paused: boolean }
@@ -9,13 +12,27 @@ export type ToWorker =
   | { type: 'returnBuffer'; buffer: ArrayBuffer };
 
 export type FromWorker =
-  | { type: 'ready'; generation: number; count: number; stride: number }
+  | { type: 'ready'; generation: number }
   | {
       type: 'frame';
       generation: number;
-      /** [x, y, 近傍数] × count の Float32 データ */
+      /**
+       * Float32 で、先頭から
+       *   個体: [x, y, 種類] × agentCount（1 個体 stride 要素）
+       *   植物: plantCols × plantRows（行優先）
+       */
       buffer: ArrayBuffer;
-      count: number;
+      agentCount: number;
+      stride: number;
+      plantCols: number;
+      plantRows: number;
       tick: number;
     }
-  | { type: 'stats'; ticksPerSecond: number; msPerTick: number };
+  | {
+      type: 'stats';
+      ticksPerSecond: number;
+      msPerTick: number;
+      herbivores: number;
+      carnivores: number;
+      plantTotal: number;
+    };

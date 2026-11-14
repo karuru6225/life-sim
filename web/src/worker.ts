@@ -7,16 +7,26 @@ import type { FromWorker, ToWorker } from './protocol';
 
 interface SimExports {
   memory: WebAssembly.Memory;
-  init(seed: number, count: number, width: number, height: number): void;
+  scratch_ptr(len: number): number;
+  set_param(nameLen: number, value: number): number;
+  init(seed: number): void;
   step(ticks: number): void;
   agent_count(): number;
+  herbivore_count(): number;
+  carnivore_count(): number;
+  plant_total(): number;
   current_tick(): number;
   render_buffer_ptr(): number;
   render_stride(): number;
+  plant_ptr(): number;
+  plant_cols(): number;
+  plant_rows(): number;
 }
 
 /** 転送用バッファの最大数。メインスレッドが返してこない限り、これ以上は作らない */
 const MAX_BUFFERS = 3;
+/** 個体数が増えるたびに作り直さないよう、少し大きめに確保する */
+const BUFFER_HEADROOM = 1.5;
 /** 描画に送る最短間隔。画面の更新より速く送っても無駄になる */
 const MIN_PUBLISH_INTERVAL_MS = 1000 / 60 - 1;
 /** 最大速モードで、メッセージ処理に戻るまでに計算し続ける時間 */
@@ -30,13 +40,13 @@ const simReady: Promise<SimExports> = fetch(wasmUrl)
   .then((bytes) => WebAssembly.instantiate(bytes, {}))
   .then(({ instance }) => instance.exports as unknown as SimExports);
 
+const encoder = new TextEncoder();
+
 let sim: SimExports | null = null;
 let generation = 0;
 let speed = 1;
 let paused = false;
 
-let stride = 3;
-let bufferBytes = 0;
 let pool: ArrayBuffer[] = [];
 let allocated = 0;
 let dirty = false;
@@ -53,21 +63,31 @@ function post(msg: FromWorker, transfer: Transferable[] = []): void {
   self.postMessage(msg, { transfer });
 }
 
+function setParam(s: SimExports, name: string, value: number): void {
+  const bytes = encoder.encode(name);
+  const ptr = s.scratch_ptr(bytes.length);
+  new Uint8Array(s.memory.buffer, ptr, bytes.length).set(bytes);
+  if (!s.set_param(bytes.length, value)) {
+    console.warn(`シミュレーションが知らないパラメータ: ${name}（sim/src/params.rs と config.ts の名前を確認）`);
+  }
+}
+
 function handle(s: SimExports, msg: ToWorker): void {
   switch (msg.type) {
-    case 'init': {
-      s.init(msg.seed, msg.count, msg.width, msg.height);
+    case 'init':
+      for (const [name, value] of Object.entries(msg.params)) setParam(s, name, value);
+      s.init(msg.seed);
       sim = s;
       generation++;
-      stride = s.render_stride();
-      bufferBytes = s.agent_count() * stride * 4;
       pool = [];
       allocated = 0;
       accumulator = 0;
       dirty = true;
-      post({ type: 'ready', generation, count: s.agent_count(), stride });
+      post({ type: 'ready', generation });
       break;
-    }
+    case 'setParam':
+      setParam(s, msg.name, msg.value);
+      break;
     case 'setSpeed':
       speed = msg.speed;
       accumulator = 0;
@@ -76,10 +96,7 @@ function handle(s: SimExports, msg: ToWorker): void {
       paused = msg.paused;
       break;
     case 'returnBuffer':
-      // 個体数が変わる前のバッファはサイズが合わないので捨てる
-      if (msg.buffer.byteLength === bufferBytes && pool.length < MAX_BUFFERS) {
-        pool.push(msg.buffer);
-      }
+      if (pool.length < MAX_BUFFERS) pool.push(msg.buffer);
       break;
   }
 }
@@ -119,25 +136,46 @@ function publish(s: SimExports, now: number): void {
   let buffer = pool.pop();
   if (!buffer) {
     if (allocated >= MAX_BUFFERS) return;
-    buffer = new ArrayBuffer(bufferBytes);
+    buffer = new ArrayBuffer(0);
     allocated++;
   }
-  const count = s.agent_count();
-  const ptr = s.render_buffer_ptr();
-  // memory.buffer は WASM のメモリが伸びると作り直されるので、毎回取り直す
-  new Float32Array(buffer).set(new Float32Array(s.memory.buffer, ptr, count * stride));
-  post({ type: 'frame', generation, buffer, count, tick: s.current_tick() }, [buffer]);
+
+  const agentCount = s.agent_count();
+  const stride = s.render_stride();
+  const plantCols = s.plant_cols();
+  const plantRows = s.plant_rows();
+  const agentFloats = agentCount * stride;
+  const plantFloats = plantCols * plantRows;
+  const bytes = (agentFloats + plantFloats) * 4;
+  if (buffer.byteLength < bytes) {
+    buffer = new ArrayBuffer(Math.ceil((bytes * BUFFER_HEADROOM) / 4) * 4);
+  }
+
+  const out = new Float32Array(buffer);
+  // memory.buffer は WASM のメモリが伸びると作り直されるので、ポインタを取ってから毎回取り直す
+  const agentsPtr = s.render_buffer_ptr();
+  out.set(new Float32Array(s.memory.buffer, agentsPtr, agentFloats), 0);
+  const plantsPtr = s.plant_ptr();
+  out.set(new Float32Array(s.memory.buffer, plantsPtr, plantFloats), agentFloats);
+
+  post(
+    { type: 'frame', generation, buffer, agentCount, stride, plantCols, plantRows, tick: s.current_tick() },
+    [buffer],
+  );
   dirty = false;
   lastPublish = now;
 }
 
-function reportStats(now: number): void {
+function reportStats(s: SimExports, now: number): void {
   const elapsed = now - statStart;
   if (elapsed < STATS_INTERVAL_MS) return;
   post({
     type: 'stats',
     ticksPerSecond: (statTicks * 1000) / elapsed,
     msPerTick: statTicks > 0 ? statStepMs / statTicks : 0,
+    herbivores: s.herbivore_count(),
+    carnivores: s.carnivore_count(),
+    plantTotal: s.plant_total(),
   });
   statStart = now;
   statTicks = 0;
@@ -149,7 +187,7 @@ function loop(): void {
   if (sim) {
     advance(sim, now);
     publish(sim, performance.now());
-    reportStats(now);
+    reportStats(sim, now);
   }
   lastTime = now;
   setTimeout(loop, 0);
