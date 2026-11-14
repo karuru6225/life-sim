@@ -53,9 +53,16 @@ impl PlantField {
 
     /// 周囲 8 マスのうち、いまいるマスより植物が多いマスがあれば、その方向（単位ベクトルでない）を返す
     pub fn richer_direction(&self, x: f32, y: f32) -> Option<(f32, f32)> {
+        self.richer_direction_for(x, y, |_| 1.0)
+    }
+
+    /// richer_direction と同じだが、マスの植物量に weight(マスの肥沃度) を掛けて比べる。
+    /// 食べられる植生が決まっている草食が、自分に合う草を探すときに使う
+    pub fn richer_direction_for(&self, x: f32, y: f32, weight: impl Fn(f32) -> f32) -> Option<(f32, f32)> {
         let c = ((x / self.cell_size) as usize).min(self.cols - 1);
         let r = ((y / self.cell_size) as usize).min(self.rows - 1);
-        let here = self.biomass[r * self.cols + c];
+        let value = |k: usize| self.biomass[k] * weight(self.fertility[k]);
+        let here = value(r * self.cols + c);
         let mut best = here * 1.1 + 0.05;
         let mut dir = None;
         // トーラスなので端は反対側につながる。剰余（%）は遅いので分岐で折り返す
@@ -66,7 +73,7 @@ impl PlantField {
                 if dr == 1 && dc == 1 {
                     continue;
                 }
-                let b = self.biomass[rr * self.cols + cc];
+                let b = value(rr * self.cols + cc);
                 if b > best {
                     best = b;
                     dir = Some((dc as f32 - 1.0, dr as f32 - 1.0));

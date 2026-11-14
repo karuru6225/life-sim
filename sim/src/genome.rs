@@ -65,7 +65,9 @@ pub const IN_WATER_AHEAD: usize = 22;
 pub const IN_PREY_SIZE: usize = 23;
 /// 最寄りの天敵の大きさ ÷ 自分の大きさ（見えていなければ 0）
 pub const IN_PRED_SIZE: usize = 24;
-pub const N_IN: usize = 25;
+/// 今いる場所の植生が、自分（草食）の食べられる植生にどれだけ合っているか（0〜1。肉食は常に 1）
+pub const IN_HABITAT_FIT: usize = 25;
+pub const N_IN: usize = 26;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 

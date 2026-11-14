@@ -213,6 +213,8 @@ pub struct World {
     pub cooldown: Vec<u16>,
     /// 直前の tick に脳が決めた警戒の度合い（0〜1、草食のみ使う）。天敵に気づける距離と一口の大きさに効く
     pub vigilance: Vec<f32>,
+    /// 生まれた場所の植生（肥沃度）。草食はこれと大きく違う植生の場所では食べられない
+    pub natal: Vec<f32>,
     /// tick の始めに求めた、足元の草の量（上限に対する割合）。隠れの判定に使う
     pub cover: Vec<f32>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
@@ -280,6 +282,7 @@ impl World {
             growth: Vec::new(),
             cooldown: Vec::new(),
             vigilance: Vec::new(),
+            natal: Vec::new(),
             cover: Vec::new(),
             alive: Vec::new(),
             terrain,
@@ -364,6 +367,7 @@ impl World {
         self.growth.push(growth);
         self.cooldown.push(0);
         self.vigilance.push(0.5);
+        self.natal.push(self.terrain.fertility[self.terrain.cell_index(x, y)]);
         self.cover.push(0.0);
         self.alive.push(true);
     }
@@ -436,6 +440,18 @@ impl World {
     /// 蓄えられるエネルギーの上限（いまの大きさに比例。幼体は小さい）
     pub fn energy_cap(&self, i: usize) -> f32 {
         self.base_repro_threshold(self.kind[i]) * self.traits[i].size * self.params.energy_cap_ratio
+    }
+
+    /// 個体 i（草食）が、肥沃度 fertility の植生の草をどれだけ食べられるか（0〜1）。
+    /// 生まれた場所の植生との差が habitat_tolerance 以下なら 1、habitat_limit 以上なら 0。肉食は常に 1
+    pub fn habitat_fit(&self, i: usize, fertility: f32) -> f32 {
+        if self.kind[i] != HERBIVORE {
+            return 1.0;
+        }
+        let p = &self.params;
+        let diff = (fertility - self.natal[i]).abs();
+        let t = ((diff - p.habitat_tolerance) / (p.habitat_limit - p.habitat_tolerance).max(1e-6)).clamp(0.0, 1.0);
+        1.0 - t * t * (3.0 - 2.0 * t)
     }
 
     /// 1 tick 進める
@@ -589,7 +605,20 @@ impl World {
         let mut input = [0.0f32; N_IN];
         input[genome::IN_ENERGY] = self.energy[i] / self.repro_threshold(i);
         input[genome::IN_PLANT_HERE] = self.cover[i];
-        if let Some((dc, dr)) = self.plants.richer_direction(x, y) {
+        let fit_here = self.habitat_fit(i, self.terrain.fertility[self.terrain.cell_index(x, y)]);
+        input[genome::IN_HABITAT_FIT] = fit_here;
+        // 草食は、自分の食べられる植生の草を優先して探す
+        let gradient = if self.kind[i] == HERBIVORE {
+            let (natal, p) = (self.natal[i], &self.params);
+            let (tol, lim) = (p.habitat_tolerance, p.habitat_limit);
+            self.plants.richer_direction_for(x, y, |f| {
+                let t = (((f - natal).abs() - tol) / (lim - tol).max(1e-6)).clamp(0.0, 1.0);
+                1.0 - t * t * (3.0 - 2.0 * t)
+            })
+        } else {
+            None
+        };
+        if let Some((dc, dr)) = gradient {
             let len = (dc * dc + dr * dr).sqrt();
             let (f, r) = to_local(dc / len, dr / len);
             input[genome::IN_GRAD_FWD] = f;
@@ -792,8 +821,13 @@ impl World {
         }
         let eff = self.params.herb_efficiency;
         let c = self.plants.cell_index(self.xs[i], self.ys[i]);
-        // 警戒しているほど一口が小さい（周りを見ながらでは食べる量が減る）
-        let bite = self.params.herb_bite * self.traits[i].size * (1.0 - self.params.vigilance_bite_cost * self.vigilance[i]);
+        // 一口の大きさ: 警戒しているほど小さく（周りを見ながらでは食べる量が減る）、
+        // 生まれた場所と違う植生の草ほど小さい（うまく食べられない）
+        let fit = self.habitat_fit(i, self.plants.fertility[c]);
+        let bite = self.params.herb_bite
+            * self.traits[i].size
+            * (1.0 - self.params.vigilance_bite_cost * self.vigilance[i])
+            * fit;
         let take = bite
             .min(self.plants.biomass[c])
             .min(room / eff);
@@ -971,8 +1005,10 @@ impl World {
         // 持っている以上は失えない（エネルギーが負になって帳尻が狂うのを防ぐ）
         // 速く走れる体は、走っていなくても維持費がかかる（最高速度 × 大きさの 0.75 乗に比例）
         let upkeep = p.speed_upkeep * t.max_speed * t.size_pow075;
-        let cost = (metabolism * t.size_pow075 + upkeep + p.vision_cost * t.vision + p.move_cost * t.size * speed * speed)
-            .min(self.energy[i]);
+        // 基本の代謝は動いている度合いに応じて変わる（止まっていれば rest_metabolism 倍。待ち伏せや休息で消費を抑えられる）
+        let activity = (speed / t.max_speed).clamp(0.0, 1.0);
+        let basal = metabolism * t.size_pow075 * (p.rest_metabolism + (1.0 - p.rest_metabolism) * activity);
+        let cost = (basal + upkeep + p.vision_cost * t.vision + p.move_cost * t.size * speed * speed).min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
         self.age[i] += 1;
@@ -1124,6 +1160,7 @@ impl World {
             self.growth.swap_remove(i);
             self.cooldown.swap_remove(i);
             self.vigilance.swap_remove(i);
+            self.natal.swap_remove(i);
             self.cover.swap_remove(i);
             self.alive.swap_remove(i);
             let last = self.genomes.len() - GENOME_LEN;
@@ -1664,6 +1701,31 @@ mod tests {
         w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
         w.try_hunt(0, 1, 16.0);
         assert!((w.energy[0] - (5.0 - w.params.attack_cost)).abs() < 1e-5, "襲う費用だけ失う");
+    }
+
+    #[test]
+    fn 生まれた場所と大きく違う植生の草は食べられない() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 2.0, 0, &g);
+        // 平らな世界の植生は 1。生まれた植生が近ければ食べられる
+        w.natal[0] = 0.9;
+        assert!(w.graze(0), "植生の差 0.1 なら食べられる");
+        w.natal[0] = 0.5;
+        assert!(!w.graze(0), "植生の差 0.5 では食べられない");
+        assert_eq!(w.habitat_fit(0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn 止まっている個体は消費が少ない() {
+        let mut w = empty_world();
+        w.params.move_cost = 0.0; // 基本の代謝の違いだけを見る
+        let g = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 10.0, 0, &g);
+        w.spawn(300.0, 300.0, CARNIVORE, 10.0, 0, &g);
+        w.live(0, 0.0, false, Mate::Missing);
+        w.live(1, 1.0, false, Mate::Missing);
+        assert!(w.energy[0] > w.energy[1], "止まっているほうが消費が少ない");
     }
 
     #[test]
