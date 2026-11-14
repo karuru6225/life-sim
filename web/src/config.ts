@@ -15,12 +15,13 @@ export const SIM_PARAMS = {
   plant_initial_ratio: 0.5,
 
   // 植物
-  sunlight: 0.06,
+  sunlight: 0.045,
   plant_capacity: 10,
 
   // 共通
   move_cost: 0.006,
   vision_cost: 0.00008,
+  speed_upkeep: 0.002,
   max_turn: 0.5,
   turn_noise: 0.15,
   cover_strength: 0.85,
@@ -66,7 +67,7 @@ export const SIM_PARAMS = {
   herb_mate_range: 12,
   herb_bite: 0.12,
   herb_efficiency: 0.6,
-  herb_metabolism: 0.0076,
+  herb_metabolism: 0.005,
   herb_repro_threshold: 10,
   herb_birth_cost: 1,
   herb_max_age: 2400,
@@ -79,8 +80,8 @@ export const SIM_PARAMS = {
   carn_initial_vision: 48,
   carn_mate_range: 20,
   carn_attack_range: 6,
-  carn_efficiency: 0.5,
-  carn_metabolism: 0.011,
+  carn_efficiency: 0.4,
+  carn_metabolism: 0.0074,
   carn_repro_threshold: 16,
   carn_birth_cost: 2,
   carn_max_age: 3600,
