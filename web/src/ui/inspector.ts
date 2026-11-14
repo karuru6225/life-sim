@@ -121,6 +121,7 @@ export class Inspector {
     const kind = v[INSPECT.kind];
     const herb = kind === HERBIVORE;
     this.el.dot.style.background = herb ? COLORS.herbivore : COLORS.carnivore;
+    this.el.dot.className = herb ? 'dot' : 'tri';
     this.el.title.textContent = `${herb ? '草食' : '肉食'} #${fmtInt.format(v[INSPECT.id])}`;
     this.el.state.textContent = STATE_LABEL[kind]?.[v[INSPECT.state]] ?? '–';
 

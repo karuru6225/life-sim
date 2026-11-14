@@ -20,12 +20,14 @@ export class AgentLayer {
     tint: string,
     /** テクスチャの半径に対する、大きさ 1 のときの描画倍率 */
     private readonly baseScale: number,
+    /** 進行方向に合わせて回すか（三角形で描く肉食） */
+    private readonly rotate: boolean,
     worldWidth: number,
     worldHeight: number,
   ) {
     this.container = new ParticleContainer({
       texture,
-      dynamicProperties: { position: true, vertex: true, color: true, rotation: false, uvs: false },
+      dynamicProperties: { position: true, vertex: true, color: true, rotation: rotate, uvs: false },
     });
     // ParticleContainer は自分の範囲を計算しないので明示する
     this.container.boundsArea = new Rectangle(0, 0, worldWidth, worldHeight);
@@ -34,7 +36,7 @@ export class AgentLayer {
   }
 
   /**
-   * data: [x, y, 種類, 大きさ, 標識色] × count のうち、種類が kind の個体だけを描く。
+   * data: [x, y, 種類, 大きさ, 標識色, 向き] × count のうち、種類が kind の個体だけを描く。
    * 個体数は毎 tick 変わるので、表示数を合わせてから書き込む
    */
   apply(data: Float32Array, count: number, stride: number, kind: number, mode: ColorMode): void {
@@ -49,6 +51,7 @@ export class AgentLayer {
       p.scaleX = s;
       p.scaleY = s;
       p.color = mode === 'kind' ? this.kindColor : this.huePalette[hueIndex(data[o + 4])];
+      if (this.rotate) p.rotation = data[o + 5];
     }
     const children = this.container.particleChildren;
     if (children.length !== n) {

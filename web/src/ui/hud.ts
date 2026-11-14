@@ -46,7 +46,7 @@ export class Hud {
         </div>
         <div class="metric">
           <span class="value" data-k="carn">–</span>
-          <span class="label"><i class="dot dot-large" style="background:${COLORS.carnivore}"></i>肉食</span>
+          <span class="label"><i class="tri" style="background:${COLORS.carnivore}"></i>肉食</span>
         </div>
       </div>
       <canvas class="hud-chart" data-k="chart" aria-label="直近 2 分の個体数の推移"></canvas>
@@ -93,7 +93,7 @@ export class Hud {
         <span class="group-label">植物量</span>
         <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.background}, ${COLORS.plant})"></div>
         <div class="swatch-scale"><span>なし</span><span>上限</span></div>
-        <p class="legend-note">点の大きさは「大きさ」の遺伝子に比例。肉食は見やすさのため 1.5 倍で表示</p>
+        <p class="legend-note">草食は丸、肉食は進行方向を指す三角。大きさは個体のいまの大きさに比例（肉食は見やすさのため 1.5 倍で表示）</p>
         <p class="legend-note">集まり具合: 最寄りの仲間までの距離 ÷ ランダムに散らばった場合の期待値（1 でランダム、小さいほど集まっている）。向きのそろい: 近くの仲間との向きの一致度（0 でばらばら、1 で同じ向き）</p>
       </div>
       <p class="hud-help">ドラッグ: 移動 · ホイール: ズーム · ダブルクリック: 全体 · 拡大してクリック: 個体を選択 · Space: 一時停止</p>

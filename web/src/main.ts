@@ -42,14 +42,26 @@ const dot = (radius: number) =>
     resolution: 8,
     antialias: true,
   });
-// テクスチャは草食の半径で 1 つだけ作り、大きさは個体ごとの倍率で表す
-const body = dot(BODY_RADIUS.herbivore);
-const herbivores = new AgentLayer(body, COLORS.herbivore, 1, params.world_width, params.world_height);
-// 肉食は数が少なく埋もれやすいので、一回り大きくして上に重ねる
+/**
+ * 進行方向（+x）を指す、少し細長い三角形。肉食を形で見分けるため（系統色の表示でも色に頼らず区別できる）。
+ * 同じ半径の円より小さく見えるので、外接円の半径を 1.3 倍にしている
+ */
+const arrow = (radius: number) => {
+  const r = radius * 1.3;
+  return app.renderer.generateTexture({
+    target: new Graphics().poly([r, 0, -0.7 * r, 0.75 * r, -0.7 * r, -0.75 * r]).fill(0xffffff),
+    resolution: 8,
+    antialias: true,
+  });
+};
+// 大きさは個体ごとの倍率で表す
+const herbivores = new AgentLayer(dot(BODY_RADIUS.herbivore), COLORS.herbivore, 1, false, params.world_width, params.world_height);
+// 肉食は数が少なく埋もれやすいので、一回り大きい三角形で上に重ね、進行方向へ向ける
 const carnivores = new AgentLayer(
-  body,
+  arrow(BODY_RADIUS.herbivore),
   COLORS.carnivore,
   BODY_RADIUS.carnivore / BODY_RADIUS.herbivore,
+  true,
   params.world_width,
   params.world_height,
 );

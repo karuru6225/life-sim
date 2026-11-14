@@ -460,3 +460,12 @@ button:disabled {
   font-size: 11px;
   color: var(--muted);
 }
+
+/* 肉食の印（画面上の三角形と同じ、右を指す三角） */
+.tri {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  clip-path: polygon(100% 50%, 0 7%, 0 93%);
+}

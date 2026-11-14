@@ -28,7 +28,7 @@ export type FromWorker =
       generation: number;
       /**
        * Float32 で、先頭から
-       *   個体: [x, y, 種類, 大きさ, 標識色] × agentCount（1 個体 stride 要素）
+       *   個体: [x, y, 種類, 大きさ, 標識色, 向き（ラジアン、肉食のみ）] × agentCount（1 個体 stride 要素）
        *   植物: plantCols × plantRows（行優先）
        */
       buffer: ArrayBuffer;
