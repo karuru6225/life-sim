@@ -323,9 +323,17 @@ impl World {
 
     /// (x, y) から radius 以内で最も近い個体の id。いなければ 0
     pub fn id_near(&self, x: f32, y: f32, radius: f32) -> u32 {
+        self.id_near_kind(x, y, radius, None)
+    }
+
+    /// (x, y) から radius 以内で最も近い、種類 kind の個体の id（kind が None なら種類を問わない）。いなければ 0
+    pub fn id_near_kind(&self, x: f32, y: f32, radius: f32, kind: Option<u8>) -> u32 {
         let mut best = radius * radius;
         let mut found = 0;
         for i in 0..self.count() {
+            if kind.is_some_and(|k| self.kind[i] != k) {
+                continue;
+            }
             let dx = torus_delta(self.xs[i] - x, self.width);
             let dy = torus_delta(self.ys[i] - y, self.height);
             let d2 = dx * dx + dy * dy;
@@ -1144,5 +1152,10 @@ mod tests {
         let id = w.id_near(w.xs[10], w.ys[10], 0.5);
         assert_eq!(id, w.id[10]);
         assert_eq!(w.id_near(-1000.0, -1000.0, 0.5), 0);
+        // 種類を指定すると、より近くに別の種類がいても指定した種類を選ぶ
+        let i = (0..w.count()).find(|&i| w.kind[i] == CARNIVORE).unwrap();
+        let id = w.id_near_kind(w.xs[i], w.ys[i], 1000.0, Some(HERBIVORE));
+        assert_ne!(id, 0);
+        assert_eq!(w.kind[w.index_of(id).unwrap()], HERBIVORE);
     }
 }

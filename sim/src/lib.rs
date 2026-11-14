@@ -115,6 +115,20 @@ pub extern "C" fn select_at(x: f32, y: f32, radius: f32) -> f64 {
     })
 }
 
+/// (x, y) から radius 以内で最も近い、種類 kind の個体を選択し、その id を返す。
+/// 同じ種類がいなければ種類を問わず最寄りを選ぶ。それもいなければ 0 を返し、選択は解除される
+#[unsafe(no_mangle)]
+pub extern "C" fn select_near_kind(x: f32, y: f32, radius: f32, kind: u32) -> f64 {
+    with_world(|w| {
+        let mut id = w.id_near_kind(x, y, radius, Some(kind as u8));
+        if id == 0 {
+            id = w.id_near(x, y, radius);
+        }
+        w.select(id);
+        id as f64
+    })
+}
+
 /// 選択を解除する
 #[unsafe(no_mangle)]
 pub extern "C" fn deselect() {
