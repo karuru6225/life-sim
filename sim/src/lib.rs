@@ -14,12 +14,17 @@ use params::Params;
 use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, RENDER_STRIDE, World};
 
+/// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
+const INSPECT_LEN: usize = 17;
+
 thread_local! {
     static WORLD: RefCell<Option<World>> = const { RefCell::new(None) };
     /// 次の init() で使うパラメータ。init() 前に設定できるよう、世界とは別に持つ
     static PARAMS: RefCell<Params> = RefCell::new(Params::default());
     /// JS から文字列を受け取るための作業領域
     static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// 選択中の個体の情報。id が f32 の精度を超えうるので f64 で持つ
+    static INSPECT: RefCell<[f64; INSPECT_LEN]> = const { RefCell::new([0.0; INSPECT_LEN]) };
 }
 
 fn with_world<R>(f: impl FnOnce(&mut World) -> R) -> R {
@@ -109,6 +114,79 @@ pub extern "C" fn render_buffer_ptr() -> *const f32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn render_stride() -> u32 {
     RENDER_STRIDE as u32
+}
+
+/// (x, y) から radius 以内で最も近い個体を選択し、その id を返す。いなければ 0 を返し、選択は解除される
+#[unsafe(no_mangle)]
+pub extern "C" fn select_at(x: f32, y: f32, radius: f32) -> f64 {
+    with_world(|w| {
+        let id = w.id_near(x, y, radius);
+        w.select(id);
+        id as f64
+    })
+}
+
+/// 選択を解除する
+#[unsafe(no_mangle)]
+pub extern "C" fn deselect() {
+    with_world(|w| w.select(0))
+}
+
+/// 選択中の個体の情報を書き込み、その先頭アドレスを返す（f64 × INSPECT_LEN）。
+///  0: 状態（0 = 選択なし、1 = 生存、2 = 死亡）
+///  1: id            2: 種類            3: x              4: y
+///  5: エネルギー     6: 繁殖に必要なエネルギー
+///  7: 年齢           8: 寿命            9: 行動（world::state）
+/// 10: 直前の速度    11: 直前の消費エネルギー
+/// 12: 子の数        13: 世代
+/// 14: 死因（world::death）  15: 死んだ tick
+/// 16: 視野の半径
+/// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
+#[unsafe(no_mangle)]
+pub extern "C" fn inspect() -> *const f64 {
+    INSPECT.with(|buf| {
+        let mut out = buf.borrow_mut();
+        with_world(|w| {
+            let watch = &w.watch;
+            if watch.id == 0 {
+                out[0] = 0.0;
+                return;
+            }
+            out[1] = watch.id as f64;
+            if let Some((cause, tick)) = watch.death {
+                out[0] = 2.0;
+                out[14] = cause as f64;
+                out[15] = tick as f64;
+                return;
+            }
+            let Some(i) = w.index_of(watch.id) else {
+                out[0] = 0.0;
+                return;
+            };
+            let p = &w.params;
+            let herb = w.kind[i] == HERBIVORE;
+            out[0] = 1.0;
+            out[2] = w.kind[i] as f64;
+            out[3] = w.xs[i] as f64;
+            out[4] = w.ys[i] as f64;
+            out[5] = w.energy[i] as f64;
+            out[6] = if herb { p.herb_repro_threshold } else { p.carn_repro_threshold } as f64;
+            out[7] = w.age[i] as f64;
+            out[8] = if herb { p.herb_max_age } else { p.carn_max_age } as f64;
+            out[9] = w.state[i] as f64;
+            out[10] = watch.speed as f64;
+            out[11] = watch.cost as f64;
+            out[12] = w.children[i] as f64;
+            out[13] = w.generation[i] as f64;
+            out[16] = if herb { p.herb_vision } else { p.carn_vision } as f64;
+        });
+        out.as_ptr()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn inspect_len() -> u32 {
+    INSPECT_LEN as u32
 }
 
 /// 植物量の配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス

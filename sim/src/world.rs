@@ -3,6 +3,7 @@
 //! 個体は「1 個体 = 1 構造体」ではなく、属性ごとの配列（SoA）で持つ。
 //! i 番目の個体の位置は (xs[i], ys[i])、種類は kind[i]。
 //! 同じ属性がメモリ上に連続して並ぶのでループが速く、JS からも配列としてそのまま読める。
+//! 配列上の位置 i は死亡のたびに詰め直されて変わるので、個体を追いかけるときは id を使う。
 //!
 //! エネルギーは「日射 → 植物 → 草食 → 肉食」と一方通行で流れ、どこからも湧かない。
 //! 出入りはすべて Ledger（帳簿）に記録し、テストで帳尻が合うことを確かめる。
@@ -14,6 +15,29 @@ use crate::rng::Rng;
 
 pub const HERBIVORE: u8 = 0;
 pub const CARNIVORE: u8 = 1;
+
+/// いまの行動（観察用）
+pub mod state {
+    /// 目的なく歩き回っている（肉食が獲物を探している）
+    pub const WANDER: u8 = 0;
+    /// その場で草を食べている
+    pub const GRAZE: u8 = 1;
+    /// 草の多い方へ移動している
+    pub const SEEK: u8 = 2;
+    /// 天敵から逃げている
+    pub const FLEE: u8 = 3;
+    /// 獲物を追っている
+    pub const CHASE: u8 = 4;
+    /// 獲物を食べた
+    pub const EAT: u8 = 5;
+}
+
+/// 死因（観察用）
+pub mod death {
+    pub const STARVED: u8 = 1;
+    pub const OLD_AGE: u8 = 2;
+    pub const EATEN: u8 = 3;
+}
 
 /// 描画用バッファの 1 個体あたりの要素数: [x, y, 種類]
 pub const RENDER_STRIDE: usize = 3;
@@ -51,11 +75,25 @@ impl Ledger {
     }
 }
 
+/// 選択中の個体の観察記録。毎 tick の詳細は全個体ぶん持つと重いので、選択中の 1 体だけ記録する
+#[derive(Default, Clone, Debug)]
+pub struct Watch {
+    /// 選択中の個体の id（0 は選択なし）
+    pub id: u32,
+    /// 直前の tick の移動速度
+    pub speed: f32,
+    /// 直前の tick に代謝と移動で失ったエネルギー
+    pub cost: f32,
+    /// 死んだときの (死因, tick)
+    pub death: Option<(u8, u64)>,
+}
+
 struct Birth {
     x: f32,
     y: f32,
     kind: u8,
     energy: f32,
+    generation: u32,
 }
 
 pub struct World {
@@ -64,6 +102,8 @@ pub struct World {
     pub height: f32,
     pub tick: u64,
 
+    /// 個体の通し番号。1 から始まり、生まれた順に増える
+    pub id: Vec<u32>,
     pub xs: Vec<f32>,
     pub ys: Vec<f32>,
     /// 進行方向（ラジアン）
@@ -71,11 +111,17 @@ pub struct World {
     pub energy: Vec<f32>,
     pub age: Vec<u32>,
     pub kind: Vec<u8>,
+    /// いまの行動（state::*）
+    pub state: Vec<u8>,
+    /// 初期個体が 0、その子が 1、…
+    pub generation: Vec<u32>,
+    pub children: Vec<u32>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
     alive: Vec<bool>,
 
     pub plants: PlantField,
     pub ledger: Ledger,
+    pub watch: Watch,
 
     /// JS に渡す描画用データ。fill_render() で更新する
     pub render: Vec<f32>,
@@ -83,6 +129,7 @@ pub struct World {
     grid: Grid,
     rng: Rng,
     births: Vec<Birth>,
+    next_id: u32,
 }
 
 impl World {
@@ -101,28 +148,34 @@ impl World {
             width,
             height,
             tick: 0,
+            id: Vec::new(),
             xs: Vec::new(),
             ys: Vec::new(),
             headings: Vec::new(),
             energy: Vec::new(),
             age: Vec::new(),
             kind: Vec::new(),
+            state: Vec::new(),
+            generation: Vec::new(),
+            children: Vec::new(),
             alive: Vec::new(),
             plants,
             ledger: Ledger::default(),
+            watch: Watch::default(),
             render: Vec::new(),
             grid,
             rng: Rng::new(seed),
             births: Vec::new(),
+            next_id: 1,
             params,
         };
         for _ in 0..world.params.herb_initial as usize {
             let (x, y) = world.random_position();
-            world.spawn(x, y, HERBIVORE, world.params.herb_initial_energy);
+            world.spawn(x, y, HERBIVORE, world.params.herb_initial_energy, 0);
         }
         for _ in 0..world.params.carn_initial as usize {
             let (x, y) = world.random_position();
-            world.spawn(x, y, CARNIVORE, world.params.carn_initial_energy);
+            world.spawn(x, y, CARNIVORE, world.params.carn_initial_energy, 0);
         }
         world.ledger.initial = world.total_energy();
         world
@@ -132,13 +185,18 @@ impl World {
         (self.rng.range(0.0, self.width), self.rng.range(0.0, self.height))
     }
 
-    fn spawn(&mut self, x: f32, y: f32, kind: u8, energy: f32) {
+    fn spawn(&mut self, x: f32, y: f32, kind: u8, energy: f32, generation: u32) {
+        self.id.push(self.next_id);
+        self.next_id += 1;
         self.xs.push(x);
         self.ys.push(y);
         self.headings.push(self.rng.range(0.0, std::f32::consts::TAU));
         self.energy.push(energy);
         self.age.push(0);
         self.kind.push(kind);
+        self.state.push(state::WANDER);
+        self.generation.push(generation);
+        self.children.push(0);
         self.alive.push(true);
     }
 
@@ -153,6 +211,35 @@ impl World {
     /// 世界にあるエネルギーの実際の合計（植物 + 個体）
     pub fn total_energy(&self) -> f64 {
         self.plants.total() + self.energy.iter().map(|&e| e as f64).sum::<f64>()
+    }
+
+    /// id の個体の配列上の位置。いなければ None
+    pub fn index_of(&self, id: u32) -> Option<usize> {
+        if id == 0 {
+            return None;
+        }
+        self.id.iter().position(|&v| v == id)
+    }
+
+    /// (x, y) から radius 以内で最も近い個体の id。いなければ 0
+    pub fn id_near(&self, x: f32, y: f32, radius: f32) -> u32 {
+        let mut best = radius * radius;
+        let mut found = 0;
+        for i in 0..self.count() {
+            let dx = torus_delta(self.xs[i] - x, self.width);
+            let dy = torus_delta(self.ys[i] - y, self.height);
+            let d2 = dx * dx + dy * dy;
+            if d2 < best {
+                best = d2;
+                found = self.id[i];
+            }
+        }
+        found
+    }
+
+    /// 個体を選択して観察を始める（0 で選択解除）
+    pub fn select(&mut self, id: u32) {
+        self.watch = Watch { id, ..Watch::default() };
     }
 
     /// 1 tick 進める
@@ -189,12 +276,15 @@ impl World {
 
         let speed = if let Some((_, dx, dy, _)) = threat {
             self.headings[i] = (-dy).atan2(-dx) + self.rng.range(-STEER_JITTER, STEER_JITTER);
+            self.state[i] = state::FLEE;
             self.params.herb_flee_speed
         } else if let Some((dx, dy)) = self.plants.richer_direction(x, y) {
             self.headings[i] = dy.atan2(dx) + self.rng.range(-STEER_JITTER, STEER_JITTER);
+            self.state[i] = state::SEEK;
             self.params.herb_speed
         } else {
             self.headings[i] += self.rng.range(-WANDER_JITTER, WANDER_JITTER);
+            self.state[i] = state::GRAZE;
             self.params.herb_graze_speed
         };
 
@@ -213,6 +303,7 @@ impl World {
         let (x, y) = (self.xs[i], self.ys[i]);
         let Some((j, dx, dy, d2)) = self.nearest(x, y, HERBIVORE, self.params.carn_vision) else {
             self.headings[i] += self.rng.range(-WANDER_JITTER, WANDER_JITTER);
+            self.state[i] = state::WANDER;
             return self.params.carn_wander_speed;
         };
 
@@ -223,10 +314,12 @@ impl World {
             self.energy[i] += gain;
             self.ledger.lost_digestion += (prey - gain) as f64;
             self.energy[j] = 0.0;
-            self.alive[j] = false;
+            self.die(j, death::EATEN);
+            self.state[i] = state::EAT;
             return 0.0; // 食べた tick は動かない
         }
         self.headings[i] = dy.atan2(dx) + self.rng.range(-STEER_JITTER, STEER_JITTER);
+        self.state[i] = state::CHASE;
         self.params.carn_chase_speed
     }
 
@@ -258,6 +351,14 @@ impl World {
         self.ys[i] = wrap(self.ys[i] + h.sin() * speed, self.height);
     }
 
+    /// 個体 i を死亡扱いにする。エネルギーは呼び出し側で 0 にしておくこと
+    fn die(&mut self, i: usize, cause: u8) {
+        self.alive[i] = false;
+        if self.id[i] == self.watch.id {
+            self.watch.death = Some((cause, self.tick));
+        }
+    }
+
     /// エネルギー消費・加齢・死亡・繁殖
     fn live(&mut self, i: usize, speed: f32) {
         let p = &self.params;
@@ -271,16 +372,20 @@ impl World {
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
         self.age[i] += 1;
+        if self.id[i] == self.watch.id {
+            self.watch.speed = speed;
+            self.watch.cost = cost;
+        }
 
         if self.energy[i] <= 0.0 {
             self.energy[i] = 0.0;
-            self.alive[i] = false; // 餓死
+            self.die(i, death::STARVED);
             return;
         }
         if self.age[i] as f32 > max_age {
             self.ledger.lost_death += self.energy[i] as f64;
             self.energy[i] = 0.0;
-            self.alive[i] = false; // 寿命
+            self.die(i, death::OLD_AGE);
             return;
         }
         if self.energy[i] >= threshold {
@@ -289,17 +394,24 @@ impl World {
             let child = (before - birth_cost) / 2.0;
             self.energy[i] = child;
             self.ledger.lost_birth += (before - 2.0 * child) as f64;
+            self.children[i] += 1;
             let spread = self.params.birth_spread;
             let x = self.xs[i] + self.rng.range(-spread, spread);
             let y = self.ys[i] + self.rng.range(-spread, spread);
-            self.births.push(Birth { x, y, kind: self.kind[i], energy: child });
+            self.births.push(Birth {
+                x,
+                y,
+                kind: self.kind[i],
+                energy: child,
+                generation: self.generation[i] + 1,
+            });
         }
     }
 
     fn apply_births(&mut self) {
         let births = std::mem::take(&mut self.births);
         for b in &births {
-            self.spawn(wrap(b.x, self.width), wrap(b.y, self.height), b.kind, b.energy);
+            self.spawn(wrap(b.x, self.width), wrap(b.y, self.height), b.kind, b.energy, b.generation);
         }
         self.births = births;
         self.births.clear();
@@ -308,12 +420,16 @@ impl World {
     /// 死んだ個体を取り除く。順番は保つ（決定論のため）
     fn remove_dead(&mut self) {
         let alive = &self.alive;
+        compact(&mut self.id, alive);
         compact(&mut self.xs, alive);
         compact(&mut self.ys, alive);
         compact(&mut self.headings, alive);
         compact(&mut self.energy, alive);
         compact(&mut self.age, alive);
         compact(&mut self.kind, alive);
+        compact(&mut self.state, alive);
+        compact(&mut self.generation, alive);
+        compact(&mut self.children, alive);
         let n = self.xs.len();
         self.alive.clear();
         self.alive.resize(n, true);
@@ -437,5 +553,39 @@ mod tests {
             w.step();
             assert!(w.energy.iter().all(|&e| e > 0.0));
         }
+    }
+
+    #[test]
+    fn idは重複せず死亡と詰め直しの後も個体についていく() {
+        let mut w = World::new(11, small_params());
+        // 最後の個体を選び、他の個体の死亡で配列が詰め直されても同じ個体を指し続けるか
+        let target = *w.id.last().unwrap();
+        w.select(target);
+        let mut last_age = 0;
+        for _ in 0..200 {
+            w.step();
+            let mut ids = w.id.clone();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), w.count(), "id が重複している");
+            match w.index_of(target) {
+                Some(i) => {
+                    assert_eq!(w.age[i], last_age + 1, "別の個体を指している");
+                    last_age = w.age[i];
+                }
+                None => {
+                    assert!(w.watch.death.is_some(), "死因が記録されずに消えた");
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn 近くの個体を選べる() {
+        let w = World::new(2, small_params());
+        let id = w.id_near(w.xs[10], w.ys[10], 0.5);
+        assert_eq!(id, w.id[10]);
+        assert_eq!(w.id_near(-1000.0, -1000.0, 0.5), 0);
     }
 }
