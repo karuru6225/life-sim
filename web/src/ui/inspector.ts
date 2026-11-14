@@ -2,6 +2,7 @@
 
 import { COLORS, TICK_HZ } from '../config';
 import { CARNIVORE, DEATH, HERBIVORE, INSPECT, STATE } from '../protocol';
+import { HUE_PALETTE, hueIndex } from '../render/palette';
 
 export interface InspectorHandlers {
   onClose(): void;
@@ -12,14 +13,14 @@ const fmtInt = new Intl.NumberFormat('ja-JP');
 
 const STATE_LABEL: Record<number, Record<number, string>> = {
   [HERBIVORE]: {
-    [STATE.GRAZE]: 'その場で草を食べている',
-    [STATE.SEEK]: '草の多い方へ移動中',
-    [STATE.FLEE]: '肉食から逃げている',
+    [STATE.GRAZE]: '草を食べている',
+    [STATE.SEEK]: '食べずに移動している',
+    [STATE.FLEE]: '肉食が見えている',
     [STATE.WANDER]: '歩き回っている',
   },
   [CARNIVORE]: {
-    [STATE.WANDER]: '獲物を探している',
-    [STATE.CHASE]: '獲物を追っている',
+    [STATE.WANDER]: '獲物が見えない',
+    [STATE.CHASE]: '獲物が見えている',
     [STATE.EAT]: '獲物を食べた',
   },
 };
@@ -60,6 +61,22 @@ export class Inspector {
           <dt>子</dt><dd data-k="children">–</dd>
           <dt>速度</dt><dd data-k="speed">–</dd>
           <dt>位置</dt><dd data-k="pos">–</dd>
+          <dt title="足元の草で、相手から見つかる距離が何割縮むか">隠れ</dt><dd data-k="hidden">–</dd>
+        </dl>
+        <div class="insp-section">脳の判断（直前の tick）</div>
+        <dl class="hud-rows">
+          <dt>向き</dt><dd data-k="turn">–</dd>
+          <dt>速さ</dt><dd data-k="throttle">–</dd>
+          <dt>食べる</dt><dd data-k="wantEat">–</dd>
+          <dt>繁殖</dt><dd data-k="wantChild">–</dd>
+        </dl>
+        <div class="insp-section">遺伝子</div>
+        <dl class="hud-rows">
+          <dt>大きさ</dt><dd data-k="size">–</dd>
+          <dt>最高速度</dt><dd data-k="maxSpeed">–</dd>
+          <dt>視野</dt><dd data-k="vision">–</dd>
+          <dt title="繁殖のとき、手持ちのエネルギーのうち子に渡す割合">子への投資</dt><dd data-k="invest">–</dd>
+          <dt title="生存に影響しない遺伝子。系統の見分けに使う">標識色</dt><dd><i class="dot" data-k="hue"></i></dd>
         </dl>
       </div>
     `;
@@ -119,6 +136,20 @@ export class Inspector {
     this.el.children.textContent = `${fmtInt.format(v[INSPECT.children])} 体`;
     this.el.speed.textContent = `${v[INSPECT.speed].toFixed(2)} px/tick`;
     this.el.pos.textContent = `${Math.round(v[INSPECT.x])}, ${Math.round(v[INSPECT.y])}`;
+    this.el.hidden.textContent = `見つかる距離 −${Math.round(v[INSPECT.hidden] * 100)}%`;
+
+    const turnDeg = (v[INSPECT.turn] * 180) / Math.PI;
+    this.el.turn.textContent =
+      Math.abs(turnDeg) < 1 ? 'まっすぐ' : `${turnDeg > 0 ? '右' : '左'}へ ${Math.abs(turnDeg).toFixed(0)}°`;
+    this.el.throttle.textContent = `最高速度の ${Math.round(v[INSPECT.throttle] * 100)}%`;
+    this.el.wantEat.textContent = v[INSPECT.wantEat] > 0 ? '食べたい' : '食べない';
+    this.el.wantChild.textContent = v[INSPECT.wantChild] > 0 ? 'したい' : 'しない';
+
+    this.el.size.textContent = v[INSPECT.size].toFixed(2);
+    this.el.maxSpeed.textContent = `${v[INSPECT.maxSpeed].toFixed(2)} px/tick`;
+    this.el.vision.textContent = `${v[INSPECT.vision].toFixed(1)} px`;
+    this.el.invest.textContent = `${Math.round(v[INSPECT.invest] * 100)}%`;
+    this.el.hue.style.background = HUE_PALETTE[hueIndex(v[INSPECT.hue])];
   }
 }
 

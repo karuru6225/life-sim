@@ -1,7 +1,7 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import { BODY_RADIUS, COLORS, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
 import { CARNIVORE, HERBIVORE, INSPECT, type FromWorker, type ToWorker } from './protocol';
-import { AgentLayer } from './render/agents';
+import { AgentLayer, type ColorMode } from './render/agents';
 import { Camera } from './render/camera';
 import { PlantLayer } from './render/plants';
 import { SelectionMarker } from './render/selection';
@@ -42,9 +42,17 @@ const dot = (radius: number) =>
     resolution: 8,
     antialias: true,
   });
-const herbivores = new AgentLayer(dot(BODY_RADIUS.herbivore), COLORS.herbivore, params.world_width, params.world_height);
+// テクスチャは草食の半径で 1 つだけ作り、大きさは個体ごとの倍率で表す
+const body = dot(BODY_RADIUS.herbivore);
+const herbivores = new AgentLayer(body, COLORS.herbivore, 1, params.world_width, params.world_height);
 // 肉食は数が少なく埋もれやすいので、一回り大きくして上に重ねる
-const carnivores = new AgentLayer(dot(BODY_RADIUS.carnivore), COLORS.carnivore, params.world_width, params.world_height);
+const carnivores = new AgentLayer(
+  body,
+  COLORS.carnivore,
+  BODY_RADIUS.carnivore / BODY_RADIUS.herbivore,
+  params.world_width,
+  params.world_height,
+);
 const marker = new SelectionMarker();
 world.addChild(herbivores.container, carnivores.container, marker.graphics);
 
@@ -55,6 +63,7 @@ let generation = -1;
 let latest: Frame | null = null;
 let speed = 1;
 let paused = false;
+let colorMode: ColorMode = 'kind';
 /** 選択中の個体をカメラで追うか */
 let following = false;
 
@@ -102,6 +111,10 @@ const hud = new Hud(document.getElementById('hud')!, {
   onSunlight: (value) => {
     params.sunlight = value;
     send({ type: 'setParam', name: 'sunlight', value });
+  },
+  onColorMode: (mode) => {
+    colorMode = mode;
+    hud.setColorMode(mode);
   },
 });
 
@@ -154,8 +167,8 @@ app.ticker.add(() => {
   const f = latest;
   const agentFloats = f.agentCount * f.stride;
   const agents = new Float32Array(f.buffer, 0, agentFloats);
-  herbivores.apply(agents, f.agentCount, f.stride, HERBIVORE);
-  carnivores.apply(agents, f.agentCount, f.stride, CARNIVORE);
+  herbivores.apply(agents, f.agentCount, f.stride, HERBIVORE, colorMode);
+  carnivores.apply(agents, f.agentCount, f.stride, CARNIVORE, colorMode);
   plants.apply(new Float32Array(f.buffer, agentFloats * 4, f.plantCols * f.plantRows), f.plantCols, f.plantRows);
   hud.setTick(f.tick);
   if (f.inspect) showSelection(f.inspect);
@@ -174,9 +187,9 @@ function showSelection(v: number[]): void {
   }
   const x = v[INSPECT.x];
   const y = v[INSPECT.y];
-  const body = v[INSPECT.kind] === CARNIVORE ? BODY_RADIUS.carnivore : BODY_RADIUS.herbivore;
+  const radius = (v[INSPECT.kind] === CARNIVORE ? BODY_RADIUS.carnivore : BODY_RADIUS.herbivore) * v[INSPECT.size];
   if (following) camera.centerOn(x, y);
-  marker.update(x, y, body, v[INSPECT.vision], camera.scale);
+  marker.update(x, y, radius, v[INSPECT.vision], camera.scale);
 }
 
 setInterval(() => hud.setFps(app.ticker.FPS), 250);
@@ -191,4 +204,5 @@ window.addEventListener('keydown', (e) => {
 hud.setSpeed(speed);
 hud.setPaused(paused);
 hud.setSunlight(params.sunlight);
+hud.setColorMode(colorMode);
 start();

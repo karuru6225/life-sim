@@ -12,9 +12,8 @@ interface SimExports {
   init(seed: number): void;
   step(ticks: number): void;
   agent_count(): number;
-  herbivore_count(): number;
-  carnivore_count(): number;
-  plant_total(): number;
+  summary(): number;
+  summary_len(): number;
   current_tick(): number;
   render_buffer_ptr(): number;
   render_stride(): number;
@@ -192,13 +191,23 @@ function publish(s: SimExports, now: number): void {
 function reportStats(s: SimExports, now: number): void {
   const elapsed = now - statStart;
   if (elapsed < STATS_INTERVAL_MS) return;
+  // 並びは sim/src/lib.rs の summary() を参照
+  const v = new Float64Array(s.memory.buffer, s.summary(), s.summary_len());
+  const means = (o: number) => ({
+    count: v[o],
+    size: v[o + 1],
+    speed: v[o + 2],
+    vision: v[o + 3],
+    invest: v[o + 4],
+    generation: v[o + 5],
+  });
   post({
     type: 'stats',
     ticksPerSecond: (statTicks * 1000) / elapsed,
     msPerTick: statTicks > 0 ? statStepMs / statTicks : 0,
-    herbivores: s.herbivore_count(),
-    carnivores: s.carnivore_count(),
-    plantTotal: s.plant_total(),
+    plantTotal: v[0],
+    herbivore: means(1),
+    carnivore: means(7),
   });
   statStart = now;
   statTicks = 0;

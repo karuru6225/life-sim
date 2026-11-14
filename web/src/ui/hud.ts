@@ -1,7 +1,9 @@
-// 観察パネル。Phase 1 は個体数の推移が主役。性能の数値は脇に置く。
+// 観察パネル。個体数の推移と形質の平均（＝進化の進み具合）が主役。性能の数値は脇に置く。
 
 import { COLORS, HISTORY_LENGTH, SPEEDS, SUNLIGHT_RANGE, TICK_HZ } from '../config';
-import type { FromWorker } from '../protocol';
+import type { FromWorker, TraitMeans } from '../protocol';
+import type { ColorMode } from '../render/agents';
+import { HUE_PALETTE } from '../render/palette';
 
 type Stats = Extract<FromWorker, { type: 'stats' }>;
 
@@ -10,18 +12,30 @@ export interface HudHandlers {
   onReset(): void;
   onSpeed(speed: number): void;
   onSunlight(value: number): void;
+  onColorMode(mode: ColorMode): void;
 }
 
 const fmtInt = new Intl.NumberFormat('ja-JP');
 
+/** 形質の表の行: [ラベル, 値の取り出し方, 小数の桁数] */
+const TRAIT_ROWS: [string, (m: TraitMeans) => number, number][] = [
+  ['大きさ', (m) => m.size, 2],
+  ['最高速度', (m) => m.speed, 2],
+  ['視野', (m) => m.vision, 1],
+  ['子への投資', (m) => m.invest, 2],
+  ['世代', (m) => m.generation, 0],
+];
+
 export class Hud {
   private readonly el: Record<string, HTMLElement> = {};
   private readonly speedButtons: HTMLButtonElement[] = [];
+  private readonly modeButtons: HTMLButtonElement[] = [];
+  private readonly traitCells: HTMLElement[][] = [];
   private readonly chart: PopulationChart;
 
   constructor(root: HTMLElement, handlers: HudHandlers) {
     root.innerHTML = `
-      <div class="hud-title">life-sim <span>phase 1 · 草食と肉食</span></div>
+      <div class="hud-title">life-sim <span>phase 2 · 遺伝と進化</span></div>
       <div class="hud-primary">
         <div class="metric">
           <span class="value" data-k="herb">–</span>
@@ -34,11 +48,16 @@ export class Hud {
       </div>
       <canvas class="hud-chart" data-k="chart" aria-label="直近 2 分の個体数の推移"></canvas>
       <div class="chart-caption">直近 2 分 · 線ごとに縦軸の範囲が違う</div>
+      <table class="trait-table">
+        <caption>形質の平均</caption>
+        <thead><tr><th></th><th>草食</th><th>肉食</th></tr></thead>
+        <tbody data-k="traits"></tbody>
+      </table>
       <dl class="hud-rows">
         <dt>植物量</dt><dd data-k="plant">–</dd>
         <dt>日射量</dt>
         <dd class="slider-row">
-          <input type="range" data-k="sun" min="${SUNLIGHT_RANGE.min}" max="${SUNLIGHT_RANGE.max}" step="${SUNLIGHT_RANGE.step}" />
+          <input type="range" data-k="sun" min="${SUNLIGHT_RANGE.min}" max="${SUNLIGHT_RANGE.max}" step="${SUNLIGHT_RANGE.step}" aria-label="日射量" />
           <span data-k="sunValue">–</span>
         </dd>
       </dl>
@@ -48,6 +67,7 @@ export class Hud {
           <button type="button" data-k="reset">リセット</button>
         </div>
         <div class="group" data-k="speeds"><span class="group-label">速度</span></div>
+        <div class="group" data-k="modes"><span class="group-label">色分け</span></div>
       </div>
       <dl class="hud-rows hud-perf">
         <dt>描画</dt><dd><span data-k="fps">–</span> fps</dd>
@@ -57,11 +77,17 @@ export class Hud {
         <dt>tick</dt><dd data-k="tick">–</dd>
       </dl>
       <div class="hud-legend">
+        <div data-k="lineageLegend" hidden>
+          <span class="group-label">系統色（標識色の遺伝子）</span>
+          <div class="plant-bar" style="background:linear-gradient(to right, ${HUE_PALETTE.join(', ')})"></div>
+          <p class="legend-note">生存に影響しない遺伝子で、親から子へ少しずつずれながら受け継がれる。近い色ほど近い系統</p>
+        </div>
         <span class="group-label">植物量</span>
         <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.background}, ${COLORS.plant})"></div>
         <div class="swatch-scale"><span>なし</span><span>上限</span></div>
+        <p class="legend-note">点の大きさは「大きさ」の遺伝子に比例。肉食は見やすさのため 1.5 倍で表示</p>
       </div>
-      <p class="hud-help">ドラッグ: 移動 · ホイール: ズーム · ダブルクリック: 全体 · Space: 一時停止</p>
+      <p class="hud-help">ドラッグ: 移動 · ホイール: ズーム · ダブルクリック: 全体 · 拡大してクリック: 個体を選択 · Space: 一時停止</p>
     `;
     for (const node of root.querySelectorAll<HTMLElement>('[data-k]')) {
       this.el[node.dataset.k!] = node;
@@ -76,13 +102,30 @@ export class Hud {
     });
 
     for (const speed of SPEEDS) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = speed === Infinity ? '最大' : `${speed}×`;
+      const b = button(speed === Infinity ? '最大' : `${speed}×`, () => handlers.onSpeed(speed));
       b.dataset.value = String(speed);
-      b.addEventListener('click', () => handlers.onSpeed(speed));
       this.speedButtons.push(b);
       this.el.speeds.append(b);
+    }
+    for (const [mode, label] of [
+      ['kind', '種類'],
+      ['lineage', '系統'],
+    ] as const) {
+      const b = button(label, () => handlers.onColorMode(mode));
+      b.dataset.value = mode;
+      this.modeButtons.push(b);
+      this.el.modes.append(b);
+    }
+
+    for (const [label] of TRAIT_ROWS) {
+      const tr = document.createElement('tr');
+      const th = document.createElement('th');
+      th.textContent = label;
+      const cells = [document.createElement('td'), document.createElement('td')];
+      cells.forEach((c) => (c.textContent = '–'));
+      tr.append(th, ...cells);
+      this.el.traits.append(tr);
+      this.traitCells.push(cells);
     }
 
     this.chart = new PopulationChart(this.el.chart as HTMLCanvasElement);
@@ -93,9 +136,15 @@ export class Hud {
   }
 
   setStats(s: Stats, speed: number, paused: boolean): void {
-    this.el.herb.textContent = fmtInt.format(s.herbivores);
-    this.el.carn.textContent = fmtInt.format(s.carnivores);
+    this.el.herb.textContent = fmtInt.format(s.herbivore.count);
+    this.el.carn.textContent = fmtInt.format(s.carnivore.count);
     this.el.plant.textContent = fmtInt.format(Math.round(s.plantTotal));
+
+    TRAIT_ROWS.forEach(([, get, digits], r) => {
+      [s.herbivore, s.carnivore].forEach((m, c) => {
+        this.traitCells[r][c].textContent = m.count > 0 ? get(m).toFixed(digits) : '絶滅';
+      });
+    });
 
     this.el.tps.textContent = s.ticksPerSecond.toFixed(1);
     this.el.ms.textContent = s.msPerTick > 0 ? s.msPerTick.toFixed(2) : '–';
@@ -106,7 +155,7 @@ export class Hud {
     const lagging = !paused && speed !== Infinity && s.ticksPerSecond < TICK_HZ * speed * 0.9;
     this.el.tps.classList.toggle('warn', lagging);
 
-    if (!paused) this.chart.push(s.herbivores, s.carnivores);
+    if (!paused) this.chart.push(s.herbivore.count, s.carnivore.count);
   }
 
   clearHistory(): void {
@@ -121,6 +170,11 @@ export class Hud {
     for (const b of this.speedButtons) b.classList.toggle('active', Number(b.dataset.value) === speed);
   }
 
+  setColorMode(mode: ColorMode): void {
+    for (const b of this.modeButtons) b.classList.toggle('active', b.dataset.value === mode);
+    this.el.lineageLegend.hidden = mode !== 'lineage';
+  }
+
   setPaused(paused: boolean): void {
     this.el.pause.textContent = paused ? '再開' : '一時停止';
     this.el.pause.classList.toggle('active', paused);
@@ -130,6 +184,14 @@ export class Hud {
     (this.el.sun as HTMLInputElement).value = String(value);
     this.el.sunValue.textContent = value.toFixed(3);
   }
+}
+
+function button(label: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = label;
+  b.addEventListener('click', onClick);
+  return b;
 }
 
 /**

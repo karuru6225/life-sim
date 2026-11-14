@@ -368,3 +368,75 @@ button:disabled {
 #toast[hidden] {
   display: none;
 }
+
+/* ---- 形質の平均の表 ---- */
+
+.trait-table {
+  width: 100%;
+  margin: 2px 0 10px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.trait-table caption {
+  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  text-align: left;
+}
+
+.trait-table th {
+  font-weight: normal;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: left;
+}
+
+.trait-table thead th {
+  text-align: right;
+}
+
+.trait-table td {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.trait-table th,
+.trait-table td {
+  padding: 2px 0;
+}
+
+.legend-note {
+  margin: 4px 0 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.insp-section {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.insp-section + .hud-rows {
+  border-top: none;
+  padding-top: 6px;
+}
+
+.hud-rows .dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  vertical-align: middle;
+}
+
+/* 詳細パネルは項目名が長いので、名前の列を広げる */
+#inspector .hud-rows {
+  grid-template-columns: 5.5em 1fr;
+}

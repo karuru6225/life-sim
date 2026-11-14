@@ -23,7 +23,7 @@ export type FromWorker =
       generation: number;
       /**
        * Float32 で、先頭から
-       *   個体: [x, y, 種類] × agentCount（1 個体 stride 要素）
+       *   個体: [x, y, 種類, 大きさ, 標識色] × agentCount（1 個体 stride 要素）
        *   植物: plantCols × plantRows（行優先）
        */
       buffer: ArrayBuffer;
@@ -39,10 +39,20 @@ export type FromWorker =
       type: 'stats';
       ticksPerSecond: number;
       msPerTick: number;
-      herbivores: number;
-      carnivores: number;
       plantTotal: number;
+      herbivore: TraitMeans;
+      carnivore: TraitMeans;
     };
+
+/** 種類ごとの集計（形質は平均） */
+export interface TraitMeans {
+  count: number;
+  size: number;
+  speed: number;
+  vision: number;
+  invest: number;
+  generation: number;
+}
 
 /** inspect 配列の各要素の位置。sim/src/lib.rs の inspect() と一致させること */
 export const INSPECT = {
@@ -64,6 +74,21 @@ export const INSPECT = {
   deathCause: 14,
   deathTick: 15,
   vision: 16,
+  size: 17,
+  maxSpeed: 18,
+  invest: 19,
+  hue: 20,
+  /** 直前に曲がった角度（ラジアン、正で右） */
+  turn: 21,
+  /** 直前の速さ（最高速度に対する割合） */
+  throttle: 22,
+  /** 正なら繁殖したい */
+  wantChild: 23,
+  /** 正なら食べたい */
+  wantEat: 24,
+  /** 足元の草で、相手の視野が何割縮むか */
+  hidden: 25,
+  energyCap: 26,
 } as const;
 
 export const HERBIVORE = 0;

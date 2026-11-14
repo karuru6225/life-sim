@@ -7,11 +7,11 @@
  */
 export const SIM_PARAMS = {
   // 世界（リセット時のみ反映）
-  world_width: 4800,
-  world_height: 3200,
+  world_width: 7200,
+  world_height: 4800,
   plant_cell: 32,
-  herb_initial: 20000,
-  carn_initial: 1500,
+  herb_initial: 45000,
+  carn_initial: 3400,
   plant_initial_ratio: 0.5,
 
   // 植物
@@ -19,29 +19,40 @@ export const SIM_PARAMS = {
   plant_capacity: 10,
 
   // 共通
-  move_cost: 0.004,
+  move_cost: 0.006,
+  vision_cost: 0.00008,
+  max_turn: 0.5,
+  turn_noise: 0.15,
+  cover_strength: 0.85,
+  energy_cap_ratio: 2,
   birth_spread: 6,
 
-  // 草食
-  herb_vision: 30,
-  herb_graze_speed: 0.4,
-  herb_speed: 0.9,
-  herb_flee_speed: 1.3,
+  // 変異
+  mutation_rate: 0.02,
+  mutation_trait_sigma: 0.05,
+  mutation_weight_sigma: 0.1,
+  mutation_hue_sigma: 0.01,
+
+  // 草食（形質は初期個体の値。以後は遺伝子として進化する）
+  herb_initial_size: 1,
+  herb_initial_speed: 1.3,
+  herb_initial_vision: 30,
   herb_bite: 0.12,
   herb_efficiency: 0.6,
-  herb_metabolism: 0.01,
+  herb_metabolism: 0.0076,
   herb_repro_threshold: 10,
   herb_birth_cost: 1,
   herb_max_age: 2400,
   herb_initial_energy: 5,
 
-  // 肉食
-  carn_vision: 48,
+  // 肉食（形質は初期個体の値。以後は遺伝子として進化する）
+  carn_initial_size: 1,
+  carn_initial_speed: 1.8,
+  carn_initial_vision: 48,
   carn_attack_range: 6,
-  carn_wander_speed: 0.6,
-  carn_chase_speed: 1.8,
+  prey_size_ratio: 1.3,
   carn_efficiency: 0.5,
-  carn_metabolism: 0.012,
+  carn_metabolism: 0.011,
   carn_repro_threshold: 16,
   carn_birth_cost: 2,
   carn_max_age: 3600,
@@ -82,8 +93,19 @@ export const COLORS = {
   marker: '#dde6e4',
 };
 
-/** 個体の描画上の半径（世界座標の px） */
+/**
+ * 個体の描画上の半径（世界座標の px）。大きさの遺伝子 1 のときの値で、実際は大きさに比例する。
+ * 肉食は数が少なく埋もれやすいので、見やすさのため 1.5 倍で描く（同じ種類の中での大小関係は正しい）
+ */
 export const BODY_RADIUS = { herbivore: 3, carnivore: 4.5 };
+
+/**
+ * 系統色（標識色の遺伝子）の表示に使う色の明るさ（WCAG の相対輝度）。
+ * 色相によって明るさが変わると、植物の上で見えにくい色が出るので、全色相でこの輝度にそろえる。
+ * 0.46 のとき、植物満杯（#2a6b42）に対して 3.11:1、地色に対して約 9.7:1
+ */
+export const HUE_LUMINANCE = 0.46;
+export const HUE_STEPS = 72;
 
 /**
  * 個体を選択できる最小の拡大率。全体表示では点が 1〜2px しかなく、狙って選べないため。
