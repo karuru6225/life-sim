@@ -85,21 +85,6 @@ pub extern "C" fn agent_count() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn herbivore_count() -> u32 {
-    with_world(|w| w.count_kind(HERBIVORE) as u32)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn carnivore_count() -> u32 {
-    with_world(|w| w.count_kind(CARNIVORE) as u32)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn plant_total() -> f64 {
-    with_world(|w| w.plants.total())
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn current_tick() -> f64 {
     with_world(|w| w.tick as f64)
 }
