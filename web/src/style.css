@@ -519,3 +519,32 @@ button:disabled {
   height: 10px;
   border: 1px solid var(--line);
 }
+
+/* 系統色のヒストグラム */
+.lineage {
+  margin: 4px 0 10px;
+}
+
+.lineage-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 6px;
+}
+
+.lineage-head .group-label {
+  width: auto;
+}
+
+.lineage-max {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.lineage-chart {
+  display: block;
+  width: 100%;
+  height: 36px;
+  margin-top: 2px;
+}

@@ -66,6 +66,12 @@ export class Hud {
       </div>
       <canvas class="hud-chart" data-k="chart" aria-label="直近 2 分の個体数の推移"></canvas>
       <div class="chart-caption">直近 2 分 · 線ごとに縦軸の範囲が違う</div>
+      <div class="lineage">
+        <div class="lineage-head"><span class="group-label">系統色の分布（草食）</span><span class="lineage-max" data-k="linHerbMax">–</span></div>
+        <canvas class="lineage-chart" data-k="linHerb" aria-label="草食の系統色ごとの個体数"></canvas>
+        <div class="lineage-head"><span class="group-label">系統色の分布（肉食）</span><span class="lineage-max" data-k="linCarnMax">–</span></div>
+        <canvas class="lineage-chart" data-k="linCarn" aria-label="肉食の系統色ごとの個体数"></canvas>
+      </div>
       <table class="trait-table">
         <caption>形質の平均と群れの度合い</caption>
         <thead><tr><th></th><th>草食</th><th>肉食</th></tr></thead>
@@ -200,6 +206,14 @@ export class Hud {
     }
 
     this.chart = new PopulationChart(this.el.chart as HTMLCanvasElement);
+  }
+
+  /** 系統色のヒストグラムを描く場所（[草食, 肉食] のキャンバスと、最大値の表示） */
+  lineageTargets(): [[HTMLCanvasElement, HTMLCanvasElement], [HTMLElement, HTMLElement]] {
+    return [
+      [this.el.linHerb as HTMLCanvasElement, this.el.linCarn as HTMLCanvasElement],
+      [this.el.linHerbMax, this.el.linCarnMax],
+    ];
   }
 
   setFps(fps: number): void {

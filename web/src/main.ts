@@ -8,6 +8,7 @@ import { TerrainLayer, type MapMode } from './render/terrain';
 import { SelectionMarker } from './render/selection';
 import { Hud, type Highlight, type HighlightStyle } from './ui/hud';
 import { Inspector, Toast } from './ui/inspector';
+import { LineageHistogram } from './ui/lineage';
 import './style.css';
 
 type Frame = Extract<FromWorker, { type: 'frame' }>;
@@ -291,6 +292,11 @@ app.ticker.add(() => {
   if (herbOutline.container.visible) herbOutline.apply(agents, f.agentCount, f.stride, HERBIVORE, 'kind', herbMin);
   if (carnOutline.container.visible) carnOutline.apply(agents, f.agentCount, f.stride, CARNIVORE, 'kind', carnMin);
   plants.apply(new Float32Array(f.buffer, agentFloats * 4, f.plantCols * f.plantRows), f.plantCols, f.plantRows);
+  const now = performance.now();
+  if (now - lastLineage > LINEAGE_INTERVAL_MS) {
+    lineage.update(agents, f.agentCount, f.stride);
+    lastLineage = now;
+  }
   hud.setTick(f.tick);
   if (f.inspect) showSelection(f.inspect);
   returnBuffer(f);
@@ -319,6 +325,11 @@ function showSelection(v: number[]): void {
 }
 
 setInterval(() => hud.setFps(app.ticker.FPS), 250);
+
+const lineage = new LineageHistogram(...hud.lineageTargets());
+/** 系統色のヒストグラムを描き直す間隔（ms）。毎フレーム描く必要はない */
+const LINEAGE_INTERVAL_MS = 500;
+let lastLineage = 0;
 
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' && !(e.target instanceof HTMLButtonElement || e.target instanceof HTMLInputElement)) {
