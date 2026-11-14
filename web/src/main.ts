@@ -188,7 +188,9 @@ function showSelection(v: number[]): void {
   }
   const x = v[INSPECT.x];
   const y = v[INSPECT.y];
-  const radius = (v[INSPECT.kind] === CARNIVORE ? BODY_RADIUS.carnivore : BODY_RADIUS.herbivore) * v[INSPECT.size];
+  // いまの大きさ = 大人の大きさ × 成長度
+  const radius =
+    (v[INSPECT.kind] === CARNIVORE ? BODY_RADIUS.carnivore : BODY_RADIUS.herbivore) * v[INSPECT.size] * v[INSPECT.growth];
   if (following) camera.centerOn(x, y);
   marker.update(x, y, radius, v[INSPECT.vision], camera.scale);
 }

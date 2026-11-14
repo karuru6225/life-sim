@@ -101,13 +101,15 @@ export const INSPECT = {
   energyCap: 26,
   /** 1 なら繁殖相手が近くにいる */
   mateNearby: 27,
+  /** 成長度（1 で成熟）。size は大人の大きさで、いまの大きさは size × growth */
+  growth: 28,
 } as const;
 
 export const HERBIVORE = 0;
 export const CARNIVORE = 1;
 
 /** sim/src/world.rs の state と一致させること */
-export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5 } as const;
+export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6 } as const;
 
 /** sim/src/world.rs の death と一致させること */
 export const DEATH = { STARVED: 1, OLD_AGE: 2, EATEN: 3 } as const;

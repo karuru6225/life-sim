@@ -7,15 +7,15 @@
  */
 export const SIM_PARAMS = {
   // 世界（リセット時のみ反映）
-  world_width: 7200,
-  world_height: 4800,
+  world_width: 4800,
+  world_height: 3200,
   plant_cell: 32,
-  herb_initial: 25000,
-  carn_initial: 1500,
+  herb_initial: 11000,
+  carn_initial: 700,
   plant_initial_ratio: 0.5,
 
   // 植物
-  sunlight: 0.08,
+  sunlight: 0.06,
   plant_capacity: 10,
 
   // 共通
@@ -26,6 +26,19 @@ export const SIM_PARAMS = {
   cover_strength: 0.85,
   energy_cap_ratio: 2,
   birth_spread: 6,
+
+  // 成長
+  min_birth_growth: 0.2,
+  juvenile_speed: 0.6,
+
+  // 狩り
+  hunt_success: 0.9,
+  hunt_easy_ratio: 0.7,
+  hunt_impossible_ratio: 1.5,
+  guard_radius: 12,
+  guard_strength: 0.15,
+  attack_cost: 0.3,
+  attack_cooldown: 10,
 
   // 変異
   mutation_rate: 0.02,
@@ -44,6 +57,7 @@ export const SIM_PARAMS = {
   herb_repro_threshold: 10,
   herb_birth_cost: 1,
   herb_max_age: 2400,
+  herb_maturity: 600,
   herb_initial_energy: 5,
 
   // 肉食（形質は初期個体の値。以後は遺伝子として進化する）
@@ -52,12 +66,12 @@ export const SIM_PARAMS = {
   carn_initial_vision: 48,
   carn_mate_range: 20,
   carn_attack_range: 6,
-  prey_size_ratio: 1.3,
   carn_efficiency: 0.5,
   carn_metabolism: 0.011,
   carn_repro_threshold: 16,
   carn_birth_cost: 2,
   carn_max_age: 3600,
+  carn_maturity: 900,
   carn_initial_energy: 8,
 };
 

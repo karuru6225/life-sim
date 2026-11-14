@@ -20,7 +20,7 @@ const fmtInt = new Intl.NumberFormat('ja-JP');
 
 /** 形質の表の行: [ラベル, 値の取り出し方, 小数の桁数] */
 const TRAIT_ROWS: [string, (m: TraitMeans) => number, number][] = [
-  ['大きさ', (m) => m.size, 2],
+  ['大きさ（成体時）', (m) => m.size, 2],
   ['最高速度', (m) => m.speed, 2],
   ['視野', (m) => m.vision, 1],
   ['子への投資', (m) => m.invest, 2],

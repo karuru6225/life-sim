@@ -22,6 +22,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.WANDER]: '獲物が見えない',
     [STATE.CHASE]: '獲物が見えている',
     [STATE.EAT]: '獲物を食べた',
+    [STATE.MISSED]: '襲ったが逃げられた',
   },
 };
 
@@ -57,6 +58,7 @@ export class Inspector {
           <dt>消費</dt><dd data-k="cost">–</dd>
           <dt title="何も食べなかった場合。秒は等倍のとき">餓死まで</dt><dd data-k="starve">–</dd>
           <dt>年齢</dt><dd data-k="age">–</dd>
+          <dt title="成長度が 100% になるまで繁殖できない。小さいうちは遅く、狩られやすい">成長</dt><dd data-k="growth">–</dd>
           <dt>世代</dt><dd data-k="generation">–</dd>
           <dt>子</dt><dd data-k="children">–</dd>
           <dt>速度</dt><dd data-k="speed">–</dd>
@@ -147,7 +149,10 @@ export class Inspector {
     this.el.wantChild.textContent = v[INSPECT.wantChild] > 0 ? 'したい' : 'しない';
     this.el.mate.textContent = v[INSPECT.mateNearby] > 0 ? '近くにいる' : '近くにいない';
 
-    this.el.size.textContent = v[INSPECT.size].toFixed(2);
+    const growth = v[INSPECT.growth];
+    this.el.growth.textContent =
+      growth >= 1 ? '成体' : `幼体 ${Math.round(growth * 100)}%（大きさ ${(v[INSPECT.size] * growth).toFixed(2)}）`;
+    this.el.size.textContent = `${v[INSPECT.size].toFixed(2)}（成体時）`;
     this.el.maxSpeed.textContent = `${v[INSPECT.maxSpeed].toFixed(2)} px/tick`;
     this.el.vision.textContent = `${v[INSPECT.vision].toFixed(1)} px`;
     this.el.invest.textContent = `${Math.round(v[INSPECT.invest] * 100)}%`;
