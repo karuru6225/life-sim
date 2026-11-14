@@ -833,9 +833,11 @@ impl World {
             (p.carn_metabolism, p.carn_max_age, p.carn_birth_cost)
         };
 
-        // 代謝は大きさの 0.75 乗と視野に、移動は大きさと速度の 2 乗に比例する。
+        // 代謝は大きさの 0.75 乗と視野と最高速度に、移動は大きさと速度の 2 乗に比例する。
         // 持っている以上は失えない（エネルギーが負になって帳尻が狂うのを防ぐ）
-        let cost = (metabolism * t.size_pow075 + p.vision_cost * t.vision + p.move_cost * t.size * speed * speed)
+        // 速く走れる体は、走っていなくても維持費がかかる（最高速度 × 大きさの 0.75 乗に比例）
+        let upkeep = p.speed_upkeep * t.max_speed * t.size_pow075;
+        let cost = (metabolism * t.size_pow075 + upkeep + p.vision_cost * t.vision + p.move_cost * t.size * speed * speed)
             .min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
