@@ -84,19 +84,18 @@ impl World {
     fn count_neighbors(&mut self) {
         let r2 = NEIGHBOR_RADIUS * NEIGHBOR_RADIUS;
         let (w, h) = (self.width, self.height);
-        for i in 0..self.count() {
-            let (x, y) = (self.xs[i], self.ys[i]);
-            let mut n: u16 = 0;
-            self.grid.for_each_nearby(x, y, |j| {
-                if j != i {
-                    let dx = torus_delta(self.xs[j] - x, w);
-                    let dy = torus_delta(self.ys[j] - y, h);
-                    if dx * dx + dy * dy < r2 {
-                        n = n.saturating_add(1);
-                    }
-                }
+        // 個体番号順ではなくセル順に回す（理由は Grid::entry のコメント参照）
+        for k in 0..self.count() {
+            let (i, x, y) = self.grid.entry(k);
+            // 自分自身も距離 0 で数えてしまうので、最後に 1 引く。
+            // if で除外するより分岐が減って速い（分岐予測が外れにくい）
+            let mut n: u32 = 0;
+            self.grid.for_each_nearby(x, y, |_, xj, yj| {
+                let dx = torus_delta(xj - x, w);
+                let dy = torus_delta(yj - y, h);
+                n += (dx * dx + dy * dy < r2) as u32;
             });
-            self.neighbors[i] = n;
+            self.neighbors[i] = (n - 1).min(u16::MAX as u32) as u16;
         }
     }
 
