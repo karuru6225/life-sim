@@ -90,7 +90,7 @@ pub extern "C" fn current_tick() -> f64 {
 }
 
 /// 描画用バッファを最新にして、その先頭アドレスを返す。
-/// 中身は [x, y, 種類] × agent_count() の f32 配列。
+/// 中身は [x, y, 種類, 大きさ, 標識色, 向き] × agent_count() の f32 配列。
 /// 次に step() か init() を呼ぶと中身もアドレスも変わりうるので、すぐにコピーすること。
 #[unsafe(no_mangle)]
 pub extern "C" fn render_buffer_ptr() -> *const f32 {

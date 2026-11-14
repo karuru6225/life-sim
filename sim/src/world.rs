@@ -47,8 +47,8 @@ pub mod death {
 /// 近傍探索のグリッドのセルの大きさ。細かいほど、視野の小さい個体が調べる範囲を絞れる
 const GRID_CELL: f32 = 16.0;
 
-/// 描画用バッファの 1 個体あたりの要素数: [x, y, 種類, 大きさ, 標識色]
-pub const RENDER_STRIDE: usize = 5;
+/// 描画用バッファの 1 個体あたりの要素数: [x, y, 種類, 大きさ, 標識色, 向き]
+pub const RENDER_STRIDE: usize = 6;
 
 /// エネルギーの帳簿。f64 で積算して誤差を抑える
 #[derive(Default, Clone, Debug)]
@@ -804,6 +804,8 @@ impl World {
             self.render[o + 2] = self.kind[i] as f32;
             self.render[o + 3] = self.traits[i].size;
             self.render[o + 4] = self.traits[i].hue;
+            // 向き（ラジアン）。描画で回すのは肉食（三角形）だけなので、計算も肉食だけ
+            self.render[o + 5] = if self.kind[i] == CARNIVORE { self.hy[i].atan2(self.hx[i]) } else { 0.0 };
         }
     }
 
