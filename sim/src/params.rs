@@ -33,15 +33,15 @@ macro_rules! params {
 params! {
     // ---- 世界（リセット時のみ反映） ----
     /// 世界の幅
-    world_width = 4800.0,
+    world_width = 7200.0,
     /// 世界の高さ
-    world_height = 3200.0,
+    world_height = 4800.0,
     /// 植物のマス目の一辺
     plant_cell = 32.0,
     /// 初期の草食の数
-    herb_initial = 11000.0,
+    herb_initial = 25000.0,
     /// 初期の肉食の数
-    carn_initial = 700.0,
+    carn_initial = 1600.0,
     /// 初期の植物量（plant_capacity に対する割合）
     plant_initial_ratio = 0.5,
 

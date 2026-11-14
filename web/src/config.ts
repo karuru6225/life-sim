@@ -7,11 +7,11 @@
  */
 export const SIM_PARAMS = {
   // 世界（リセット時のみ反映）
-  world_width: 4800,
-  world_height: 3200,
+  world_width: 7200,
+  world_height: 4800,
   plant_cell: 32,
-  herb_initial: 11000,
-  carn_initial: 700,
+  herb_initial: 25000,
+  carn_initial: 1600,
   plant_initial_ratio: 0.5,
 
   // 地形（リセット時のみ反映）
