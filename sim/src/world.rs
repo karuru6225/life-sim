@@ -509,6 +509,7 @@ impl World {
         let my_hue = self.traits[i].hue;
         let hue_similar = self.params.hue_similar;
         let vision2 = vision * vision;
+        let (my_size, prey_min, prey_max) = (self.traits[i].size, self.traits[i].prey_min, self.traits[i].prey_max);
         // 相手の種類と足元の草はグリッドがセル順に並べた写しから受け取る（離れたメモリを読まずに済む）。
         // 安い判定から順に行い、遠い相手はそこで打ち切る
         self.grid.for_each_within(x, y, vision, |j, xj, yj, kind_j, cover_j| {
@@ -536,7 +537,12 @@ impl World {
                 } else {
                     1
                 };
-                if d2 < best_d2[rel] {
+                // 肉食は、好みの大きさの範囲に入らない獲物は狙わない
+                let wanted = rel != 1 || {
+                    let ratio = self.traits[j].size / my_size;
+                    (prey_min..=prey_max).contains(&ratio)
+                };
+                if wanted && d2 < best_d2[rel] {
                     best_d2[rel] = d2;
                     best[rel] = Some((j, dx, dy, d2));
                 }
@@ -1726,6 +1732,21 @@ mod tests {
         w.live(0, 0.0, false, Mate::Missing);
         w.live(1, 1.0, false, Mate::Missing);
         assert!(w.energy[0] > w.energy[1], "止まっているほうが消費が少ない");
+    }
+
+    #[test]
+    fn 肉食は好みの大きさの獲物だけを狙う() {
+        let mut w = empty_world();
+        w.plants.biomass.fill(0.0);
+        // 大きさの下限は 0.4 なので、肉食を 1.5 にして小さい獲物との比を範囲外（0.27）にする
+        let carn = genome::initial(false, 1.5, 1.0, 40.0, 0.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
+        // 近くに小さすぎる獲物（比 0.27）、少し遠くに好みの大きさの獲物（比 0.53）
+        w.spawn(105.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.4, 1.0, 30.0, 0.0));
+        w.spawn(120.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.8, 1.0, 30.0, 0.0));
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        let prey = w.sense(0).prey.map(|(j, ..)| j);
+        assert_eq!(prey, Some(2), "小さすぎる獲物は無視して、好みの大きさの獲物を狙う");
     }
 
     #[test]

@@ -14,13 +14,18 @@ pub const G_SPEED: usize = 1;
 pub const G_VISION: usize = 2;
 pub const G_INVEST: usize = 3;
 pub const G_HUE: usize = 4;
-pub const N_TRAITS: usize = 5;
+/// 好みの獲物の大きさ（獲物の大きさ ÷ 自分の大きさ）の下限と上限。肉食はこの範囲の獲物だけを狙う（草食は使わない）
+pub const G_PREY_MIN: usize = 5;
+pub const G_PREY_MAX: usize = 6;
+pub const N_TRAITS: usize = 7;
 
 /// 形質が取りうる範囲（変異でこの外に出たら切り詰める）
 pub const SIZE_RANGE: (f32, f32) = (0.4, 3.0);
 pub const SPEED_RANGE: (f32, f32) = (0.2, 4.0);
 pub const VISION_RANGE: (f32, f32) = (5.0, VISION_MAX);
 pub const INVEST_RANGE: (f32, f32) = (0.1, 0.9);
+pub const PREY_MIN_RANGE: (f32, f32) = (0.05, 2.0);
+pub const PREY_MAX_RANGE: (f32, f32) = (0.2, 4.0);
 /// 視野の上限。近傍探索のグリッドのセルはこれ以上の大きさにする
 pub const VISION_MAX: f32 = 64.0;
 
@@ -181,6 +186,9 @@ pub struct Traits {
     pub max_speed: f32,
     pub vision: f32,
     pub invest: f32,
+    /// 好みの獲物の大きさの比の下限と上限（肉食のみ使う）
+    pub prey_min: f32,
+    pub prey_max: f32,
     /// 0〜1（色相）
     pub hue: f32,
 }
@@ -209,6 +217,8 @@ pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
         max_speed: genome[G_SPEED].clamp(SPEED_RANGE.0, SPEED_RANGE.1),
         vision: genome[G_VISION].clamp(VISION_RANGE.0, VISION_RANGE.1),
         invest: genome[G_INVEST].clamp(INVEST_RANGE.0, INVEST_RANGE.1),
+        prey_min: genome[G_PREY_MIN].clamp(PREY_MIN_RANGE.0, PREY_MIN_RANGE.1),
+        prey_max: genome[G_PREY_MAX].clamp(PREY_MAX_RANGE.0, PREY_MAX_RANGE.1),
         hue: genome[G_HUE].rem_euclid(1.0),
     };
     t.grow_to(1.0, max_turn);
@@ -242,6 +252,9 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     g[G_VISION] = vision;
     g[G_INVEST] = 0.5;
     g[G_HUE] = hue;
+    // 自分の 0.4〜1.3 倍の獲物を狙う（小さすぎると割に合わず、大きすぎると狩れないうえ反撃を受ける）
+    g[G_PREY_MIN] = 0.4;
+    g[G_PREY_MAX] = 1.3;
 
     // 自由な移動は、ゆるく前へ
     out_bias(&mut g, OUT_DIR_FWD, 0.3);
