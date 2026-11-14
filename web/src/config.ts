@@ -20,6 +20,16 @@ export const SIM_PARAMS = {
   fertility_scale: 600,
   fertility_min: 0.3,
 
+  // 気候（リセット時のみ反映）
+  temp_mean: 15,
+  temp_latitude: 12,
+  temp_lapse: 15,
+  temp_noise: 3,
+  plant_temp_opt: 18,
+  plant_temp_width: 15,
+  thermo_cost: 0.0004,
+  mutation_temp_sigma: 0.5,
+
   // 植物
   sunlight: 0.08,
   plant_capacity: 10,
@@ -168,6 +178,14 @@ export const COLORS = {
   water: '#163a58',
   landPoor: '#06090b',
   landRich: '#0e140f',
+  /**
+   * 気温の表示（寒い → 中間 → 暑い）。個体の色に対してどれも 5:1 以上。
+   * 寒い陸と水域が同じ青に見えないよう、気温の表示では水域を黒に近い色にし、寒い色は青紫に寄せる
+   */
+  tempCold: '#2c3a7a',
+  tempMild: '#2a3029',
+  tempHot: '#6e2e18',
+  tempWater: '#030405',
 };
 
 /** 強調中の種類を描く、画面上の最小の半径（px）。全体表示まで引いても分布が見えるように */

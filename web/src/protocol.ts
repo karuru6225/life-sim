@@ -25,6 +25,8 @@ export type FromWorker =
       generation: number;
       /** 地形（Float32、cols × rows、行優先）。水は −1、陸は肥沃度 0〜1。世界を作り直すまで変わらない */
       terrain: ArrayBuffer;
+      /** 平均気温（Float32、cols × rows、度） */
+      temperature: ArrayBuffer;
       terrainCols: number;
       terrainRows: number;
     }
@@ -134,6 +136,9 @@ export const INSPECT = {
   natal: 36,
   /** 今いる場所の草の食べやすさ（0〜1、植生の違いによる。肉食は常に 1） */
   habitatFit: 37,
+  /** 今いる場所の平均気温と、好みの気温（度） */
+  temperature: 38,
+  tempPref: 39,
 } as const;
 
 export const HERBIVORE = 0;

@@ -3,6 +3,7 @@
 import { COLORS, HISTORY_LENGTH, SPEEDS, SUNLIGHT_RANGE, TICK_HZ } from '../config';
 import type { FromWorker, TraitMeans } from '../protocol';
 import type { ColorMode } from '../render/agents';
+import type { MapMode } from '../render/terrain';
 
 /** 強調表示する種類（none は強調なし） */
 export type Highlight = 'none' | 'herbivore' | 'carnivore';
@@ -21,6 +22,7 @@ export interface HudHandlers {
   onAutoSunlight(enabled: boolean): void;
   onHighlight(target: Highlight): void;
   onHighlightStyle(style: HighlightStyle): void;
+  onMapMode(mode: MapMode): void;
 }
 
 const fmtInt = new Intl.NumberFormat('ja-JP');
@@ -45,6 +47,7 @@ export class Hud {
   private readonly modeButtons: HTMLButtonElement[] = [];
   private readonly highlightButtons: HTMLButtonElement[] = [];
   private readonly styleButtons: HTMLButtonElement[] = [];
+  private readonly mapButtons: HTMLButtonElement[] = [];
   private readonly traitCells: HTMLElement[][] = [];
   private readonly chart: PopulationChart;
 
@@ -91,6 +94,7 @@ export class Hud {
         <div class="group" data-k="modes"><span class="group-label">色分け</span></div>
         <div class="group" data-k="highlights"><span class="group-label">強調（引いても見えるよう大きめに描く）</span></div>
         <div class="group" data-k="styles"><span class="group-label">強調の方法</span></div>
+        <div class="group" data-k="maps"><span class="group-label">地図</span></div>
       </div>
       <dl class="hud-rows hud-perf">
         <dt>描画</dt><dd><span data-k="fps">–</span> fps</dd>
@@ -104,6 +108,11 @@ export class Hud {
           <span class="group-label">系統色（標識色の遺伝子）</span>
           <div class="plant-bar" style="background:linear-gradient(to right, ${HUE_PALETTE.join(', ')})"></div>
           <p class="legend-note">生存に影響しない遺伝子で、親から子へ少しずつずれながら受け継がれる。近い色ほど近い系統</p>
+        </div>
+        <div data-k="tempLegend" hidden>
+          <span class="group-label">平均気温</span>
+          <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.tempCold}, ${COLORS.tempMild}, ${COLORS.tempHot})"></div>
+          <div class="swatch-scale"><span data-k="tempMin">–</span><span data-k="tempMax">–</span></div>
         </div>
         <span class="group-label">地形</span>
         <div class="terrain-legend">
@@ -167,6 +176,16 @@ export class Hud {
       b.dataset.value = style;
       this.styleButtons.push(b);
       this.el.styles.append(b);
+    }
+
+    for (const [mode, label] of [
+      ['vegetation', '植生'],
+      ['temperature', '気温'],
+    ] as const) {
+      const b = button(label, () => handlers.onMapMode(mode));
+      b.dataset.value = mode;
+      this.mapButtons.push(b);
+      this.el.maps.append(b);
     }
 
     for (const [label] of TRAIT_ROWS) {
@@ -236,6 +255,16 @@ export class Hud {
   setHighlight(target: Highlight, style: HighlightStyle): void {
     for (const b of this.highlightButtons) b.classList.toggle('active', b.dataset.value === target);
     for (const b of this.styleButtons) b.classList.toggle('active', b.dataset.value === style);
+  }
+
+  setMapMode(mode: MapMode): void {
+    for (const b of this.mapButtons) b.classList.toggle('active', b.dataset.value === mode);
+    this.el.tempLegend.hidden = mode !== 'temperature';
+  }
+
+  setTempRange([min, max]: [number, number]): void {
+    this.el.tempMin.textContent = `${min.toFixed(0)}°`;
+    this.el.tempMax.textContent = `${max.toFixed(0)}°`;
   }
 
   setPaused(paused: boolean): void {

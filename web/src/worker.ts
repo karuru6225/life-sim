@@ -21,6 +21,7 @@ interface SimExports {
   plant_cols(): number;
   plant_rows(): number;
   terrain_ptr(): number;
+  temperature_ptr(): number;
   select_at(x: number, y: number, radius: number): number;
   select_near_kind(x: number, y: number, radius: number, kind: number): number;
   deselect(): void;
@@ -128,9 +129,18 @@ function handle(s: SimExports, msg: ToWorker): void {
         const rows = s.plant_rows();
         const terrain = new Float32Array(cols * rows);
         terrain.set(new Float32Array(s.memory.buffer, s.terrain_ptr(), cols * rows));
+        const temperature = new Float32Array(cols * rows);
+        temperature.set(new Float32Array(s.memory.buffer, s.temperature_ptr(), cols * rows));
         post(
-          { type: 'ready', generation, terrain: terrain.buffer, terrainCols: cols, terrainRows: rows },
-          [terrain.buffer],
+          {
+            type: 'ready',
+            generation,
+            terrain: terrain.buffer,
+            temperature: temperature.buffer,
+            terrainCols: cols,
+            terrainRows: rows,
+          },
+          [terrain.buffer, temperature.buffer],
         );
       }
       break;

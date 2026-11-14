@@ -271,6 +271,12 @@ pub extern "C" fn terrain_ptr() -> *const f32 {
     })
 }
 
+/// 平均気温の配列（plant_cols() × plant_rows() の f32、行優先、度）の先頭アドレス。世界を作り直すまで変わらない
+#[unsafe(no_mangle)]
+pub extern "C" fn temperature_ptr() -> *const f32 {
+    with_world(|w| w.terrain.temperature.as_ptr())
+}
+
 /// 植物量の配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス
 #[unsafe(no_mangle)]
 pub extern "C" fn plant_ptr() -> *const f32 {

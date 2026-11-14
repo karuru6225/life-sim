@@ -4,7 +4,7 @@ import { CARNIVORE, HERBIVORE, INSPECT, type FromWorker, type ToWorker } from '.
 import { AgentLayer, type ColorMode } from './render/agents';
 import { Camera } from './render/camera';
 import { PlantLayer } from './render/plants';
-import { TerrainLayer } from './render/terrain';
+import { TerrainLayer, type MapMode } from './render/terrain';
 import { SelectionMarker } from './render/selection';
 import { Hud, type Highlight, type HighlightStyle } from './ui/hud';
 import { Inspector, Toast } from './ui/inspector';
@@ -214,6 +214,10 @@ const hud = new Hud(document.getElementById('hud')!, {
   onAutoSunlight: (enabled) => send({ type: 'setAutoSunlight', enabled }),
   onHighlight: (target) => setHighlight(target, highlightStyle),
   onHighlightStyle: (style) => setHighlight(highlight, style),
+  onMapMode: (mode: MapMode) => {
+    terrain.setMode(mode);
+    hud.setMapMode(mode);
+  },
   onColorMode: (mode) => {
     colorMode = mode;
     hud.setColorMode(mode);
@@ -245,7 +249,8 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
   switch (msg.type) {
     case 'ready':
       generation = msg.generation;
-      terrain.apply(new Float32Array(msg.terrain), msg.terrainCols, msg.terrainRows);
+      terrain.setData(new Float32Array(msg.terrain), new Float32Array(msg.temperature), msg.terrainCols, msg.terrainRows);
+      hud.setTempRange(terrain.tempRange);
       break;
     case 'selected':
       selectedId = msg.id;
@@ -327,4 +332,5 @@ hud.setPaused(paused);
 hud.setSunlight(params.sunlight);
 hud.setColorMode(colorMode);
 setHighlight('none', 'dim');
+hud.setMapMode('vegetation');
 start();
