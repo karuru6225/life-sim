@@ -59,7 +59,11 @@ pub const IN_SIM_RATIO: usize = 19;
 pub const IN_READY: usize = 20;
 /// 繁殖相手（成熟した仲間）が見えていれば 0.5〜1（近いほど大きい）、見えていなければ 0
 pub const IN_MATE_NEAR: usize = 21;
-pub const N_IN: usize = 22;
+/// 前方（WATER_LOOKAHEAD px 先）が水なら 1
+pub const IN_WATER_AHEAD: usize = 22;
+pub const N_IN: usize = 23;
+/// 「前方が水か」を調べる距離（px）
+pub const WATER_LOOKAHEAD: f32 = 12.0;
 
 pub const N_HIDDEN: usize = 8;
 

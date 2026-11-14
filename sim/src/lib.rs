@@ -9,6 +9,7 @@ mod grid;
 pub mod params;
 pub mod plants;
 pub mod rng;
+pub mod terrain;
 pub mod world;
 
 use params::Params;
@@ -29,6 +30,8 @@ thread_local! {
     /// 選択中の個体の情報。id が f32 の精度を超えうるので f64 で持つ
     static INSPECT: RefCell<[f64; INSPECT_LEN]> = const { RefCell::new([0.0; INSPECT_LEN]) };
     static SUMMARY: RefCell<[f64; SUMMARY_LEN]> = const { RefCell::new([0.0; SUMMARY_LEN]) };
+    /// 地形を JS に渡すための作業領域
+    static TERRAIN: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
 }
 
 fn with_world<R>(f: impl FnOnce(&mut World) -> R) -> R {
@@ -246,6 +249,20 @@ pub extern "C" fn summary() -> *const f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn summary_len() -> u32 {
     SUMMARY_LEN as u32
+}
+
+/// 地形の配列（plant_cols() × plant_rows() の f32、行優先）を書き込み、その先頭アドレスを返す。
+/// 水のマスは −1、陸のマスは肥沃度（0〜1）。地形は世界を作り直すまで変わらないので、作ったときに 1 度読めばよい
+#[unsafe(no_mangle)]
+pub extern "C" fn terrain_ptr() -> *const f32 {
+    TERRAIN.with(|buf| {
+        let mut out = buf.borrow_mut();
+        with_world(|w| {
+            out.clear();
+            out.extend(w.terrain.water.iter().zip(&w.terrain.fertility).map(|(&water, &f)| if water { -1.0 } else { f }));
+        });
+        out.as_ptr()
+    })
 }
 
 /// 植物量の配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス

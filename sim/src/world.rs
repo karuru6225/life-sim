@@ -15,6 +15,7 @@ use crate::grid::Grid;
 use crate::params::Params;
 use crate::plants::PlantField;
 use crate::rng::Rng;
+use crate::terrain::{Terrain, TerrainSpec};
 
 pub const HERBIVORE: u8 = 0;
 pub const CARNIVORE: u8 = 1;
@@ -159,6 +160,9 @@ struct Senses {
 struct Birth {
     x: f32,
     y: f32,
+    /// 親の位置（子の位置が水だったときに代わりに使う）
+    parent_x: f32,
+    parent_y: f32,
     kind: u8,
     energy: f32,
     generation: u32,
@@ -202,6 +206,7 @@ pub struct World {
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
     alive: Vec<bool>,
 
+    pub terrain: Terrain,
     pub plants: PlantField,
     pub ledger: Ledger,
     pub watch: Watch,
@@ -223,11 +228,24 @@ impl World {
     pub fn new(seed: u64, params: Params) -> Self {
         let width = params.world_width;
         let height = params.world_height;
+        // 地形は個体とは別の乱数の流れで作る（地形の作り方を変えても、個体の歴史の乱数がずれないように）
+        let terrain = if params.water_fraction <= 0.0 && params.fertility_min >= 1.0 {
+            Terrain::flat(width, height, params.plant_cell)
+        } else {
+            let spec = TerrainSpec {
+                water_fraction: params.water_fraction,
+                elevation_scale: params.elevation_scale,
+                fertility_scale: params.fertility_scale,
+                fertility_min: params.fertility_min,
+            };
+            Terrain::generate(width, height, params.plant_cell, &spec, &mut Rng::new(seed ^ 0x7e44_a1d3))
+        };
         let plants = PlantField::new(
             width,
             height,
             params.plant_cell,
             params.plant_capacity * params.plant_initial_ratio,
+            &terrain.fertility,
         );
         let grid = Grid::new(width, height, GRID_CELL);
         let mut world = World {
@@ -252,6 +270,7 @@ impl World {
             vigilance: Vec::new(),
             cover: Vec::new(),
             alive: Vec::new(),
+            terrain,
             plants,
             ledger: Ledger::default(),
             watch: Watch::default(),
@@ -285,8 +304,14 @@ impl World {
         world
     }
 
+    /// 陸の上のランダムな位置
     fn random_position(&mut self) -> (f32, f32) {
-        (self.rng.range(0.0, self.width), self.rng.range(0.0, self.height))
+        loop {
+            let (x, y) = (self.rng.range(0.0, self.width), self.rng.range(0.0, self.height));
+            if !self.terrain.is_water(x, y) {
+                return (x, y);
+            }
+        }
     }
 
     /// 成長しきった大人として加える
@@ -578,6 +603,9 @@ impl World {
             input[genome::IN_SIM_RIGHT] = r;
         }
 
+        let ahead_x = wrap(x + hx * genome::WATER_LOOKAHEAD, self.width);
+        let ahead_y = wrap(y + hy * genome::WATER_LOOKAHEAD, self.height);
+        input[genome::IN_WATER_AHEAD] = self.terrain.is_water(ahead_x, ahead_y) as u8 as f32;
         let ready = self.growth[i] >= 1.0 && self.energy[i] >= self.repro_threshold(i);
         input[genome::IN_READY] = ready as u8 as f32;
         if let Some((_, _, _, d2)) = senses.mate {
@@ -840,8 +868,24 @@ impl World {
         if speed == 0.0 {
             return;
         }
-        self.xs[i] = wrap(self.xs[i] + self.hx[i] * speed, self.width);
-        self.ys[i] = wrap(self.ys[i] + self.hy[i] * speed, self.height);
+        let (x, y) = (self.xs[i], self.ys[i]);
+        let nx = wrap(x + self.hx[i] * speed, self.width);
+        let ny = wrap(y + self.hy[i] * speed, self.height);
+        // 水には入れない。進む先が水なら、岸に沿って滑る（縦だけ・横だけの移動を試す）。
+        // どちらもだめなら、その場で向きを反対にする
+        let (nx, ny) = if !self.terrain.is_water(nx, ny) {
+            (nx, ny)
+        } else if !self.terrain.is_water(nx, y) {
+            (nx, y)
+        } else if !self.terrain.is_water(x, ny) {
+            (x, ny)
+        } else {
+            self.hx[i] = -self.hx[i];
+            self.hy[i] = -self.hy[i];
+            (x, y)
+        };
+        self.xs[i] = nx;
+        self.ys[i] = ny;
     }
 
     /// 個体 i を死亡扱いにする。エネルギーは呼び出し側で 0 にしておくこと
@@ -965,6 +1009,8 @@ impl World {
         self.births.push(Birth {
             x,
             y,
+            parent_x: self.xs[i],
+            parent_y: self.ys[i],
             kind: self.kind[i],
             energy: child,
             generation: self.generation[i] + 1,
@@ -982,7 +1028,10 @@ impl World {
             // 子への投資が多いほど大きく生まれる
             let adult_need = self.base_repro_threshold(b.kind) * traits.adult_size;
             let growth = (b.energy / adult_need).clamp(self.params.min_birth_growth, 1.0);
-            let (x, y) = (wrap(b.x, self.width), wrap(b.y, self.height));
+            let (mut x, mut y) = (wrap(b.x, self.width), wrap(b.y, self.height));
+            if self.terrain.is_water(x, y) {
+                (x, y) = (b.parent_x, b.parent_y);
+            }
             self.spawn_grown(x, y, b.kind, b.energy, b.generation, g, traits, growth);
         }
         self.births = births;
@@ -1124,7 +1173,8 @@ impl World {
             nn_sum += (best as f64).sqrt();
             nn_n += 1;
         }
-        let density = n_kind as f64 / (w as f64 * h as f64);
+        // 個体は陸にしかいないので、密度は陸の面積で割る
+        let density = n_kind as f64 / self.terrain.land_area() as f64;
         let expected = 0.5 / density.sqrt();
         let ratio = if nn_n > 0 { nn_sum / nn_n as f64 / expected } else { f64::NAN };
         let mean = |s: f64, n: usize| if n > 0 { s / n as f64 } else { f64::NAN };
@@ -1178,6 +1228,9 @@ mod tests {
 
     fn small_params() -> Params {
         let mut p = Params::default();
+        // テストは地形の影響を受けないよう、平らな世界にする（地形自体は terrain のテストで確かめる）
+        p.water_fraction = 0.0;
+        p.fertility_min = 1.0;
         p.world_width = 640.0;
         p.world_height = 480.0;
         p.herb_initial = 600.0;
@@ -1491,6 +1544,30 @@ mod tests {
             }
         }
         assert!(dist(&w) < before, "相手へ近づいていない: {before} → {}", dist(&w));
+    }
+
+    #[test]
+    fn 地形のある世界で個体は水に入らず帳尻も合う() {
+        let mut p = small_params();
+        p.water_fraction = 0.3;
+        p.fertility_min = 0.3;
+        p.elevation_scale = 300.0;
+        let mut w = World::new(4, p);
+        assert!(w.terrain.land_cells < w.terrain.water.len(), "水域がある");
+        for _ in 0..1000 {
+            w.step();
+            for i in 0..w.count() {
+                assert!(!w.terrain.is_water(w.xs[i], w.ys[i]), "個体 {i} が水の上にいる");
+            }
+        }
+        let rel = (w.ledger.expected_total() - w.total_energy()).abs() / w.ledger.expected_total();
+        assert!(rel < 1e-4, "帳尻の相対誤差 {rel}");
+        // 水のマスに植物は育たない
+        for (k, &water) in w.terrain.water.iter().enumerate() {
+            if water {
+                assert_eq!(w.plants.biomass[k], 0.0);
+            }
+        }
     }
 
     #[test]

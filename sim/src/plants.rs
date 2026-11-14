@@ -3,6 +3,7 @@
 //! 毎 tick、各マスは日射を受けて植物量が増える。ただし満杯（capacity）に近いほど
 //! 受け取れる量が減る（葉が重なって光を使い切れない、のような飽和）。
 //! 受け取った分が生態系へのエネルギー流入になる。
+//! マスごとの肥沃度（地形が決める）が、溜まる上限と育つ速さの両方に掛かる。水のマス（肥沃度 0）では育たない。
 
 pub struct PlantField {
     pub cols: usize,
@@ -10,20 +11,29 @@ pub struct PlantField {
     pub cell_size: f32,
     /// マスごとの植物量。i = row * cols + col
     pub biomass: Vec<f32>,
+    /// マスごとの肥沃度（0〜1）。地形の fertility と同じ並び
+    pub fertility: Vec<f32>,
 }
 
 impl PlantField {
-    pub fn new(width: f32, height: f32, cell_size: f32, initial: f32) -> Self {
+    /// fertility は地形のマスごとの肥沃度（cols × rows）。初期の植物量は initial × 肥沃度
+    pub fn new(width: f32, height: f32, cell_size: f32, initial: f32, fertility: &[f32]) -> Self {
         let cols = ((width / cell_size).ceil() as usize).max(1);
         let rows = ((height / cell_size).ceil() as usize).max(1);
-        PlantField { cols, rows, cell_size, biomass: vec![initial; cols * rows] }
+        assert_eq!(fertility.len(), cols * rows, "地形と植物のマス目がずれている");
+        let biomass = fertility.iter().map(|&f| initial * f).collect();
+        PlantField { cols, rows, cell_size, biomass, fertility: fertility.to_vec() }
     }
 
-    /// 日射を受けて成長する。受け取ったエネルギーの合計を返す
+    /// 日射を受けて成長する。受け取ったエネルギーの合計を返す。
+    /// 肥沃度 f のマスは、上限が capacity × f、受け取る日射も sunlight × f になる
     pub fn grow(&mut self, sunlight: f32, capacity: f32) -> f64 {
         let mut total = 0.0f64;
-        for b in &mut self.biomass {
-            let g = sunlight * (1.0 - *b / capacity).max(0.0);
+        for (b, &f) in self.biomass.iter_mut().zip(&self.fertility) {
+            if f <= 0.0 {
+                continue; // 水
+            }
+            let g = sunlight * f * (1.0 - *b / (capacity * f)).max(0.0);
             *b += g;
             total += g as f64;
         }
