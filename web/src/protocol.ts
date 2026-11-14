@@ -115,11 +115,14 @@ export const INSPECT = {
   growth: 28,
   /** 繁殖相手との相性（繁殖が成功する確率）。相手がいなければ負 */
   mateCompat: 29,
-  /** 欲求ごとの優先度（0〜1）。食べる・繁殖・逃げる・自由 */
+  /** 欲求ごとの優先度（0〜1）。食べる・繁殖・逃げる・仲間・自由 */
   priFood: 30,
   priMate: 31,
   priFlee: 32,
-  priFree: 33,
+  priKin: 33,
+  priFree: 34,
+  /** 警戒の度合い（0〜1、草食のみ） */
+  vigilance: 35,
 } as const;
 
 export const HERBIVORE = 0;

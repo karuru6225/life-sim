@@ -69,7 +69,7 @@ export class Inspector {
           <dt title="足元の草で、相手から見つかる距離が何割縮むか">隠れ</dt><dd data-k="hidden">–</dd>
         </dl>
         <div class="insp-section">脳の判断（直前の tick）</div>
-        <div class="priorities" data-k="priorities" title="どの欲求をどれだけ優先しているか。進む向きは、欲求ごとの方向をこの割合で混ぜて決まる"></div>
+        <div class="priorities" data-k="priorities" title="どの欲求をどれだけ優先しているか。進む向きは、欲求ごとの方向をこの割合で混ぜて決まる。警戒（草食のみ）は高いほど天敵に遠くから気づけるが、一口が小さくなる"></div>
         <dl class="hud-rows">
           <dt>向き</dt><dd data-k="turn">–</dd>
           <dt>速さ</dt><dd data-k="throttle">–</dd>
@@ -155,8 +155,10 @@ export class Inspector {
       ['食べる', v[INSPECT.priFood]],
       ['繁殖', v[INSPECT.priMate]],
       ['逃げる', v[INSPECT.priFlee]],
+      ['仲間', v[INSPECT.priKin]],
       ['自由', v[INSPECT.priFree]],
     ];
+    if (herb) pri.push(['警戒', v[INSPECT.vigilance]]);
     this.el.priorities.innerHTML = pri
       .map(
         ([label, p]) =>

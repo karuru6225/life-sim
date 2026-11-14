@@ -40,6 +40,14 @@ export const SIM_PARAMS = {
   attack_cost: 0.3,
   attack_cooldown: 10,
 
+  // 警戒（草食）
+  vigilance_min_range: 0.5,
+  vigilance_bite_cost: 0.5,
+
+  // 肉食どうしの干渉
+  carn_interference: 0.3,
+  carn_interference_radius: 24,
+
   // 系統
   compat_full_distance: 1.2,
   compat_zero_distance: 2.5,
