@@ -1,21 +1,65 @@
 //! 世界と個体データ。
 //!
 //! 個体は「1 個体 = 1 構造体」ではなく、属性ごとの配列（SoA）で持つ。
-//! i 番目の個体の位置は (xs[i], ys[i])。
+//! i 番目の個体の位置は (xs[i], ys[i])、種類は kind[i]。
 //! 同じ属性がメモリ上に連続して並ぶのでループが速く、JS からも配列としてそのまま読める。
+//!
+//! エネルギーは「日射 → 植物 → 草食 → 肉食」と一方通行で流れ、どこからも湧かない。
+//! 出入りはすべて Ledger（帳簿）に記録し、テストで帳尻が合うことを確かめる。
 
 use crate::grid::Grid;
+use crate::params::Params;
+use crate::plants::PlantField;
 use crate::rng::Rng;
 
-/// 近傍とみなす距離
-pub const NEIGHBOR_RADIUS: f32 = 16.0;
-/// 描画用バッファの 1 個体あたりの要素数: [x, y, 近傍数]
+pub const HERBIVORE: u8 = 0;
+pub const CARNIVORE: u8 = 1;
+
+/// 描画用バッファの 1 個体あたりの要素数: [x, y, 種類]
 pub const RENDER_STRIDE: usize = 3;
 
-const SPEED: f32 = 1.2;
-const TURN_JITTER: f32 = 0.35;
+/// 目的なく歩き回るときの向きの揺れ
+const WANDER_JITTER: f32 = 0.3;
+/// 目標に向かうときの向きの揺れ
+const STEER_JITTER: f32 = 0.15;
+
+/// エネルギーの帳簿。f64 で積算して誤差を抑える
+#[derive(Default, Clone, Debug)]
+pub struct Ledger {
+    /// 開始時に世界にあった量（植物 + 個体）
+    pub initial: f64,
+    /// 日射から植物に入った量
+    pub sunlight_in: f64,
+    /// 代謝と移動で失われた量
+    pub lost_metabolism: f64,
+    /// 食べたもののうち吸収できずに失われた量
+    pub lost_digestion: f64,
+    /// 繁殖で失われた量
+    pub lost_birth: f64,
+    /// 寿命で死んだ個体が持っていた量（死体は今のところそのまま消える）
+    pub lost_death: f64,
+}
+
+impl Ledger {
+    /// 帳簿の上で、いま世界にあるはずの量
+    pub fn expected_total(&self) -> f64 {
+        self.initial + self.sunlight_in
+            - self.lost_metabolism
+            - self.lost_digestion
+            - self.lost_birth
+            - self.lost_death
+    }
+}
+
+struct Birth {
+    x: f32,
+    y: f32,
+    kind: u8,
+    energy: f32,
+}
 
 pub struct World {
+    pub params: Params,
     pub width: f32,
     pub height: f32,
     pub tick: u64,
@@ -24,89 +68,278 @@ pub struct World {
     pub ys: Vec<f32>,
     /// 進行方向（ラジアン）
     pub headings: Vec<f32>,
-    /// 半径 NEIGHBOR_RADIUS 内にいる他個体の数
-    pub neighbors: Vec<u16>,
+    pub energy: Vec<f32>,
+    pub age: Vec<u32>,
+    pub kind: Vec<u8>,
+    /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
+    alive: Vec<bool>,
+
+    pub plants: PlantField,
+    pub ledger: Ledger,
 
     /// JS に渡す描画用データ。fill_render() で更新する
     pub render: Vec<f32>,
 
     grid: Grid,
     rng: Rng,
+    births: Vec<Birth>,
 }
 
 impl World {
-    pub fn new(seed: u64, count: usize, width: f32, height: f32) -> Self {
-        let mut rng = Rng::new(seed);
-        let mut xs = Vec::with_capacity(count);
-        let mut ys = Vec::with_capacity(count);
-        let mut headings = Vec::with_capacity(count);
-        for _ in 0..count {
-            xs.push(rng.range(0.0, width));
-            ys.push(rng.range(0.0, height));
-            headings.push(rng.range(0.0, std::f32::consts::TAU));
-        }
-        World {
+    pub fn new(seed: u64, params: Params) -> Self {
+        let width = params.world_width;
+        let height = params.world_height;
+        let plants = PlantField::new(
+            width,
+            height,
+            params.plant_cell,
+            params.plant_capacity * params.plant_initial_ratio,
+        );
+        // 近傍探索は周囲 1 セルまでしか見ないので、セルは最大の視野以上にする
+        let grid = Grid::new(width, height, params.herb_vision.max(params.carn_vision));
+        let mut world = World {
             width,
             height,
             tick: 0,
-            xs,
-            ys,
-            headings,
-            neighbors: vec![0; count],
-            render: vec![0.0; count * RENDER_STRIDE],
-            grid: Grid::new(width, height, NEIGHBOR_RADIUS),
-            rng,
+            xs: Vec::new(),
+            ys: Vec::new(),
+            headings: Vec::new(),
+            energy: Vec::new(),
+            age: Vec::new(),
+            kind: Vec::new(),
+            alive: Vec::new(),
+            plants,
+            ledger: Ledger::default(),
+            render: Vec::new(),
+            grid,
+            rng: Rng::new(seed),
+            births: Vec::new(),
+            params,
+        };
+        for _ in 0..world.params.herb_initial as usize {
+            let (x, y) = world.random_position();
+            world.spawn(x, y, HERBIVORE, world.params.herb_initial_energy);
         }
+        for _ in 0..world.params.carn_initial as usize {
+            let (x, y) = world.random_position();
+            world.spawn(x, y, CARNIVORE, world.params.carn_initial_energy);
+        }
+        world.ledger.initial = world.total_energy();
+        world
+    }
+
+    fn random_position(&mut self) -> (f32, f32) {
+        (self.rng.range(0.0, self.width), self.rng.range(0.0, self.height))
+    }
+
+    fn spawn(&mut self, x: f32, y: f32, kind: u8, energy: f32) {
+        self.xs.push(x);
+        self.ys.push(y);
+        self.headings.push(self.rng.range(0.0, std::f32::consts::TAU));
+        self.energy.push(energy);
+        self.age.push(0);
+        self.kind.push(kind);
+        self.alive.push(true);
     }
 
     pub fn count(&self) -> usize {
         self.xs.len()
     }
 
+    pub fn count_kind(&self, kind: u8) -> usize {
+        self.kind.iter().filter(|&&k| k == kind).count()
+    }
+
+    /// 世界にあるエネルギーの実際の合計（植物 + 個体）
+    pub fn total_energy(&self) -> f64 {
+        self.plants.total() + self.energy.iter().map(|&e| e as f64).sum::<f64>()
+    }
+
     /// 1 tick 進める
     pub fn step(&mut self) {
-        self.move_agents();
+        self.ledger.sunlight_in += self
+            .plants
+            .grow(self.params.sunlight, self.params.plant_capacity);
+
         self.grid.build(&self.xs, &self.ys);
-        self.count_neighbors();
+        // セル順に回す（近くの個体を続けて処理するとキャッシュに乗って速い）
+        for k in 0..self.count() {
+            let i = self.grid.entry(k).0;
+            if !self.alive[i] {
+                continue; // この tick ですでに食べられた
+            }
+            let speed = match self.kind[i] {
+                HERBIVORE => self.act_herbivore(i),
+                _ => self.act_carnivore(i),
+            };
+            self.move_agent(i, speed);
+            self.live(i, speed);
+        }
+
+        self.apply_births();
+        self.remove_dead();
         self.tick += 1;
     }
 
-    /// ランダムウォーク。向きを少しずつ揺らしながら前に進む
-    fn move_agents(&mut self) {
-        for i in 0..self.count() {
-            let h = self.headings[i] + self.rng.range(-TURN_JITTER, TURN_JITTER);
-            self.headings[i] = h;
-            self.xs[i] = wrap(self.xs[i] + h.cos() * SPEED, self.width);
-            self.ys[i] = wrap(self.ys[i] + h.sin() * SPEED, self.height);
+    /// 草食の行動。天敵がいれば逃げ、いなければ草の多い方へ向かう。いまいるマスの草を食べる。
+    /// 戻り値はこの tick の移動速度
+    fn act_herbivore(&mut self, i: usize) -> f32 {
+        let (x, y) = (self.xs[i], self.ys[i]);
+        let threat = self.nearest(x, y, CARNIVORE, self.params.herb_vision);
+
+        let speed = if let Some((_, dx, dy, _)) = threat {
+            self.headings[i] = (-dy).atan2(-dx) + self.rng.range(-STEER_JITTER, STEER_JITTER);
+            self.params.herb_flee_speed
+        } else if let Some((dx, dy)) = self.plants.richer_direction(x, y) {
+            self.headings[i] = dy.atan2(dx) + self.rng.range(-STEER_JITTER, STEER_JITTER);
+            self.params.herb_speed
+        } else {
+            self.headings[i] += self.rng.range(-WANDER_JITTER, WANDER_JITTER);
+            self.params.herb_graze_speed
+        };
+
+        let c = self.plants.cell_index(x, y);
+        let take = self.params.herb_bite.min(self.plants.biomass[c]);
+        self.plants.biomass[c] -= take;
+        let gain = take * self.params.herb_efficiency;
+        self.energy[i] += gain;
+        self.ledger.lost_digestion += (take - gain) as f64;
+        speed
+    }
+
+    /// 肉食の行動。見える範囲の草食を追い、届けば食べる。
+    /// 戻り値はこの tick の移動速度
+    fn act_carnivore(&mut self, i: usize) -> f32 {
+        let (x, y) = (self.xs[i], self.ys[i]);
+        let Some((j, dx, dy, d2)) = self.nearest(x, y, HERBIVORE, self.params.carn_vision) else {
+            self.headings[i] += self.rng.range(-WANDER_JITTER, WANDER_JITTER);
+            return self.params.carn_wander_speed;
+        };
+
+        let range = self.params.carn_attack_range;
+        if d2 < range * range {
+            let prey = self.energy[j];
+            let gain = prey * self.params.carn_efficiency;
+            self.energy[i] += gain;
+            self.ledger.lost_digestion += (prey - gain) as f64;
+            self.energy[j] = 0.0;
+            self.alive[j] = false;
+            return 0.0; // 食べた tick は動かない
+        }
+        self.headings[i] = dy.atan2(dx) + self.rng.range(-STEER_JITTER, STEER_JITTER);
+        self.params.carn_chase_speed
+    }
+
+    /// 半径 radius 内で最も近い、生きている kind の個体。(番号, dx, dy, 距離の 2 乗)
+    fn nearest(&self, x: f32, y: f32, kind: u8, radius: f32) -> Option<(usize, f32, f32, f32)> {
+        let (w, h) = (self.width, self.height);
+        let mut best_d2 = radius * radius;
+        let mut found = None;
+        self.grid.for_each_nearby(x, y, |j, xj, yj| {
+            if self.kind[j] == kind && self.alive[j] {
+                let dx = torus_delta(xj - x, w);
+                let dy = torus_delta(yj - y, h);
+                let d2 = dx * dx + dy * dy;
+                if d2 < best_d2 {
+                    best_d2 = d2;
+                    found = Some((j, dx, dy, d2));
+                }
+            }
+        });
+        found
+    }
+
+    fn move_agent(&mut self, i: usize, speed: f32) {
+        if speed == 0.0 {
+            return;
+        }
+        let h = self.headings[i];
+        self.xs[i] = wrap(self.xs[i] + h.cos() * speed, self.width);
+        self.ys[i] = wrap(self.ys[i] + h.sin() * speed, self.height);
+    }
+
+    /// エネルギー消費・加齢・死亡・繁殖
+    fn live(&mut self, i: usize, speed: f32) {
+        let p = &self.params;
+        let (metabolism, max_age, threshold, birth_cost) = match self.kind[i] {
+            HERBIVORE => (p.herb_metabolism, p.herb_max_age, p.herb_repro_threshold, p.herb_birth_cost),
+            _ => (p.carn_metabolism, p.carn_max_age, p.carn_repro_threshold, p.carn_birth_cost),
+        };
+
+        // 持っている以上は失えない（エネルギーが負になって帳尻が狂うのを防ぐ）
+        let cost = (metabolism + p.move_cost * speed * speed).min(self.energy[i]);
+        self.energy[i] -= cost;
+        self.ledger.lost_metabolism += cost as f64;
+        self.age[i] += 1;
+
+        if self.energy[i] <= 0.0 {
+            self.energy[i] = 0.0;
+            self.alive[i] = false; // 餓死
+            return;
+        }
+        if self.age[i] as f32 > max_age {
+            self.ledger.lost_death += self.energy[i] as f64;
+            self.energy[i] = 0.0;
+            self.alive[i] = false; // 寿命
+            return;
+        }
+        if self.energy[i] >= threshold {
+            // 繁殖コストを引いた残りを親子で半分ずつ分ける
+            let before = self.energy[i];
+            let child = (before - birth_cost) / 2.0;
+            self.energy[i] = child;
+            self.ledger.lost_birth += (before - 2.0 * child) as f64;
+            let spread = self.params.birth_spread;
+            let x = self.xs[i] + self.rng.range(-spread, spread);
+            let y = self.ys[i] + self.rng.range(-spread, spread);
+            self.births.push(Birth { x, y, kind: self.kind[i], energy: child });
         }
     }
 
-    fn count_neighbors(&mut self) {
-        let r2 = NEIGHBOR_RADIUS * NEIGHBOR_RADIUS;
-        let (w, h) = (self.width, self.height);
-        // 個体番号順ではなくセル順に回す（理由は Grid::entry のコメント参照）
-        for k in 0..self.count() {
-            let (i, x, y) = self.grid.entry(k);
-            // 自分自身も距離 0 で数えてしまうので、最後に 1 引く。
-            // if で除外するより分岐が減って速い（分岐予測が外れにくい）
-            let mut n: u32 = 0;
-            self.grid.for_each_nearby(x, y, |_, xj, yj| {
-                let dx = torus_delta(xj - x, w);
-                let dy = torus_delta(yj - y, h);
-                n += (dx * dx + dy * dy < r2) as u32;
-            });
-            self.neighbors[i] = (n - 1).min(u16::MAX as u32) as u16;
+    fn apply_births(&mut self) {
+        let births = std::mem::take(&mut self.births);
+        for b in &births {
+            self.spawn(wrap(b.x, self.width), wrap(b.y, self.height), b.kind, b.energy);
         }
+        self.births = births;
+        self.births.clear();
+    }
+
+    /// 死んだ個体を取り除く。順番は保つ（決定論のため）
+    fn remove_dead(&mut self) {
+        let alive = &self.alive;
+        compact(&mut self.xs, alive);
+        compact(&mut self.ys, alive);
+        compact(&mut self.headings, alive);
+        compact(&mut self.energy, alive);
+        compact(&mut self.age, alive);
+        compact(&mut self.kind, alive);
+        let n = self.xs.len();
+        self.alive.clear();
+        self.alive.resize(n, true);
     }
 
     pub fn fill_render(&mut self) {
+        self.render.resize(self.count() * RENDER_STRIDE, 0.0);
         for i in 0..self.count() {
             let o = i * RENDER_STRIDE;
             self.render[o] = self.xs[i];
             self.render[o + 1] = self.ys[i];
-            self.render[o + 2] = self.neighbors[i] as f32;
+            self.render[o + 2] = self.kind[i] as f32;
         }
     }
+}
+
+/// alive[i] が true の要素だけを、順番を保って前に詰める
+fn compact<T: Copy>(v: &mut Vec<T>, alive: &[bool]) {
+    let mut w = 0;
+    for r in 0..v.len() {
+        if alive[r] {
+            v[w] = v[r];
+            w += 1;
+        }
+    }
+    v.truncate(w);
 }
 
 /// 座標を [0, size) に折り返す（トーラス世界）
@@ -121,7 +354,7 @@ fn wrap(v: f32, size: f32) -> f32 {
 }
 
 /// トーラス上での最短の差分
-fn torus_delta(d: f32, size: f32) -> f32 {
+pub fn torus_delta(d: f32, size: f32) -> f32 {
     if d > size * 0.5 {
         d - size
     } else if d < -size * 0.5 {
@@ -135,48 +368,74 @@ fn torus_delta(d: f32, size: f32) -> f32 {
 mod tests {
     use super::*;
 
+    fn small_params() -> Params {
+        let mut p = Params::default();
+        p.world_width = 640.0;
+        p.world_height = 480.0;
+        p.herb_initial = 600.0;
+        p.carn_initial = 40.0;
+        p
+    }
+
     #[test]
     fn 同じシードなら同じ歴史になる() {
-        let mut a = World::new(7, 500, 400.0, 300.0);
-        let mut b = World::new(7, 500, 400.0, 300.0);
-        for _ in 0..50 {
+        let mut a = World::new(7, small_params());
+        let mut b = World::new(7, small_params());
+        for _ in 0..300 {
             a.step();
             b.step();
         }
         assert_eq!(a.xs, b.xs);
-        assert_eq!(a.ys, b.ys);
+        assert_eq!(a.energy, b.energy);
+        assert_eq!(a.kind, b.kind);
     }
 
     #[test]
-    fn 近傍数が総当たりと一致する() {
-        let mut w = World::new(3, 2000, 320.0, 240.0);
-        for _ in 0..10 {
+    fn エネルギーの帳尻が合う() {
+        let mut w = World::new(3, small_params());
+        for _ in 0..2000 {
             w.step();
         }
-        let r2 = NEIGHBOR_RADIUS * NEIGHBOR_RADIUS;
-        for i in 0..w.count() {
-            let mut expected = 0;
-            for j in 0..w.count() {
-                if i == j {
-                    continue;
-                }
-                let dx = torus_delta(w.xs[j] - w.xs[i], w.width);
-                let dy = torus_delta(w.ys[j] - w.ys[i], w.height);
-                if dx * dx + dy * dy < r2 {
-                    expected += 1;
-                }
-            }
-            assert_eq!(w.neighbors[i], expected, "個体 {i}");
-        }
+        let expected = w.ledger.expected_total();
+        let actual = w.total_energy();
+        let rel = (expected - actual).abs() / expected.abs().max(1.0);
+        assert!(
+            rel < 1e-4,
+            "帳簿上 {expected:.3} / 実際 {actual:.3}（相対誤差 {rel:e}）\n{:?}",
+            w.ledger
+        );
     }
 
     #[test]
     fn 座標は世界の中に収まる() {
-        let mut w = World::new(9, 1000, 200.0, 100.0);
-        for _ in 0..200 {
+        let mut w = World::new(9, small_params());
+        for _ in 0..500 {
             w.step();
         }
-        assert!(w.xs.iter().all(|&x| (0.0..200.0).contains(&x)));
-        assert!(w.ys.iter().all(|&y| (0.0..100.0).contains(&y)));
+        assert!(w.xs.iter().all(|&x| (0.0..640.0).contains(&x)));
+        assert!(w.ys.iter().all(|&y| (0.0..480.0).contains(&y)));
+    }
+
+    #[test]
+    fn 日射がなければ植物は増えない() {
+        let mut p = small_params();
+        p.sunlight = 0.0;
+        p.herb_initial = 0.0;
+        p.carn_initial = 0.0;
+        let mut w = World::new(1, p);
+        let before = w.plants.total();
+        for _ in 0..100 {
+            w.step();
+        }
+        assert_eq!(w.plants.total(), before);
+    }
+
+    #[test]
+    fn 死んだ個体のエネルギーは残らない() {
+        let mut w = World::new(5, small_params());
+        for _ in 0..500 {
+            w.step();
+            assert!(w.energy.iter().all(|&e| e > 0.0));
+        }
     }
 }

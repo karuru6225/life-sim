@@ -117,3 +117,31 @@ impl Grid {
         (self.items[k] as usize, self.sorted_x[k], self.sorted_y[k])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rng::Rng;
+    use crate::world::torus_delta;
+
+    #[test]
+    fn 半径内の個体を総当たりと同じだけ見つける() {
+        let (w, h, r) = (320.0, 240.0, 16.0);
+        let mut rng = Rng::new(3);
+        let xs: Vec<f32> = (0..2000).map(|_| rng.range(0.0, w)).collect();
+        let ys: Vec<f32> = (0..2000).map(|_| rng.range(0.0, h)).collect();
+        let mut grid = Grid::new(w, h, r);
+        grid.build(&xs, &ys);
+        for i in 0..xs.len() {
+            let within = |xj: f32, yj: f32| {
+                let dx = torus_delta(xj - xs[i], w);
+                let dy = torus_delta(yj - ys[i], h);
+                dx * dx + dy * dy < r * r
+            };
+            let mut found = 0;
+            grid.for_each_nearby(xs[i], ys[i], |_, xj, yj| found += within(xj, yj) as u32);
+            let expected = (0..xs.len()).filter(|&j| within(xs[j], ys[j])).count() as u32;
+            assert_eq!(found, expected, "個体 {i}");
+        }
+    }
+}
