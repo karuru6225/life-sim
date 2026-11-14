@@ -33,6 +33,8 @@ pub mod state {
     pub const CHASE: u8 = 4;
     /// 獲物を食べた
     pub const EAT: u8 = 5;
+    /// 獲物を襲ったが逃げられた
+    pub const MISSED: u8 = 6;
 }
 
 /// 死因（観察用）
@@ -97,6 +99,14 @@ pub struct Watch {
     pub death: Option<(u8, u64)>,
 }
 
+/// 狩りの結果
+enum Hunt {
+    Caught,
+    Failed,
+    /// 届かない、または襲える状態でない
+    NoAttempt,
+}
+
 /// 繁殖相手の見つかり具合
 #[derive(Clone, Copy)]
 enum Mate {
@@ -155,8 +165,12 @@ pub struct World {
     pub children: Vec<u32>,
     /// 遺伝子。1 個体 GENOME_LEN 個ずつ詰めてある
     pub genomes: Vec<f32>,
-    /// 遺伝子から読み出した体の形質（生まれたときに 1 度だけ計算する）
+    /// 遺伝子から読み出した体の形質。いまの大きさに関わる値は、成長に合わせて計算し直す
     pub traits: Vec<Traits>,
+    /// 成長度（生まれたとき 0.2〜1、成熟すると 1）。1 になるまで繁殖できない
+    pub growth: Vec<f32>,
+    /// 次に襲えるようになるまでの残り tick 数（肉食のみ使う）
+    pub cooldown: Vec<u16>,
     /// tick の始めに求めた、足元の草の量（上限に対する割合）。隠れの判定に使う
     pub cover: Vec<f32>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
@@ -204,6 +218,8 @@ impl World {
             children: Vec::new(),
             genomes: Vec::new(),
             traits: Vec::new(),
+            growth: Vec::new(),
+            cooldown: Vec::new(),
             cover: Vec::new(),
             alive: Vec::new(),
             plants,
@@ -239,7 +255,26 @@ impl World {
         (self.rng.range(0.0, self.width), self.rng.range(0.0, self.height))
     }
 
+    /// 成長しきった大人として加える
     fn spawn(&mut self, x: f32, y: f32, kind: u8, energy: f32, generation: u32, genome: &[f32]) {
+        let traits = genome::traits(genome, self.params.max_turn);
+        self.spawn_grown(x, y, kind, energy, generation, genome, traits, 1.0);
+    }
+
+    /// 成長度 growth の個体として加える。traits は genome から読み出したもの
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_grown(
+        &mut self,
+        x: f32,
+        y: f32,
+        kind: u8,
+        energy: f32,
+        generation: u32,
+        genome: &[f32],
+        mut traits: Traits,
+        growth: f32,
+    ) {
+        traits.grow_to(growth, self.params.max_turn);
         self.id.push(self.next_id);
         self.next_id += 1;
         self.xs.push(x);
@@ -254,7 +289,9 @@ impl World {
         self.generation.push(generation);
         self.children.push(0);
         self.genomes.extend_from_slice(genome);
-        self.traits.push(genome::traits(genome, self.params.max_turn));
+        self.traits.push(traits);
+        self.growth.push(growth);
+        self.cooldown.push(0);
         self.cover.push(0.0);
         self.alive.push(true);
     }
@@ -307,13 +344,18 @@ impl World {
 
     // ---- 種類ごとに値が変わるパラメータ（大きさによる補正込み） ----
 
-    pub fn repro_threshold(&self, i: usize) -> f32 {
-        let base = if self.kind[i] == HERBIVORE { self.params.herb_repro_threshold } else { self.params.carn_repro_threshold };
-        base * self.traits[i].size
+    fn base_repro_threshold(&self, kind: u8) -> f32 {
+        if kind == HERBIVORE { self.params.herb_repro_threshold } else { self.params.carn_repro_threshold }
     }
 
+    /// 繁殖に必要なエネルギー（大人の大きさに比例）
+    pub fn repro_threshold(&self, i: usize) -> f32 {
+        self.base_repro_threshold(self.kind[i]) * self.traits[i].adult_size
+    }
+
+    /// 蓄えられるエネルギーの上限（いまの大きさに比例。幼体は小さい）
     pub fn energy_cap(&self, i: usize) -> f32 {
-        self.repro_threshold(i) * self.params.energy_cap_ratio
+        self.base_repro_threshold(self.kind[i]) * self.traits[i].size * self.params.energy_cap_ratio
     }
 
     /// 1 tick 進める
@@ -452,7 +494,9 @@ impl World {
         self.hx[i] = nx / len;
         self.hy[i] = ny / len;
         let throttle = 0.5 + 0.5 * softsign(out[genome::OUT_THROTTLE]);
-        let speed = t.max_speed * throttle;
+        // 幼体は遅い
+        let jv = self.params.juvenile_speed;
+        let speed = t.max_speed * throttle * (jv + (1.0 - jv) * self.growth[i]);
         if is_watched {
             self.watch.turn = lr.atan2(lf);
             self.watch.throttle = throttle;
@@ -476,9 +520,16 @@ impl World {
             (speed, wants_child, mate)
         } else {
             if wants_eat && let Some((j, _, _, d2)) = senses.prey {
-                if self.try_hunt(i, j, d2) {
-                    self.state[i] = state::EAT;
-                    return (0.0, wants_child, mate); // 食べた tick は動かない
+                match self.try_hunt(i, j, d2) {
+                    Hunt::Caught => {
+                        self.state[i] = state::EAT;
+                        return (0.0, wants_child, mate); // 食べた tick は動かない
+                    }
+                    Hunt::Failed => {
+                        self.state[i] = state::MISSED;
+                        return (speed, wants_child, mate);
+                    }
+                    Hunt::NoAttempt => {}
                 }
             }
             self.state[i] = if senses.prey.is_some() { state::CHASE } else { state::WANDER };
@@ -521,11 +572,18 @@ impl World {
     }
 
     /// 獲物 j を襲う。届く距離にいて、大きすぎなければ食べる。食べたら true
-    fn try_hunt(&mut self, i: usize, j: usize, d2: f32) -> bool {
-        let size = self.traits[i].size;
-        let range = self.params.carn_attack_range * size;
-        if d2 >= range * range || self.traits[j].size > size * self.params.prey_size_ratio {
-            return false;
+    fn try_hunt(&mut self, i: usize, j: usize, d2: f32) -> Hunt {
+        let range = self.params.carn_attack_range * self.traits[i].size;
+        if d2 >= range * range || self.cooldown[i] > 0 {
+            return Hunt::NoAttempt;
+        }
+        // 襲いかかる。成功・失敗にかかわらずエネルギーを使い、しばらく次を襲えない
+        let cost = self.params.attack_cost.min(self.energy[i]);
+        self.energy[i] -= cost;
+        self.ledger.lost_metabolism += cost as f64;
+        self.cooldown[i] = self.params.attack_cooldown as u16;
+        if self.rng.f32() >= self.hunt_chance(i, j) {
+            return Hunt::Failed; // 逃げられた
         }
         let prey = self.energy[j];
         let room = (self.energy_cap(i) - self.energy[i]).max(0.0);
@@ -535,7 +593,30 @@ impl World {
         self.ledger.lost_digestion += (prey - gain) as f64;
         self.energy[j] = 0.0;
         self.die(j, death::EATEN);
-        true
+        Hunt::Caught
+    }
+
+    /// 肉食 i が獲物 j を襲って成功する確率。
+    /// 獲物が自分より大きいほど下がり、獲物の近くに仲間（同じ種類）が多いほど下がる（数で守る）
+    pub fn hunt_chance(&self, i: usize, j: usize) -> f32 {
+        let p = &self.params;
+        let ratio = self.traits[j].size / self.traits[i].size;
+        let by_size = 1.0 - ((ratio - p.hunt_easy_ratio) / (p.hunt_impossible_ratio - p.hunt_easy_ratio)).clamp(0.0, 1.0);
+        if by_size <= 0.0 {
+            return 0.0;
+        }
+        let (x, y) = (self.xs[j], self.ys[j]);
+        let prey_kind = self.kind[j];
+        let r2 = p.guard_radius * p.guard_radius;
+        let mut guards = 0u32;
+        self.grid.for_each_within(x, y, p.guard_radius, |k, xk, yk, kind_k, _| {
+            if k != j && kind_k == prey_kind && self.alive[k] {
+                let dx = torus_delta(xk - x, self.width);
+                let dy = torus_delta(yk - y, self.height);
+                guards += (dx * dx + dy * dy < r2) as u32;
+            }
+        });
+        p.hunt_success * by_size / (1.0 + p.guard_strength * guards as f32)
     }
 
     fn move_agent(&mut self, i: usize, speed: f32) {
@@ -572,6 +653,8 @@ impl World {
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
         self.age[i] += 1;
+        self.cooldown[i] = self.cooldown[i].saturating_sub(1);
+        self.grow(i, if herb { p.herb_maturity } else { p.carn_maturity });
         if self.id[i] == self.watch.id {
             self.watch.speed = speed;
             self.watch.cost = cost;
@@ -582,18 +665,32 @@ impl World {
             self.die(i, death::STARVED);
             return;
         }
-        if self.age[i] as f32 > max_age * t.size_sqrt {
+        if self.age[i] as f32 > max_age * t.adult_sqrt {
             self.ledger.lost_death += self.energy[i] as f64;
             self.energy[i] = 0.0;
             self.die(i, death::OLD_AGE);
             return;
         }
-        if wants_child && self.energy[i] >= self.repro_threshold(i) {
+        // 成熟するまで繁殖できない
+        if wants_child && self.growth[i] >= 1.0 && self.energy[i] >= self.repro_threshold(i) {
             match mate {
-                Mate::Partner(j) => self.reproduce(i, birth_cost * t.size, Some(j)),
-                Mate::Asexual => self.reproduce(i, birth_cost * t.size, None),
+                Mate::Partner(j) => self.reproduce(i, birth_cost * t.adult_size, Some(j)),
+                Mate::Asexual => self.reproduce(i, birth_cost * t.adult_size, None),
                 Mate::Missing => {} // 相手がいなければ繁殖できない
             }
+        }
+    }
+
+    /// 成長させる。maturity は成長度 0 から 1 になるまでの tick 数
+    fn grow(&mut self, i: usize, maturity: f32) {
+        if self.growth[i] >= 1.0 {
+            return;
+        }
+        self.growth[i] = (self.growth[i] + 1.0 / maturity).min(1.0);
+        // いまの大きさから決まる値（0.75 乗など）の計算は重いので、8 tick ごとと成熟したときだけ行う
+        if self.age[i] % 8 == 0 || self.growth[i] >= 1.0 {
+            let g = self.growth[i];
+            self.traits[i].grow_to(g, self.params.max_turn);
         }
     }
 
@@ -643,7 +740,13 @@ impl World {
         let genomes = std::mem::take(&mut self.births_genomes);
         for b in &births {
             let g = &genomes[b.genome_at..b.genome_at + GENOME_LEN];
-            self.spawn(wrap(b.x, self.width), wrap(b.y, self.height), b.kind, b.energy, b.generation, g);
+            let traits = genome::traits(g, self.params.max_turn);
+            // 生まれたときの成長度は、受け取ったエネルギーが大人の繁殖に必要な量の何割か。
+            // 子への投資が多いほど大きく生まれる
+            let adult_need = self.base_repro_threshold(b.kind) * traits.adult_size;
+            let growth = (b.energy / adult_need).clamp(self.params.min_birth_growth, 1.0);
+            let (x, y) = (wrap(b.x, self.width), wrap(b.y, self.height));
+            self.spawn_grown(x, y, b.kind, b.energy, b.generation, g, traits, growth);
         }
         self.births = births;
         self.births.clear();
@@ -672,6 +775,8 @@ impl World {
             self.generation.swap_remove(i);
             self.children.swap_remove(i);
             self.traits.swap_remove(i);
+            self.growth.swap_remove(i);
+            self.cooldown.swap_remove(i);
             self.cover.swap_remove(i);
             self.alive.swap_remove(i);
             let last = self.genomes.len() - GENOME_LEN;
@@ -703,7 +808,7 @@ impl World {
             }
             let t = &self.traits[i];
             sum[0] += 1.0;
-            sum[1] += t.size as f64;
+            sum[1] += t.adult_size as f64;
             sum[2] += t.max_speed as f64;
             sum[3] += t.vision as f64;
             sum[4] += t.invest as f64;
@@ -894,7 +999,7 @@ mod tests {
             assert_eq!(w.genomes.len(), w.count() * GENOME_LEN);
             for i in (0..w.count()).step_by(37) {
                 let t = genome::traits(w.genome(i), w.params.max_turn);
-                assert_eq!(t.size, w.traits[i].size, "個体 {i} の遺伝子と形質がずれている");
+                assert_eq!(t.adult_size, w.traits[i].adult_size, "個体 {i} の遺伝子と形質がずれている");
                 assert_eq!(t.hue, w.traits[i].hue);
             }
         }
@@ -966,6 +1071,71 @@ mod tests {
         w.energy[0] = 15.0;
         w.step();
         assert!(w.count() > 2, "相手がいるのに繁殖しなかった");
+    }
+
+    fn empty_world() -> World {
+        let mut p = small_params();
+        p.herb_initial = 0.0;
+        p.carn_initial = 0.0;
+        p.sunlight = 0.0;
+        World::new(1, p)
+    }
+
+    #[test]
+    fn 大きい獲物ほど狩りに失敗しやすい() {
+        let mut w = empty_world();
+        let carn = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
+        for (k, size) in [0.5, 1.0, 1.4, 2.0].iter().enumerate() {
+            let g = genome::initial(true, *size, 1.0, 30.0, 0.0);
+            // 獲物同士が守り合わないよう、離して置く
+            w.spawn(300.0 + 80.0 * k as f32, 300.0, HERBIVORE, 5.0, 0, &g);
+        }
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        let chances: Vec<f32> = (1..=4).map(|j| w.hunt_chance(0, j)).collect();
+        assert_eq!(chances[0], w.params.hunt_success, "十分小さい獲物は最大の成功率");
+        assert!(chances[1] < chances[0] && chances[2] < chances[1], "大きいほど下がる: {chances:?}");
+        assert_eq!(chances[3], 0.0, "大きすぎる獲物は狩れない");
+    }
+
+    #[test]
+    fn 仲間に囲まれた獲物は狩りにくい() {
+        let mut w = empty_world();
+        let carn = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        let herb = genome::initial(true, 0.5, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
+        w.spawn(105.0, 100.0, HERBIVORE, 5.0, 0, &herb);
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        let alone = w.hunt_chance(0, 1);
+        for k in 0..4 {
+            w.spawn(105.0 + (k as f32 - 1.5) * 4.0, 104.0, HERBIVORE, 5.0, 0, &herb);
+        }
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        let guarded = w.hunt_chance(0, 1);
+        assert!(guarded < alone * 0.7, "囲まれていると下がる: 単独 {alone} / 囲まれ {guarded}");
+    }
+
+    #[test]
+    fn 子は小さく生まれて成熟するまで繁殖しない() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &g);
+        w.spawn(103.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        w.step();
+        assert_eq!(w.count(), 3, "親が繁殖する");
+        let child = (0..w.count()).find(|&i| w.generation[i] == 1).unwrap();
+        assert!(w.growth[child] < 1.0, "子は成長途中で生まれる");
+        assert!(w.traits[child].size < w.traits[child].adult_size, "子は大人より小さい");
+
+        // エネルギーを十分に与えても、成熟するまでは繁殖しない
+        let id = w.id[child];
+        for _ in 0..50 {
+            let c = w.index_of(id).unwrap();
+            w.energy[c] = w.energy_cap(c);
+            w.step();
+            let c = w.index_of(id).unwrap();
+            assert_eq!(w.children[c], 0, "幼体が繁殖した");
+        }
     }
 
     #[test]

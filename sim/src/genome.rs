@@ -102,39 +102,56 @@ pub fn think(genome: &[f32], input: &[f32; N_IN]) -> [f32; N_OUT] {
     output
 }
 
-/// 体の形質を範囲内に収めて読み出したもの
+/// 体の形質を範囲内に収めて読み出したもの。
+/// 大きさは「遺伝子が決める大人の大きさ」と「成長度を掛けたいまの大きさ」に分けて持つ
 #[derive(Clone, Copy, Debug)]
 pub struct Traits {
+    /// 遺伝子が決める大人の大きさ
+    pub adult_size: f32,
+    /// adult_size の平方根（寿命の計算用）
+    pub adult_sqrt: f32,
+    /// いまの大きさ（大人の大きさ × 成長度）。代謝・移動・一口の量・狩りに使う
     pub size: f32,
+    /// いまの大きさの 0.75 乗（代謝の計算用。毎 tick 計算すると重いので先に求めておく）
+    pub size_pow075: f32,
+    /// 1 tick に曲がれる最大の角度の cos と sin（いまの大きさが大きいほど小回りが利かない）
+    pub turn_cos: f32,
+    pub turn_sin: f32,
     pub max_speed: f32,
     pub vision: f32,
     pub invest: f32,
     /// 0〜1（色相）
     pub hue: f32,
-    /// size の 0.75 乗（代謝の計算用。毎 tick 計算すると重いので先に求めておく）
-    pub size_pow075: f32,
-    /// size の平方根（寿命と小回りの計算用）
-    pub size_sqrt: f32,
-    /// 1 tick に曲がれる最大の角度の cos と sin（大きいほど小回りが利かない）
-    pub turn_cos: f32,
-    pub turn_sin: f32,
 }
 
-/// 遺伝子から形質を読み出す。max_turn は大きさ 1 のときの最大旋回角（ラジアン）
+impl Traits {
+    /// 成長度 growth（0〜1）に合わせて、いまの大きさと、それから決まる値を計算し直す
+    pub fn grow_to(&mut self, growth: f32, max_turn: f32) {
+        self.size = self.adult_size * growth;
+        self.size_pow075 = self.size.powf(0.75);
+        let (turn_sin, turn_cos) = (max_turn / self.size.sqrt()).min(std::f32::consts::PI).sin_cos();
+        self.turn_cos = turn_cos;
+        self.turn_sin = turn_sin;
+    }
+}
+
+/// 遺伝子から形質を読み出す（成長しきった大人として）。max_turn は大きさ 1 のときの最大旋回角（ラジアン）
 pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
-    let size = genome[G_SIZE].clamp(SIZE_RANGE.0, SIZE_RANGE.1);
-    let (turn_sin, turn_cos) = (max_turn / size.sqrt()).min(std::f32::consts::PI).sin_cos();
-    Traits {
-        size,
+    let adult_size = genome[G_SIZE].clamp(SIZE_RANGE.0, SIZE_RANGE.1);
+    let mut t = Traits {
+        adult_size,
+        adult_sqrt: adult_size.sqrt(),
+        size: adult_size,
+        size_pow075: 0.0,
+        turn_cos: 0.0,
+        turn_sin: 0.0,
         max_speed: genome[G_SPEED].clamp(SPEED_RANGE.0, SPEED_RANGE.1),
         vision: genome[G_VISION].clamp(VISION_RANGE.0, VISION_RANGE.1),
         invest: genome[G_INVEST].clamp(INVEST_RANGE.0, INVEST_RANGE.1),
         hue: genome[G_HUE].rem_euclid(1.0),
-        size_pow075: size.powf(0.75),
-        size_sqrt: size.sqrt(),
-        turn_cos,
-        turn_sin,
-    }
+    };
+    t.grow_to(1.0, max_turn);
+    t
 }
 
 /// 中間層ニューロン h を、入力 k の 1 本だけにつなぐ（手で配線するとき用）

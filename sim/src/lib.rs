@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 28;
+const INSPECT_LEN: usize = 29;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
 const SUMMARY_LEN: usize = 17;
 
@@ -135,6 +135,7 @@ pub extern "C" fn deselect() {
 /// 25: 隠れ具合（足元の草で、相手の視野が何割縮むか）
 /// 26: 蓄えられるエネルギーの上限
 /// 27: 繁殖相手が近くにいるか（1 = いる。無性生殖の設定なら常に 1）
+/// 28: 成長度（1 で成熟）。17 の大きさは遺伝子が決める大人の大きさで、いまの大きさは 17 × 28
 /// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
 #[unsafe(no_mangle)]
 pub extern "C" fn inspect() -> *const f64 {
@@ -167,14 +168,14 @@ pub extern "C" fn inspect() -> *const f64 {
             let t = w.traits[i];
             out[6] = w.repro_threshold(i) as f64;
             out[7] = w.age[i] as f64;
-            out[8] = (if herb { p.herb_max_age } else { p.carn_max_age } * t.size_sqrt) as f64;
+            out[8] = (if herb { p.herb_max_age } else { p.carn_max_age } * t.adult_sqrt) as f64;
             out[9] = w.state[i] as f64;
             out[10] = watch.speed as f64;
             out[11] = watch.cost as f64;
             out[12] = w.children[i] as f64;
             out[13] = w.generation[i] as f64;
             out[16] = t.vision as f64;
-            out[17] = t.size as f64;
+            out[17] = t.adult_size as f64;
             out[18] = t.max_speed as f64;
             out[19] = t.invest as f64;
             out[20] = t.hue as f64;
@@ -185,6 +186,7 @@ pub extern "C" fn inspect() -> *const f64 {
             out[25] = (p.cover_strength * w.cover[i]) as f64;
             out[26] = w.energy_cap(i) as f64;
             out[27] = if watch.mate_nearby { 1.0 } else { 0.0 };
+            out[28] = w.growth[i] as f64;
         });
         out.as_ptr()
     })
