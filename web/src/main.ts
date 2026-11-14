@@ -1,16 +1,15 @@
 import { Application, Container, Graphics } from 'pixi.js';
-import { COLORS, SEED, SIM_PARAMS, type SimParams } from './config';
-import type { FromWorker, ToWorker } from './protocol';
+import { BODY_RADIUS, COLORS, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
+import { CARNIVORE, HERBIVORE, INSPECT, type FromWorker, type ToWorker } from './protocol';
 import { AgentLayer } from './render/agents';
 import { Camera } from './render/camera';
 import { PlantLayer } from './render/plants';
+import { SelectionMarker } from './render/selection';
 import { Hud } from './ui/hud';
+import { Inspector, Toast } from './ui/inspector';
 import './style.css';
 
 type Frame = Extract<FromWorker, { type: 'frame' }>;
-
-const HERBIVORE = 0;
-const CARNIVORE = 1;
 
 const params: SimParams = { ...SIM_PARAMS };
 
@@ -43,14 +42,11 @@ const dot = (radius: number) =>
     resolution: 8,
     antialias: true,
   });
-const herbivores = new AgentLayer(dot(3), COLORS.herbivore, params.world_width, params.world_height);
+const herbivores = new AgentLayer(dot(BODY_RADIUS.herbivore), COLORS.herbivore, params.world_width, params.world_height);
 // 肉食は数が少なく埋もれやすいので、一回り大きくして上に重ねる
-const carnivores = new AgentLayer(dot(4.5), COLORS.carnivore, params.world_width, params.world_height);
-world.addChild(herbivores.container, carnivores.container);
-
-const camera = new Camera(world, app.canvas, params.world_width, params.world_height);
-camera.fit();
-window.addEventListener('resize', () => camera.fit());
+const carnivores = new AgentLayer(dot(BODY_RADIUS.carnivore), COLORS.carnivore, params.world_width, params.world_height);
+const marker = new SelectionMarker();
+world.addChild(herbivores.container, carnivores.container, marker.graphics);
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 const send = (msg: ToWorker, transfer: Transferable[] = []) => worker.postMessage(msg, transfer);
@@ -59,6 +55,41 @@ let generation = -1;
 let latest: Frame | null = null;
 let speed = 1;
 let paused = false;
+/** 選択中の個体をカメラで追うか */
+let following = false;
+
+const toast = new Toast(document.getElementById('toast')!);
+const inspector = new Inspector(document.getElementById('inspector')!, {
+  onClose: () => deselect(),
+  onToggleFollow: () => setFollowing(!following),
+});
+
+const camera = new Camera(world, app.canvas, params.world_width, params.world_height, {
+  onClick: (px, py) => {
+    if (camera.scale < MIN_SELECT_SCALE) {
+      toast.show('拡大すると個体を選べます（ホイールで拡大）');
+      return;
+    }
+    const { x, y } = camera.toWorld(px, py);
+    send({ type: 'select', x, y, radius: SELECT_RADIUS_PX / camera.scale });
+  },
+  // 自分で視点を動かしたら追従をやめる
+  onPan: () => setFollowing(false),
+});
+camera.fit();
+window.addEventListener('resize', () => camera.fit());
+
+function setFollowing(on: boolean): void {
+  following = on;
+  inspector.setFollow(on);
+}
+
+function deselect(): void {
+  send({ type: 'deselect' });
+  inspector.hide();
+  marker.hide();
+  setFollowing(false);
+}
 
 const hud = new Hud(document.getElementById('hud')!, {
   onTogglePause: () => setPaused(!paused),
@@ -82,6 +113,9 @@ function setPaused(p: boolean): void {
 
 function start(): void {
   hud.clearHistory();
+  inspector.hide();
+  marker.hide();
+  setFollowing(false);
   send({ type: 'init', seed: SEED, params });
 }
 
@@ -94,6 +128,14 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
   switch (msg.type) {
     case 'ready':
       generation = msg.generation;
+      break;
+    case 'selected':
+      if (msg.id === 0) {
+        toast.show('近くに個体がいません');
+        inspector.hide();
+        marker.hide();
+      }
+      setFollowing(false);
       break;
     case 'frame':
       if (msg.generation !== generation) return returnBuffer(msg); // リセット前の古いフレーム
@@ -116,9 +158,26 @@ app.ticker.add(() => {
   carnivores.apply(agents, f.agentCount, f.stride, CARNIVORE);
   plants.apply(new Float32Array(f.buffer, agentFloats * 4, f.plantCols * f.plantRows), f.plantCols, f.plantRows);
   hud.setTick(f.tick);
+  if (f.inspect) showSelection(f.inspect);
   returnBuffer(f);
   latest = null;
 });
+
+function showSelection(v: number[]): void {
+  const status = v[INSPECT.status];
+  if (status === 0) return; // 選択直後で、まだ結果が来ていない
+  inspector.update(v);
+  if (status === 2) {
+    marker.hide(); // 死んだ個体はもういない
+    setFollowing(false);
+    return;
+  }
+  const x = v[INSPECT.x];
+  const y = v[INSPECT.y];
+  const body = v[INSPECT.kind] === CARNIVORE ? BODY_RADIUS.carnivore : BODY_RADIUS.herbivore;
+  if (following) camera.centerOn(x, y);
+  marker.update(x, y, body, v[INSPECT.vision], camera.scale);
+}
 
 setInterval(() => hud.setFps(app.ticker.FPS), 250);
 

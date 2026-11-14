@@ -78,4 +78,18 @@ export const COLORS = {
   plant: '#2a6b42',
   herbivore: '#9fd8c4',
   carnivore: '#ffa878',
+  /** 選択中の個体の目印 */
+  marker: '#dde6e4',
 };
+
+/** 個体の描画上の半径（世界座標の px） */
+export const BODY_RADIUS = { herbivore: 3, carnivore: 4.5 };
+
+/**
+ * 個体を選択できる最小の拡大率。全体表示では点が 1〜2px しかなく、狙って選べないため。
+ * 1 のとき、草食は画面上で直径 6px になる
+ */
+export const MIN_SELECT_SCALE = 0.8;
+
+/** クリック位置からこの距離（画面上の px）以内の個体を選ぶ */
+export const SELECT_RADIUS_PX = 14;

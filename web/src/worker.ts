@@ -21,6 +21,10 @@ interface SimExports {
   plant_ptr(): number;
   plant_cols(): number;
   plant_rows(): number;
+  select_at(x: number, y: number, radius: number): number;
+  deselect(): void;
+  inspect(): number;
+  inspect_len(): number;
 }
 
 /** 転送用バッファの最大数。メインスレッドが返してこない限り、これ以上は作らない */
@@ -46,6 +50,8 @@ let sim: SimExports | null = null;
 let generation = 0;
 let speed = 1;
 let paused = false;
+/** 個体を選択中か（選択中ならフレームごとに個体の情報を添える） */
+let watching = false;
 
 let pool: ArrayBuffer[] = [];
 let allocated = 0;
@@ -79,6 +85,7 @@ function handle(s: SimExports, msg: ToWorker): void {
       s.init(msg.seed);
       sim = s;
       generation++;
+      watching = false;
       pool = [];
       allocated = 0;
       accumulator = 0;
@@ -94,6 +101,20 @@ function handle(s: SimExports, msg: ToWorker): void {
       break;
     case 'setPaused':
       paused = msg.paused;
+      break;
+    case 'select': {
+      if (!sim) break;
+      const id = s.select_at(msg.x, msg.y, msg.radius);
+      watching = id !== 0;
+      dirty = true; // 一時停止中でも選択結果をすぐ描けるようにする
+      post({ type: 'selected', id });
+      break;
+    }
+    case 'deselect':
+      if (!sim) break;
+      s.deselect();
+      watching = false;
+      dirty = true;
       break;
     case 'returnBuffer':
       if (pool.length < MAX_BUFFERS) pool.push(msg.buffer);
@@ -158,8 +179,10 @@ function publish(s: SimExports, now: number): void {
   const plantsPtr = s.plant_ptr();
   out.set(new Float32Array(s.memory.buffer, plantsPtr, plantFloats), agentFloats);
 
+  const inspect = watching ? Array.from(new Float64Array(s.memory.buffer, s.inspect(), s.inspect_len())) : null;
+
   post(
-    { type: 'frame', generation, buffer, agentCount, stride, plantCols, plantRows, tick: s.current_tick() },
+    { type: 'frame', generation, buffer, agentCount, stride, plantCols, plantRows, tick: s.current_tick(), inspect },
     [buffer],
   );
   dirty = false;
