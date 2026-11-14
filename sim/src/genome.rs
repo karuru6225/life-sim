@@ -75,25 +75,34 @@ pub const OUT_PRI_FOOD: usize = 0;
 pub const OUT_PRI_MATE: usize = 1;
 /// 逃げる欲求の優先度（天敵と反対へ）
 pub const OUT_PRI_FLEE: usize = 2;
-/// 自由な移動の優先度（OUT_DIR_* の方向へ）。群れなど、想定していない行動の余地
-pub const OUT_PRI_FREE: usize = 3;
+/// 仲間に寄る欲求の優先度（見えている仲間の中心へ）
+pub const OUT_PRI_KIN: usize = 3;
+/// 自由な移動の優先度（OUT_DIR_* の方向へ）。想定していない行動の余地
+pub const OUT_PRI_FREE: usize = 4;
 /// 自由な移動の方向（自分基準の前方成分・右方成分）
-pub const OUT_DIR_FWD: usize = 4;
-pub const OUT_DIR_RIGHT: usize = 5;
+pub const OUT_DIR_FWD: usize = 5;
+pub const OUT_DIR_RIGHT: usize = 6;
 /// 速さ（最高速度に対する割合に変換して使う）
-pub const OUT_THROTTLE: usize = 6;
+pub const OUT_THROTTLE: usize = 7;
 /// 正なら繁殖する（エネルギーが足りていれば）
-pub const OUT_REPRODUCE: usize = 7;
+pub const OUT_REPRODUCE: usize = 8;
 /// 正なら食べる（草食は目の前の草、肉食は届く範囲の獲物）
-pub const OUT_EAT: usize = 8;
-pub const N_OUT: usize = 9;
+pub const OUT_EAT: usize = 9;
+/// 警戒の度合い（草食のみ使う）。高いほど天敵に遠くから気づけるが、一口が小さくなる
+pub const OUT_VIGILANCE: usize = 10;
+pub const N_OUT: usize = 11;
 
-/// 欲求の数（食べる・繁殖・逃げる・自由）
-pub const N_DRIVES: usize = 4;
+/// 欲求の数（食べる・繁殖・逃げる・仲間・自由）。最後の「自由」の方向は脳の出力から取る
+pub const N_DRIVES: usize = 5;
 
 /// 出力から欲求ごとの優先度（0〜1）を取り出す
 pub fn priorities(out: &[f32; N_OUT]) -> [f32; N_DRIVES] {
-    [OUT_PRI_FOOD, OUT_PRI_MATE, OUT_PRI_FLEE, OUT_PRI_FREE].map(|k| 0.5 + 0.5 * softsign(out[k]))
+    [OUT_PRI_FOOD, OUT_PRI_MATE, OUT_PRI_FLEE, OUT_PRI_KIN, OUT_PRI_FREE].map(|k| 0.5 + 0.5 * softsign(out[k]))
+}
+
+/// 出力から警戒の度合い（0〜1）を取り出す
+pub fn vigilance(out: &[f32; N_OUT]) -> f32 {
+    0.5 + 0.5 * softsign(out[OUT_VIGILANCE])
 }
 
 /// 欲求ごとの方向 drives（自分基準の単位ベクトル。対象がいなければ (0, 0)）を、優先度で混ぜた方向。
@@ -205,6 +214,10 @@ fn wire_out(g: &mut [f32], o: usize, hidden: usize, weight: f32) {
     g[W2 + o * (N_HIDDEN + 1) + hidden] = weight;
 }
 
+fn hidden_bias(g: &mut [f32], h: usize, bias: f32) {
+    g[W1 + h * (N_IN + 1) + N_IN] = bias;
+}
+
 fn out_bias(g: &mut [f32], o: usize, bias: f32) {
     g[W2 + o * (N_HIDDEN + 1) + N_HIDDEN] = bias;
 }
@@ -223,10 +236,19 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     // 自由な移動は、ゆるく前へ
     out_bias(&mut g, OUT_DIR_FWD, 0.3);
 
-    // 優先度の基本: 普段は食べる、繁殖できる状態なら繁殖、天敵が見えたら逃げるを最優先
-    let (h_threat, h_ready, h_plant) = (0, 1, 2);
+    // 優先度の基本: 普段は食べる、繁殖できる状態なら繁殖、天敵が見えたら逃げるを最優先。
+    // 仲間に寄る欲求は弱くしておき、強めるかどうかは進化に任せる
+    let (h_threat, h_ready, h_plant, h_full, h_alarm) = (0, 1, 2, 3, 4);
+    out_bias(&mut g, OUT_PRI_KIN, -4.0);
+    // 満腹（蓄えが繁殖に必要な量の 1.5 倍を超えるあたりから）なら、食べるのを控える
+    wire_hidden(&mut g, h_full, IN_ENERGY, 4.0);
+    hidden_bias(&mut g, h_full, -6.0);
+    wire_out(&mut g, OUT_PRI_FOOD, h_full, -3.0);
+    wire_out(&mut g, OUT_EAT, h_full, -4.0);
     wire_hidden(&mut g, h_ready, IN_READY, 4.0);
-    out_bias(&mut g, OUT_PRI_FOOD, 1.0);
+    // 食べる優先度は空腹度で変わる（下の満腹の配線と合わせて、エネルギーが繁殖に必要な量の
+    // 半分なら 0.8 前後、繁殖できる状態なら 0.3 前後、満腹なら 0.1 前後）
+    out_bias(&mut g, OUT_PRI_FOOD, -1.0);
     out_bias(&mut g, OUT_PRI_MATE, -3.0);
     out_bias(&mut g, OUT_PRI_FLEE, -4.0);
     wire_out(&mut g, OUT_PRI_MATE, h_ready, 6.0);
@@ -236,6 +258,9 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
         // 天敵が見えたら、食べるのも相手探しもやめて逃げる
         wire_hidden(&mut g, h_threat, IN_PRED_NEAR, 4.0);
         wire_out(&mut g, OUT_PRI_FLEE, h_threat, 10.0);
+        // 仲間が逃げ始めたら（警戒の合図）、自分に天敵が見えていなくても一緒に逃げる
+        wire_hidden(&mut g, h_alarm, IN_KIN_ALERT, 4.0);
+        wire_out(&mut g, OUT_PRI_FLEE, h_alarm, 8.0);
         wire_out(&mut g, OUT_PRI_FOOD, h_threat, -4.0);
         wire_out(&mut g, OUT_PRI_MATE, h_threat, -6.0);
         // 足元に草があればゆっくり、なければ探しに歩き、天敵が見えたら全力で逃げる
@@ -279,7 +304,7 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         for &k in &kin_inputs {
             wire_hidden(g, h, k, rng.gaussian() * SIGMA_IN);
         }
-        for o in [OUT_DIR_FWD, OUT_DIR_RIGHT, OUT_PRI_FREE, OUT_THROTTLE] {
+        for o in [OUT_DIR_FWD, OUT_DIR_RIGHT, OUT_PRI_FREE, OUT_PRI_KIN, OUT_VIGILANCE, OUT_THROTTLE] {
             wire_out(g, o, h, rng.gaussian() * SIGMA_OUT);
         }
     }
@@ -381,9 +406,33 @@ mod tests {
         [0.0; N_IN]
     }
 
-    /// 欲求ごとの方向 [食べる, 繁殖, 逃げる, (自由)]
+    /// 欲求ごとの方向 [食べる, 繁殖, 逃げる, 仲間, (自由)]
     fn drives(food: (f32, f32), mate: (f32, f32), flee: (f32, f32)) -> [(f32, f32); N_DRIVES] {
-        [food, mate, flee, (0.0, 0.0)]
+        [food, mate, flee, (0.0, 0.0), (0.0, 0.0)]
+    }
+
+    #[test]
+    fn 初期の脳は満腹なら食べるのを控える() {
+        for herb in [true, false] {
+            let g = initial(herb, 1.0, 1.3, 30.0, 0.3);
+            let mut hungry = input();
+            hungry[IN_ENERGY] = 0.5;
+            let mut full = input();
+            full[IN_ENERGY] = 2.0;
+            let (h, f) = (think(&g, &hungry), think(&g, &full));
+            assert!(f[OUT_EAT] < 0.0 && h[OUT_EAT] > 0.0, "満腹なら食べない");
+            assert!(priorities(&f)[0] < priorities(&h)[0], "満腹なら食べる優先度が下がる");
+        }
+    }
+
+    #[test]
+    fn 初期の草食は仲間が逃げたら一緒に逃げる() {
+        let g = initial(true, 1.0, 1.3, 30.0, 0.3);
+        let calm = think(&g, &input());
+        let mut i = input();
+        i[IN_KIN_ALERT] = 0.5;
+        let alarmed = think(&g, &i);
+        assert!(priorities(&alarmed)[2] > 0.7 && priorities(&calm)[2] < 0.2);
     }
 
     #[test]
@@ -412,7 +461,9 @@ mod tests {
             // 食べ物は前、相手は右
             let d = drives((1.0, 0.0), (0.0, 1.0), (0.0, 0.0));
             let mut i = input();
+            i[IN_ENERGY] = 0.5;
             let (_, r_not_ready) = mix_drives(&think(&g, &i), &d);
+            i[IN_ENERGY] = 1.2;
             i[IN_READY] = 1.0;
             i[IN_MATE_NEAR] = 0.8;
             let (f, r) = mix_drives(&think(&g, &i), &d);

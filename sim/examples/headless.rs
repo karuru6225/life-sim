@@ -1,4 +1,4 @@
-//! 画面なしでシミュレーションを回し、個体数・形質・群れの度合いの推移を表示する。バランス調整用。
+//! 画面なしでシミュレーションを回し、個体数・バランス・形質・群れの度合いの推移を表示する。調整用。
 //!
 //! 使い方:
 //!   cargo run --release --example headless --manifest-path sim/Cargo.toml -- [tick数] [名前=値 ...]
@@ -6,11 +6,14 @@
 //!   cargo run --release --example headless --manifest-path sim/Cargo.toml -- 30000 sunlight=0.1 seed=3 every=1000
 //!
 //! 列の意味:
+//!   量比: 肉食の量 ÷ 草食の量（量 = 体の大きさの合計）。現実の哺乳類では約 1/111
+//!   植→草, 草→肉: 区間内の栄養段階の受け渡し効率（草食が得た量 ÷ 植物が日射から得た量、
+//!                 肉食が得た量 ÷ 草食が得た量）。現実では平均 10% 前後
+//!   警戒: 草食の警戒の度合いの平均（0〜1）
 //!   集まり: 集まり具合（1 でランダム、小さいほど集まっている）
 //!   そろい: 近くの仲間との向きのそろい具合（0 でばらばら、1 で同じ向き）
 //!   同系/他系: そろい具合を、同じ系統どうし・違う系統どうしに分けたもの
-//!   同系率: 近くの仲間のうち同じ系統の割合
-//!   失敗: 直前の区間で、交配が相性で失敗した割合
+//!   失敗: 区間内で、交配が相性で失敗した割合
 
 use sim::params::Params;
 use sim::world::{CARNIVORE, HERBIVORE, World};
@@ -37,10 +40,11 @@ fn main() {
 
     let mut w = World::new(seed, params);
     println!(
-        "{:>7} {:>6} {:>5} {:>7} | 草食: {:>5} {:>5} {:>5} {:>5} {:>4} | {:>5} {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} | {:>5} | {:>6}",
-        "tick", "草食", "肉食", "植物量", "大きさ", "速度", "視野", "投資", "世代", "集まり", "そろい", "同系", "他系", "同系率", "大きさ", "速度", "失敗", "ms/tick"
+        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} | {:>5} | {:>6}",
+        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "失敗", "ms/tick"
     );
     let mut t = Instant::now();
+    let mut last = w.ledger.clone();
     let (mut last_matings, mut last_failed) = (0u64, 0u64);
     for tick in 1..=ticks {
         w.step();
@@ -49,13 +53,23 @@ fn main() {
             let h = w.trait_means(HERBIVORE);
             let c = w.trait_means(CARNIVORE);
             let hh = w.herd_stats(HERBIVORE);
+            let ratio = w.biomass(CARNIVORE) / w.biomass(HERBIVORE).max(1e-9);
+            let l = &w.ledger;
+            let plant_to_herb = (l.herb_gain - last.herb_gain) / (l.sunlight_in - last.sunlight_in).max(1e-9);
+            let herb_to_carn = (l.carn_gain - last.carn_gain) / (l.herb_gain - last.herb_gain).max(1e-9);
+            last = l.clone();
+            let vig = {
+                let v: Vec<f32> = (0..w.count()).filter(|&i| w.kind[i] == HERBIVORE).map(|i| w.vigilance[i]).collect();
+                v.iter().sum::<f32>() / v.len().max(1) as f32
+            };
             let matings = w.matings - last_matings;
             let failed = w.failed_matings - last_failed;
             (last_matings, last_failed) = (w.matings, w.failed_matings);
             let fail = if matings > 0 { failed as f64 / matings as f64 } else { 0.0 };
             println!(
-                "{tick:>7} {:>6} {:>5} {:>7.0} |       {:>5.2} {:>5.2} {:>5.1} {:>5.2} {:>4.0} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} | {:>5.3} | {ms:>6.2}",
-                h[0], c[0], w.plants.total(), h[1], h[2], h[3], h[4], h[5], hh[0], hh[1], hh[2], hh[3], hh[4], c[1], c[2], fail
+                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} | {:>5.3} | {ms:>6.2}",
+                h[0], c[0], w.plants.total(), 1.0 / ratio.max(1e-9), plant_to_herb, herb_to_carn,
+                h[1], h[2], h[3], h[5], vig, hh[0], hh[1], hh[2], hh[3], c[1], c[2], fail
             );
             if w.count_kind(HERBIVORE) == 0 && w.count_kind(CARNIVORE) == 0 {
                 println!("全滅");

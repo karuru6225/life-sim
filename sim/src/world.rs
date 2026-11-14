@@ -67,6 +67,10 @@ pub struct Ledger {
     pub lost_birth: f64,
     /// 寿命で死んだ個体が持っていた量（死体は今のところそのまま消える）
     pub lost_death: f64,
+    /// 草食が植物から得た量（吸収できた分）。栄養段階の受け渡し効率の計測用
+    pub herb_gain: f64,
+    /// 肉食が獲物から得た量（吸収できた分）
+    pub carn_gain: f64,
 }
 
 impl Ledger {
@@ -144,6 +148,12 @@ struct Senses {
     similar_count: u32,
     /// 繁殖相手の候補（成熟した仲間のうち、標識色が近い個体の最寄り。いなければ成熟した仲間の最寄り）
     mate: Seen,
+    /// 見えている仲間の相対位置の合計（仲間の中心の方向を出すため）
+    kin_dx: f32,
+    kin_dy: f32,
+    /// 興奮している（草食なら逃げている）仲間の向きの合計（警戒の合図）
+    alarm_hx: f32,
+    alarm_hy: f32,
 }
 
 struct Birth {
@@ -185,6 +195,8 @@ pub struct World {
     pub growth: Vec<f32>,
     /// 次に襲えるようになるまでの残り tick 数（肉食のみ使う）
     pub cooldown: Vec<u16>,
+    /// 直前の tick に脳が決めた警戒の度合い（0〜1、草食のみ使う）。天敵に気づける距離と一口の大きさに効く
+    pub vigilance: Vec<f32>,
     /// tick の始めに求めた、足元の草の量（上限に対する割合）。隠れの判定に使う
     pub cover: Vec<f32>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
@@ -237,6 +249,7 @@ impl World {
             traits: Vec::new(),
             growth: Vec::new(),
             cooldown: Vec::new(),
+            vigilance: Vec::new(),
             cover: Vec::new(),
             alive: Vec::new(),
             plants,
@@ -313,6 +326,7 @@ impl World {
         self.traits.push(traits);
         self.growth.push(growth);
         self.cooldown.push(0);
+        self.vigilance.push(0.5);
         self.cover.push(0.0);
         self.alive.push(true);
     }
@@ -427,6 +441,10 @@ impl World {
         let mut best: [Seen; 3] = [None, None, None];
         let mut best_d2 = [f32::MAX; 3];
         let (mut kin_count, mut kin_hx, mut kin_hy, mut kin_alert) = (0u32, 0.0f32, 0.0f32, 0u32);
+        let (mut kin_dx, mut kin_dy, mut alarm_hx, mut alarm_hy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        // 草食は警戒しているほど天敵に遠くから気づける（警戒 0 で視野の vigilance_min_range 倍）
+        let vmin = self.params.vigilance_min_range;
+        let threat_range = vision * (vmin + (1.0 - vmin) * self.vigilance[i]);
         let (mut similar, mut similar_d2, mut similar_count): (Seen, f32, u32) = (None, f32::MAX, 0);
         // 成熟した仲間の最寄り（[標識色が近い, 問わない]）
         let mut mate: [Seen; 2] = [None, None];
@@ -443,7 +461,10 @@ impl World {
             if d2 >= vision2 {
                 return;
             }
-            let r = vision * (1.0 - hide * cover_j);
+            let mut r = vision * (1.0 - hide * cover_j);
+            if my_kind == HERBIVORE && kind_j != my_kind {
+                r *= threat_range / vision;
+            }
             if d2 < r * r && j != i && self.alive[j] {
                 let rel = if kind_j == my_kind {
                     2
@@ -462,7 +483,14 @@ impl World {
                     kin_hy += self.hy[j];
                     // 草食なら天敵が、肉食なら獲物が見えている仲間
                     let s = self.state[j];
-                    kin_alert += (s == state::FLEE || s == state::CHASE) as u32;
+                    let alert = s == state::FLEE || s == state::CHASE;
+                    kin_alert += alert as u32;
+                    kin_dx += dx;
+                    kin_dy += dy;
+                    if alert {
+                        alarm_hx += self.hx[j];
+                        alarm_hy += self.hy[j];
+                    }
                     let is_similar = genome::hue_distance(my_hue, self.traits[j].hue) <= hue_similar;
                     if is_similar {
                         similar_count += 1;
@@ -493,6 +521,10 @@ impl World {
             similar,
             similar_count,
             mate: mate[0].or(mate[1]),
+            kin_dx,
+            kin_dy,
+            alarm_hx,
+            alarm_hy,
         }
     }
 
@@ -567,8 +599,24 @@ impl World {
         } else {
             unit(senses.prey)
         };
-        let (pf, pr) = unit(senses.predator);
-        let drives = [food, unit(senses.mate), (-pf, -pr), (0.0, 0.0)];
+        let normalize = |(f, r): (f32, f32)| {
+            let len = (f * f + r * r).sqrt();
+            if len < 1e-6 { (0.0, 0.0) } else { (f / len, r / len) }
+        };
+        // 逃げる方向: 天敵が見えていればその反対。見えていなくても、逃げている仲間がいればその向き（警戒の合図）
+        let flee = match senses.predator {
+            Some(_) => {
+                let (pf, pr) = unit(senses.predator);
+                (-pf, -pr)
+            }
+            None => normalize(to_local(senses.alarm_hx, senses.alarm_hy)),
+        };
+        // 仲間に寄る方向: 見えている仲間の中心へ
+        let kin = normalize(to_local(senses.kin_dx, senses.kin_dy));
+        let drives = [food, unit(senses.mate), flee, kin, (0.0, 0.0)];
+        if self.kind[i] == HERBIVORE {
+            self.vigilance[i] = genome::vigilance(&out);
+        }
         let (df, dr) = genome::mix_drives(&out, &drives);
         let dominant = self.dominant_drive(&out, &drives);
 
@@ -681,7 +729,9 @@ impl World {
         }
         let eff = self.params.herb_efficiency;
         let c = self.plants.cell_index(self.xs[i], self.ys[i]);
-        let take = (self.params.herb_bite * self.traits[i].size)
+        // 警戒しているほど一口が小さい（周りを見ながらでは食べる量が減る）
+        let bite = self.params.herb_bite * self.traits[i].size * (1.0 - self.params.vigilance_bite_cost * self.vigilance[i]);
+        let take = bite
             .min(self.plants.biomass[c])
             .min(room / eff);
         if take <= 0.0 {
@@ -690,6 +740,7 @@ impl World {
         self.plants.biomass[c] -= take;
         let gain = take * eff;
         self.energy[i] += gain;
+        self.ledger.herb_gain += gain as f64;
         self.ledger.lost_digestion += (take - gain) as f64;
         true
     }
@@ -713,6 +764,7 @@ impl World {
         // 食べきれない分は捨てる（熱として失われる）
         let gain = (prey * self.params.carn_efficiency).min(room);
         self.energy[i] += gain;
+        self.ledger.carn_gain += gain as f64;
         self.ledger.lost_digestion += (prey - gain) as f64;
         self.energy[j] = 0.0;
         self.die(j, death::EATEN);
@@ -720,7 +772,8 @@ impl World {
     }
 
     /// 肉食 i が獲物 j を襲って成功する確率。
-    /// 獲物が自分より大きいほど下がり、獲物の近くに仲間（同じ種類）が多いほど下がる（数で守る）
+    /// 獲物が自分より大きいほど下がり、獲物の近くに仲間（同じ種類）が多いほど下がる（数で守る）。
+    /// 自分の近くに別の肉食が多いほど下がる（肉食どうしの干渉）
     pub fn hunt_chance(&self, i: usize, j: usize) -> f32 {
         let p = &self.params;
         let ratio = self.traits[j].size / self.traits[i].size;
@@ -739,7 +792,18 @@ impl World {
                 guards += (dx * dx + dy * dy < r2) as u32;
             }
         });
-        p.hunt_success * by_size / (1.0 + p.guard_strength * guards as f32)
+        // 肉食どうしの干渉（獲物の横取りや縄張り争い）: 自分の近くに別の肉食が多いほど成功しにくい
+        let (cx, cy) = (self.xs[i], self.ys[i]);
+        let ri2 = p.carn_interference_radius * p.carn_interference_radius;
+        let mut rivals = 0u32;
+        self.grid.for_each_within(cx, cy, p.carn_interference_radius, |k, xk, yk, kind_k, _| {
+            if k != i && kind_k == CARNIVORE && self.alive[k] {
+                let dx = torus_delta(xk - cx, self.width);
+                let dy = torus_delta(yk - cy, self.height);
+                rivals += (dx * dx + dy * dy < ri2) as u32;
+            }
+        });
+        p.hunt_success * by_size / (1.0 + p.guard_strength * guards as f32) / (1.0 + p.carn_interference * rivals as f32)
     }
 
     fn move_agent(&mut self, i: usize, speed: f32) {
@@ -918,6 +982,7 @@ impl World {
             self.traits.swap_remove(i);
             self.growth.swap_remove(i);
             self.cooldown.swap_remove(i);
+            self.vigilance.swap_remove(i);
             self.cover.swap_remove(i);
             self.alive.swap_remove(i);
             let last = self.genomes.len() - GENOME_LEN;
@@ -940,6 +1005,11 @@ impl World {
             // 向き（ラジアン）。描画で回すのは肉食（三角形）だけなので、計算も肉食だけ
             self.render[o + 5] = if self.kind[i] == CARNIVORE { self.hy[i].atan2(self.hx[i]) } else { 0.0 };
         }
+    }
+
+    /// 種類ごとの量（いまの体の大きさの合計）
+    pub fn biomass(&self, kind: u8) -> f64 {
+        (0..self.count()).filter(|&i| self.kind[i] == kind).map(|i| self.traits[i].size as f64).sum()
     }
 
     /// 種類ごとの形質の平均。[個体数, 大きさ, 最高速度, 視野, 子への投資, 世代]
@@ -1313,6 +1383,8 @@ mod tests {
     #[test]
     fn 繁殖できる個体は相手へ近づく() {
         let mut w = empty_world();
+        // 草があると隠れの効果で相手が見えなくなるので、取り除く
+        w.plants.biomass.fill(0.0);
         let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
         // 相手は繁殖できる距離（12px）の外、視野（30px）の内側
         w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &g);
