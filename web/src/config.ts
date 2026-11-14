@@ -60,7 +60,7 @@ export const SIM_PARAMS = {
   coop_radius: 20,
   coop_strength: 0.3,
   coop_max_allies: 4,
-  carn_interference: 0.3,
+  carn_interference: 0.8,
 
   // 系統
   compat_full_distance: 1.2,
@@ -95,7 +95,7 @@ export const SIM_PARAMS = {
   carn_initial_vision: 48,
   carn_mate_range: 20,
   carn_attack_range: 6,
-  carn_efficiency: 0.4,
+  carn_efficiency: 0.35,
   carn_metabolism: 0.0074,
   carn_repro_threshold: 16,
   carn_birth_cost: 2,
