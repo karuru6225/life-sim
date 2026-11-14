@@ -16,9 +16,9 @@ use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 29;
+const INSPECT_LEN: usize = 30;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
-const SUMMARY_LEN: usize = 17;
+const SUMMARY_LEN: usize = 25;
 
 thread_local! {
     static WORLD: RefCell<Option<World>> = const { RefCell::new(None) };
@@ -149,6 +149,7 @@ pub extern "C" fn deselect() {
 /// 25: 隠れ具合（足元の草で、相手の視野が何割縮むか）
 /// 26: 蓄えられるエネルギーの上限
 /// 27: 繁殖相手が近くにいるか（1 = いる。無性生殖の設定なら常に 1）
+/// 29: 繁殖相手との相性（繁殖が成功する確率。相手がいなければ負）
 /// 28: 成長度（1 で成熟）。17 の大きさは遺伝子が決める大人の大きさで、いまの大きさは 17 × 28
 /// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
 #[unsafe(no_mangle)]
@@ -201,6 +202,7 @@ pub extern "C" fn inspect() -> *const f64 {
             out[26] = w.energy_cap(i) as f64;
             out[27] = if watch.mate_nearby { 1.0 } else { 0.0 };
             out[28] = w.growth[i] as f64;
+            out[29] = watch.mate_compat as f64;
         });
         out.as_ptr()
     })
@@ -215,8 +217,9 @@ pub extern "C" fn inspect_len() -> u32 {
 ///  0: 植物量の合計
 ///  1〜6: 草食の [個体数, 平均の大きさ, 平均の最高速度, 平均の視野, 平均の子への投資, 平均の世代]
 ///  7〜12: 肉食の同じもの
-/// 13, 14: 草食の群れの度合い [集まり具合（Clark-Evans 比）, 向きのそろい具合]
-/// 15, 16: 肉食の同じもの
+/// 13〜17: 草食の群れの度合い（World::herd_stats の 5 つ）
+/// 18〜22: 肉食の同じもの
+/// 23, 24: これまでの交配の回数と、相性で失敗した回数
 #[unsafe(no_mangle)]
 pub extern "C" fn summary() -> *const f64 {
     SUMMARY.with(|buf| {
@@ -225,8 +228,10 @@ pub extern "C" fn summary() -> *const f64 {
             out[0] = w.plants.total();
             out[1..7].copy_from_slice(&w.trait_means(HERBIVORE));
             out[7..13].copy_from_slice(&w.trait_means(CARNIVORE));
-            out[13..15].copy_from_slice(&w.herd_stats(HERBIVORE));
-            out[15..17].copy_from_slice(&w.herd_stats(CARNIVORE));
+            out[13..18].copy_from_slice(&w.herd_stats(HERBIVORE));
+            out[18..23].copy_from_slice(&w.herd_stats(CARNIVORE));
+            out[23] = w.matings as f64;
+            out[24] = w.failed_matings as f64;
         });
         out.as_ptr()
     })

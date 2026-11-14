@@ -95,6 +95,8 @@ pub struct Watch {
     pub throttle: f32,
     /// 直前の tick に、繁殖相手が近くにいたか（無性生殖の設定なら常に true）
     pub mate_nearby: bool,
+    /// 直前の tick の繁殖相手との相性（繁殖が成功する確率）。相手がいなければ負
+    pub mate_compat: f32,
     /// 死んだときの (死因, tick)
     pub death: Option<(u8, u64)>,
 }
@@ -130,6 +132,9 @@ struct Senses {
     kin_hx: f32,
     kin_hy: f32,
     kin_alert: u32,
+    /// 標識色が自分と近い仲間のうち最寄り、とその数
+    similar: Seen,
+    similar_count: u32,
 }
 
 struct Birth {
@@ -188,6 +193,9 @@ pub struct World {
     births: Vec<Birth>,
     births_genomes: Vec<f32>,
     next_id: u32,
+    /// これまでの交配（相手がいて繁殖を試みた回数）と、そのうち相性で失敗した回数
+    pub matings: u64,
+    pub failed_matings: u64,
 }
 
 impl World {
@@ -231,6 +239,8 @@ impl World {
             births: Vec::new(),
             births_genomes: Vec::new(),
             next_id: 1,
+            matings: 0,
+            failed_matings: 0,
             params,
         };
         let p = world.params.clone();
@@ -238,12 +248,14 @@ impl World {
             (HERBIVORE, p.herb_initial, p.herb_initial_size, p.herb_initial_speed, p.herb_initial_vision, p.herb_initial_energy),
             (CARNIVORE, p.carn_initial, p.carn_initial_size, p.carn_initial_speed, p.carn_initial_vision, p.carn_initial_energy),
         ] {
+            // 仲間の入力へのランダムな配線は、種類ごとに 1 回だけ引いて全員で共有する。
+            // 個体ごとに引くと初期個体どうしの遺伝的距離が大きすぎて、最初から互いに繁殖できなくなる
+            let mut g = genome::initial(kind == HERBIVORE, size, speed, vision, 0.0);
+            genome::add_kin_wiring(&mut g, &mut world.rng);
             for _ in 0..count as usize {
                 let (x, y) = world.random_position();
                 // 初期個体は 1 体ずつ違う標識色にする。系統の広がりが色で見える
-                let hue = world.rng.f32();
-                let mut g = genome::initial(kind == HERBIVORE, size, speed, vision, hue);
-                genome::add_kin_wiring(&mut g, &mut world.rng);
+                g[genome::G_HUE] = world.rng.f32();
                 world.spawn(x, y, kind, energy, 0, &g);
             }
         }
@@ -406,6 +418,9 @@ impl World {
         let mut best: [Seen; 3] = [None, None, None];
         let mut best_d2 = [f32::MAX; 3];
         let (mut kin_count, mut kin_hx, mut kin_hy, mut kin_alert) = (0u32, 0.0f32, 0.0f32, 0u32);
+        let (mut similar, mut similar_d2, mut similar_count): (Seen, f32, u32) = (None, f32::MAX, 0);
+        let my_hue = self.traits[i].hue;
+        let hue_similar = self.params.hue_similar;
         let vision2 = vision * vision;
         // 相手の種類と足元の草はグリッドがセル順に並べた写しから受け取る（離れたメモリを読まずに済む）。
         // 安い判定から順に行い、遠い相手はそこで打ち切る
@@ -436,10 +451,27 @@ impl World {
                     // 草食なら天敵が、肉食なら獲物が見えている仲間
                     let s = self.state[j];
                     kin_alert += (s == state::FLEE || s == state::CHASE) as u32;
+                    if genome::hue_distance(my_hue, self.traits[j].hue) <= hue_similar {
+                        similar_count += 1;
+                        if d2 < similar_d2 {
+                            similar_d2 = d2;
+                            similar = Some((j, dx, dy, d2));
+                        }
+                    }
                 }
             }
         });
-        Senses { predator: best[0], prey: best[1], kin: best[2], kin_count, kin_hx, kin_hy, kin_alert }
+        Senses {
+            predator: best[0],
+            prey: best[1],
+            kin: best[2],
+            kin_count,
+            kin_hx,
+            kin_hy,
+            kin_alert,
+            similar,
+            similar_count,
+        }
     }
 
     /// 知覚 → 脳 → 行動。戻り値は (この tick の移動速度, 繁殖したいか, 繁殖相手)
@@ -483,6 +515,13 @@ impl World {
             input[genome::IN_KIN_HEAD_FWD] = f;
             input[genome::IN_KIN_HEAD_RIGHT] = r;
             input[genome::IN_KIN_ALERT] = senses.kin_alert as f32 / n;
+            input[genome::IN_SIM_RATIO] = senses.similar_count as f32 / n;
+        }
+        if let Some((_, dx, dy, d2)) = senses.similar {
+            let d = d2.sqrt().max(1e-3);
+            let (f, r) = to_local(dx / d, dy / d);
+            input[genome::IN_SIM_FWD] = f;
+            input[genome::IN_SIM_RIGHT] = r;
         }
 
         let out = genome::think(self.genome(i), &input);
@@ -514,6 +553,11 @@ impl World {
         let mate = self.find_mate(i, &senses);
         if is_watched {
             self.watch.mate_nearby = !matches!(mate, Mate::Missing);
+            self.watch.mate_compat = match mate {
+                Mate::Partner(j) => self.mating_chance(i, j),
+                Mate::Asexual => 1.0,
+                Mate::Missing => -1.0,
+            };
         }
 
         if self.kind[i] == HERBIVORE {
@@ -682,11 +726,29 @@ impl World {
         // 成熟するまで繁殖できない
         if wants_child && self.growth[i] >= 1.0 && self.energy[i] >= self.repro_threshold(i) {
             match mate {
-                Mate::Partner(j) => self.reproduce(i, birth_cost * t.adult_size, Some(j)),
+                Mate::Partner(j) => {
+                    self.matings += 1;
+                    if self.rng.f32() < self.mating_chance(i, j) {
+                        self.reproduce(i, birth_cost * t.adult_size, Some(j));
+                    } else {
+                        // 相性が悪く失敗した。繁殖のコストは払う（払わないと、相手を選ぶ利益が生まれない）
+                        self.failed_matings += 1;
+                        let cost = (birth_cost * t.adult_size).min(self.energy[i]);
+                        self.energy[i] -= cost;
+                        self.ledger.lost_birth += cost as f64;
+                    }
+                }
                 Mate::Asexual => self.reproduce(i, birth_cost * t.adult_size, None),
                 Mate::Missing => {} // 相手がいなければ繁殖できない
             }
         }
+    }
+
+    /// i と j が繁殖に成功する確率（遺伝的に遠いほど下がる）
+    pub fn mating_chance(&self, i: usize, j: usize) -> f32 {
+        let p = &self.params;
+        let d = genome::genetic_distance(self.genome(i), self.genome(j), p.mutation_trait_sigma, p.mutation_weight_sigma);
+        genome::compatibility(d, p.compat_full_distance, p.compat_zero_distance)
     }
 
     /// 成長させる。maturity は成長度 0 から 1 になるまでの tick 数
@@ -833,16 +895,18 @@ impl World {
         sum
     }
 
-    /// 群れの度合い。[集まり具合（Clark-Evans 比）, 向きのそろい具合]
+    /// 群れの度合い。[集まり具合（Clark-Evans 比）, 向きのそろい具合, 同じ系統どうしのそろい具合,
+    /// 違う系統どうしのそろい具合, 近くの仲間のうち同じ系統の割合]
     ///
     /// - 集まり具合: 最寄りの仲間までの平均距離 ÷ 同じ密度でランダムに散らばった場合の期待値（0.5 / √密度）。
     ///   1 ならランダム、1 未満なら集まっている、1 より大きければ互いに避けている
     /// - 向きのそろい具合: 自分と、半径 HERD_RADIUS 内の仲間の進行方向の cos の平均。0 ならばらばら、1 なら全員同じ向き
     ///
     /// 集まり具合だけだと「草の多い場所に別々に集まっている」のと区別できないので、向きも見る。
+    /// 同じ系統（標識色の差が hue_similar 以下）どうしでだけ向きがそろっていれば、系統の群れと言える。
     /// 計算を軽くするため、HERD_SAMPLE_STEP 体に 1 体だけ調べる。
     /// グリッドを今の位置で作り直す（step の最初にも作り直すので、シミュレーションには影響しない）
-    pub fn herd_stats(&mut self, kind: u8) -> [f64; 2] {
+    pub fn herd_stats(&mut self, kind: u8) -> [f64; 5] {
         const HERD_RADIUS: f32 = 32.0;
         const HERD_SAMPLE_STEP: usize = 4;
         /// 最寄りの仲間を探す範囲。これより遠ければこの距離として数える（疎な種類ではやや過小になる）
@@ -851,17 +915,21 @@ impl World {
         self.grid.build(&self.xs, &self.ys, &self.kind, &self.cover);
         let n_kind = self.count_kind(kind);
         if n_kind < 2 {
-            return [f64::NAN, f64::NAN];
+            return [f64::NAN; 5];
         }
         let (w, h) = (self.width, self.height);
         let (mut nn_sum, mut nn_n) = (0.0f64, 0usize);
         let (mut align_sum, mut align_n) = (0.0f64, 0usize);
+        // [同じ系統, 違う系統] それぞれの向きの cos の合計と数
+        let (mut lin_sum, mut lin_n) = ([0.0f64; 2], [0usize; 2]);
+        let hue_similar = self.params.hue_similar;
         for i in (0..self.count()).step_by(HERD_SAMPLE_STEP) {
             if self.kind[i] != kind {
                 continue;
             }
             let (x, y) = (self.xs[i], self.ys[i]);
             let (hx, hy) = (self.hx[i], self.hy[i]);
+            let my_hue = self.traits[i].hue;
             let mut best = NN_LIMIT * NN_LIMIT;
             self.grid.for_each_within(x, y, NN_LIMIT, |j, xj, yj, kind_j, _| {
                 if j == i || kind_j != kind {
@@ -872,8 +940,12 @@ impl World {
                 let d2 = dx * dx + dy * dy;
                 best = best.min(d2);
                 if d2 < HERD_RADIUS * HERD_RADIUS {
-                    align_sum += (hx * self.hx[j] + hy * self.hy[j]) as f64;
+                    let c = (hx * self.hx[j] + hy * self.hy[j]) as f64;
+                    align_sum += c;
                     align_n += 1;
+                    let other = (genome::hue_distance(my_hue, self.traits[j].hue) > hue_similar) as usize;
+                    lin_sum[other] += c;
+                    lin_n[other] += 1;
                 }
             });
             nn_sum += (best as f64).sqrt();
@@ -882,8 +954,9 @@ impl World {
         let density = n_kind as f64 / (w as f64 * h as f64);
         let expected = 0.5 / density.sqrt();
         let ratio = if nn_n > 0 { nn_sum / nn_n as f64 / expected } else { f64::NAN };
-        let align = if align_n > 0 { align_sum / align_n as f64 } else { 0.0 };
-        [ratio, align]
+        let mean = |s: f64, n: usize| if n > 0 { s / n as f64 } else { f64::NAN };
+        let same_share = mean(lin_n[0] as f64, align_n);
+        [ratio, mean(align_sum, align_n), mean(lin_sum[0], lin_n[0]), mean(lin_sum[1], lin_n[1]), same_share]
     }
 }
 
@@ -1146,6 +1219,24 @@ mod tests {
             let c = w.index_of(id).unwrap();
             assert_eq!(w.children[c], 0, "幼体が繁殖した");
         }
+    }
+
+    #[test]
+    fn 遺伝的に遠い相手とは繁殖できない() {
+        let mut w = empty_world();
+        let a = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        let mut b = a.clone();
+        // 脳の重みを大きくずらして、遺伝的に遠い相手にする
+        for v in &mut b[genome::N_TRAITS..] {
+            *v += 1.0;
+        }
+        w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &a);
+        w.spawn(103.0, 100.0, HERBIVORE, 5.0, 0, &b);
+        assert!(w.mating_chance(0, 1) < 1e-6, "相性はほぼ 0 のはず");
+        w.step();
+        assert_eq!(w.count(), 2, "遠い相手と繁殖した");
+        assert_eq!(w.failed_matings, 1);
+        assert!(w.energy[0] < 15.0, "失敗しても繁殖のコストは払う");
     }
 
     #[test]

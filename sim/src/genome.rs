@@ -49,7 +49,13 @@ pub const IN_KIN_HEAD_FWD: usize = 14;
 pub const IN_KIN_HEAD_RIGHT: usize = 15;
 /// 見えている仲間のうち、興奮している（草食は天敵が、肉食は獲物が見えている）割合
 pub const IN_KIN_ALERT: usize = 16;
-pub const N_IN: usize = 17;
+// 系統の見分け（標識色が自分と近い仲間 ＝ 血縁の近い仲間）
+/// 標識色が近い仲間のうち最寄りの方向（自分基準の前方・右方成分）
+pub const IN_SIM_FWD: usize = 17;
+pub const IN_SIM_RIGHT: usize = 18;
+/// 見えている仲間のうち、標識色が近い個体の割合
+pub const IN_SIM_RATIO: usize = 19;
+pub const N_IN: usize = 20;
 
 pub const N_HIDDEN: usize = 8;
 
@@ -229,6 +235,9 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         IN_KIN_HEAD_FWD,
         IN_KIN_HEAD_RIGHT,
         IN_KIN_ALERT,
+        IN_SIM_FWD,
+        IN_SIM_RIGHT,
+        IN_SIM_RATIO,
     ];
     for h in [6, 7] {
         for &k in &kin_inputs {
@@ -238,6 +247,41 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
             wire_out(g, o, h, rng.gaussian() * SIGMA_OUT);
         }
     }
+}
+
+/// 2 つの遺伝子の違い（遺伝的距離）。標識色を除く全遺伝子の差を、変異 1 回の大きさを単位にして
+/// 二乗平均の平方根を取る。形質は比（対数）で、脳の重みは差で測る。
+/// 同じ系統の中では小さく、別々に変異を重ねた系統どうしほど大きくなる
+pub fn genetic_distance(a: &[f32], b: &[f32], trait_sigma: f32, weight_sigma: f32) -> f32 {
+    let mut sum = 0.0f32;
+    let mut n = 0;
+    for k in 0..N_TRAITS {
+        if k == G_HUE {
+            continue; // 標識色は見分けの手がかりで、交配の可否には使わない
+        }
+        let d = (a[k].abs().max(1e-3) / b[k].abs().max(1e-3)).ln() / trait_sigma;
+        sum += d * d;
+        n += 1;
+    }
+    for k in N_TRAITS..GENOME_LEN {
+        let d = (a[k] - b[k]) / weight_sigma;
+        sum += d * d;
+        n += 1;
+    }
+    (sum / n as f32).sqrt()
+}
+
+/// 遺伝的距離 distance の相手との繁殖が成功する確率。
+/// full 以下なら必ず成功、zero 以上なら必ず失敗、間はなめらかに下がる（smoothstep）
+pub fn compatibility(distance: f32, full: f32, zero: f32) -> f32 {
+    let t = ((distance - full) / (zero - full)).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
+/// 2 つの標識色（0〜1 の色相）の差。色相環を一周するので、0.95 と 0.05 の差は 0.1
+pub fn hue_distance(a: f32, b: f32) -> f32 {
+    let d = (a - b).abs();
+    d.min(1.0 - d)
 }
 
 /// 両親の遺伝子を混ぜた子の遺伝子を out の末尾に追加する。
@@ -360,6 +404,39 @@ mod tests {
             let block = &out[W1 + h * (N_IN + 1)..W1 + (h + 1) * (N_IN + 1)];
             assert!(block.iter().all(|&v| v == block[0]), "中間ニューロン {h} が混ざっている");
         }
+    }
+
+    #[test]
+    fn 遺伝的距離は同じなら0で変異を重ねるほど大きい() {
+        let m = Mutation { rate: 0.02, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01 };
+        let base = initial(true, 1.0, 1.3, 30.0, 0.3);
+        assert_eq!(genetic_distance(&base, &base, 0.05, 0.1), 0.0);
+        let mut rng = Rng::new(1);
+        let (mut a, mut b) = (base.clone(), base.clone());
+        let mut last = 0.0;
+        for generation in 1..=200 {
+            mutate(&mut a, &m, &mut rng);
+            mutate(&mut b, &m, &mut rng);
+            if generation % 50 == 0 {
+                let d = genetic_distance(&a, &b, 0.05, 0.1);
+                assert!(d > last, "{generation} 世代: {d} が前回 {last} 以下");
+                last = d;
+            }
+        }
+    }
+
+    #[test]
+    fn 相性は距離に応じてなめらかに下がる() {
+        assert_eq!(compatibility(0.5, 1.2, 2.5), 1.0);
+        assert_eq!(compatibility(3.0, 1.2, 2.5), 0.0);
+        let mid = compatibility(1.85, 1.2, 2.5);
+        assert!((mid - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn 色相の差は一周を考慮する() {
+        assert!((hue_distance(0.95, 0.05) - 0.1).abs() < 1e-6);
+        assert!((hue_distance(0.2, 0.5) - 0.3).abs() < 1e-6);
     }
 
     #[test]
