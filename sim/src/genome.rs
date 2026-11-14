@@ -61,7 +61,11 @@ pub const IN_READY: usize = 20;
 pub const IN_MATE_NEAR: usize = 21;
 /// 前方（WATER_LOOKAHEAD px 先）が水なら 1
 pub const IN_WATER_AHEAD: usize = 22;
-pub const N_IN: usize = 23;
+/// 最寄りの獲物の大きさ ÷ 自分の大きさ（見えていなければ 0）。大きすぎる獲物は反撃してくる
+pub const IN_PREY_SIZE: usize = 23;
+/// 最寄りの天敵の大きさ ÷ 自分の大きさ（見えていなければ 0）
+pub const IN_PRED_SIZE: usize = 24;
+pub const N_IN: usize = 25;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 

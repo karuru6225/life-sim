@@ -45,6 +45,8 @@ pub mod death {
     pub const STARVED: u8 = 1;
     pub const OLD_AGE: u8 = 2;
     pub const EATEN: u8 = 3;
+    /// 狩りで大きな獲物を襲い、反撃を受けて死んだ
+    pub const INJURED: u8 = 4;
 }
 
 /// 近傍探索のグリッドのセルの大きさ。細かいほど、視野の小さい個体が調べる範囲を絞れる
@@ -113,6 +115,13 @@ pub struct Watch {
 /// 欲求の番号（genome::mix_drives の並び）
 const DRIVE_MATE: usize = 1;
 
+/// 狩りの見込み。chance: 成功する確率、size_ratio: 獲物の大きさ ÷ 肉食の大きさ（協力込み）、guards: 獲物の近くの仲間の数
+struct HuntOdds {
+    chance: f32,
+    size_ratio: f32,
+    guards: u32,
+}
+
 /// 狩りの結果
 enum Hunt {
     Caught,
@@ -149,6 +158,9 @@ struct Senses {
     similar_count: u32,
     /// 繁殖相手の候補（成熟した仲間のうち、標識色が近い個体の最寄り。いなければ成熟した仲間の最寄り）
     mate: Seen,
+    /// 近づきすぎた同じ種類の個体から離れる方向（近いほど強い）
+    sep_dx: f32,
+    sep_dy: f32,
     /// 見えている仲間の相対位置の合計（仲間の中心の方向を出すため）
     kin_dx: f32,
     kin_dy: f32,
@@ -467,6 +479,10 @@ impl World {
         let mut best_d2 = [f32::MAX; 3];
         let (mut kin_count, mut kin_hx, mut kin_hy, mut kin_alert) = (0u32, 0.0f32, 0.0f32, 0u32);
         let (mut kin_dx, mut kin_dy, mut alarm_hx, mut alarm_hy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let (mut sep_dx, mut sep_dy) = (0.0f32, 0.0f32);
+        // 近づきすぎない距離（体がぶつかる距離なので、草で隠れて見えなくても効く）
+        let space = self.params.personal_space * self.traits[i].size;
+        let space2 = space * space;
         // 草食は警戒しているほど天敵に遠くから気づける（警戒 0 で視野の vigilance_min_range 倍）
         let vmin = self.params.vigilance_min_range;
         let threat_range = vision * (vmin + (1.0 - vmin) * self.vigilance[i]);
@@ -485,6 +501,12 @@ impl World {
             let d2 = dx * dx + dy * dy;
             if d2 >= vision2 {
                 return;
+            }
+            if kind_j == my_kind && d2 < space2 && d2 > 1e-6 && j != i {
+                let d = d2.sqrt();
+                let push = 1.0 - d / space;
+                sep_dx -= dx / d * push;
+                sep_dy -= dy / d * push;
             }
             let mut r = vision * (1.0 - hide * cover_j);
             if my_kind == HERBIVORE && kind_j != my_kind {
@@ -546,6 +568,8 @@ impl World {
             similar,
             similar_count,
             mate: mate[0].or(mate[1]),
+            sep_dx,
+            sep_dy,
             kin_dx,
             kin_dy,
             alarm_hx,
@@ -603,6 +627,13 @@ impl World {
             input[genome::IN_SIM_RIGHT] = r;
         }
 
+        let my_size = t.size;
+        if let Some((j, _, _, _)) = senses.prey {
+            input[genome::IN_PREY_SIZE] = self.traits[j].size / my_size;
+        }
+        if let Some((j, _, _, _)) = senses.predator {
+            input[genome::IN_PRED_SIZE] = self.traits[j].size / my_size;
+        }
         let ahead_x = wrap(x + hx * genome::WATER_LOOKAHEAD, self.width);
         let ahead_y = wrap(y + hy * genome::WATER_LOOKAHEAD, self.height);
         input[genome::IN_WATER_AHEAD] = self.terrain.is_water(ahead_x, ahead_y) as u8 as f32;
@@ -645,7 +676,11 @@ impl World {
         if self.kind[i] == HERBIVORE {
             self.vigilance[i] = genome::vigilance(&out);
         }
-        let (df, dr) = genome::mix_drives(&out, &drives);
+        let (mut df, mut dr) = genome::mix_drives(&out, &drives);
+        // 近づきすぎた個体からは離れる（欲求の優先度とは別の、固定のルール）
+        let (sf, sr) = to_local(senses.sep_dx, senses.sep_dy);
+        df += self.params.separation_weight * sf;
+        dr += self.params.separation_weight * sr;
         let dominant = self.dominant_drive(&out, &drives);
 
         let is_watched = self.id[i] == self.watch.id;
@@ -784,7 +819,9 @@ impl World {
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
         self.cooldown[i] = self.params.attack_cooldown as u16;
-        if self.rng.f32() >= self.hunt_chance(i, j) {
+        let odds = self.hunt_odds(i, j);
+        if self.rng.f32() >= odds.chance {
+            self.counterattack(i, &odds);
             return Hunt::Failed; // 逃げられた
         }
         // 仕留めた獲物は、自分と近くの仲間（同じ系統の肉食）で等分する。
@@ -839,6 +876,29 @@ impl World {
     /// 近くの仲間（同じ系統の肉食）が多いほど上がり、大きな獲物も狩れる（協力）。
     /// 近くに系統の違う肉食が多いほど下がる（干渉）
     pub fn hunt_chance(&self, i: usize, j: usize) -> f32 {
+        self.hunt_odds(i, j).chance
+    }
+
+    /// 狩りに失敗したとき、獲物の反撃でけがをする。獲物が大きいほど、獲物の近くに仲間が多いほど痛い。
+    /// けがで失うエネルギーが手持ちを超えたら死ぬ
+    fn counterattack(&mut self, i: usize, odds: &HuntOdds) {
+        let p = &self.params;
+        let excess = odds.size_ratio - p.counter_start_ratio;
+        if excess <= 0.0 {
+            return;
+        }
+        let damage = p.counter_damage * excess * (1.0 + p.guard_strength * odds.guards as f32);
+        if damage >= self.energy[i] {
+            self.ledger.lost_metabolism += self.energy[i] as f64;
+            self.energy[i] = 0.0;
+            self.die(i, death::INJURED);
+        } else {
+            self.energy[i] -= damage;
+            self.ledger.lost_metabolism += damage as f64;
+        }
+    }
+
+    fn hunt_odds(&self, i: usize, j: usize) -> HuntOdds {
         let p = &self.params;
         // 協力して狩る: 近くの仲間（同じ系統の肉食）が多いほど、獲物から見た自分が大きくなる
         let (rivals, allies) = self.carnivore_neighbors(i);
@@ -846,9 +906,7 @@ impl World {
         let effective = self.traits[i].size * (1.0 + p.coop_strength * helpers);
         let ratio = self.traits[j].size / effective;
         let by_size = 1.0 - ((ratio - p.hunt_easy_ratio) / (p.hunt_impossible_ratio - p.hunt_easy_ratio)).clamp(0.0, 1.0);
-        if by_size <= 0.0 {
-            return 0.0;
-        }
+        // 大きさで不可能でも、仲間の数（反撃の強さ）は数えるので、ここでは打ち切らない
         let (x, y) = (self.xs[j], self.ys[j]);
         let prey_kind = self.kind[j];
         let r2 = p.guard_radius * p.guard_radius;
@@ -861,7 +919,9 @@ impl World {
             }
         });
         // 肉食どうしの干渉（獲物の横取りや縄張り争い）: 近くに系統の違う肉食が多いほど成功しにくい
-        p.hunt_success * by_size / (1.0 + p.guard_strength * guards as f32) / (1.0 + p.carn_interference * rivals as f32)
+        let chance =
+            p.hunt_success * by_size / (1.0 + p.guard_strength * guards as f32) / (1.0 + p.carn_interference * rivals as f32);
+        HuntOdds { chance, size_ratio: ratio, guards }
     }
 
     fn move_agent(&mut self, i: usize, speed: f32) {
@@ -1568,6 +1628,42 @@ mod tests {
                 assert_eq!(w.plants.biomass[k], 0.0);
             }
         }
+    }
+
+    #[test]
+    fn 近づきすぎた個体どうしは離れる() {
+        let mut w = empty_world();
+        w.plants.biomass.fill(0.0);
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        w.spawn(101.5, 100.0, HERBIVORE, 5.0, 0, &g);
+        for _ in 0..10 {
+            w.step();
+        }
+        let d = (torus_delta(w.xs[1] - w.xs[0], w.width).powi(2) + torus_delta(w.ys[1] - w.ys[0], w.height).powi(2)).sqrt();
+        assert!(d > 3.0, "離れていない: {d}");
+    }
+
+    #[test]
+    fn 大きな獲物を襲って失敗すると反撃を受ける() {
+        let mut w = hunting_world(2.0);
+        w.params.hunt_success = 0.0; // 必ず失敗させる
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        let id = w.id[0];
+        assert!(matches!(w.try_hunt(0, 1, 16.0), Hunt::Failed));
+        // けが 8 × (2.0 − 1.2) = 6.4 は、手持ち 5 − 襲う費用 0.3 を超えるので死ぬ
+        assert!(!w.alive[0], "反撃で死ぬはず");
+        assert_eq!(w.id[0], id);
+        assert_eq!(w.watch.death, None);
+    }
+
+    #[test]
+    fn 小さな獲物なら失敗しても反撃を受けない() {
+        let mut w = hunting_world(1.0);
+        w.params.hunt_success = 0.0;
+        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.try_hunt(0, 1, 16.0);
+        assert!((w.energy[0] - (5.0 - w.params.attack_cost)).abs() < 1e-5, "襲う費用だけ失う");
     }
 
     #[test]
