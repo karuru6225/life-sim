@@ -24,6 +24,8 @@ const TRAIT_ROWS: [string, (m: TraitMeans) => number, number][] = [
   ['視野', (m) => m.vision, 1],
   ['子への投資', (m) => m.invest, 2],
   ['世代', (m) => m.generation, 0],
+  ['集まり具合', (m) => m.clustering, 2],
+  ['向きのそろい', (m) => m.alignment, 2],
 ];
 
 export class Hud {
@@ -49,7 +51,7 @@ export class Hud {
       <canvas class="hud-chart" data-k="chart" aria-label="直近 2 分の個体数の推移"></canvas>
       <div class="chart-caption">直近 2 分 · 線ごとに縦軸の範囲が違う</div>
       <table class="trait-table">
-        <caption>形質の平均</caption>
+        <caption>形質の平均と群れの度合い</caption>
         <thead><tr><th></th><th>草食</th><th>肉食</th></tr></thead>
         <tbody data-k="traits"></tbody>
       </table>
@@ -86,6 +88,7 @@ export class Hud {
         <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.background}, ${COLORS.plant})"></div>
         <div class="swatch-scale"><span>なし</span><span>上限</span></div>
         <p class="legend-note">点の大きさは「大きさ」の遺伝子に比例。肉食は見やすさのため 1.5 倍で表示</p>
+        <p class="legend-note">集まり具合: 最寄りの仲間までの距離 ÷ ランダムに散らばった場合の期待値（1 でランダム、小さいほど集まっている）。向きのそろい: 近くの仲間との向きの一致度（0 でばらばら、1 で同じ向き）</p>
       </div>
       <p class="hud-help">ドラッグ: 移動 · ホイール: ズーム · ダブルクリック: 全体 · 拡大してクリック: 個体を選択 · Space: 一時停止</p>
     `;
@@ -142,7 +145,8 @@ export class Hud {
 
     TRAIT_ROWS.forEach(([, get, digits], r) => {
       [s.herbivore, s.carnivore].forEach((m, c) => {
-        this.traitCells[r][c].textContent = m.count > 0 ? get(m).toFixed(digits) : '絶滅';
+        const value = get(m);
+        this.traitCells[r][c].textContent = m.count === 0 ? '絶滅' : Number.isFinite(value) ? value.toFixed(digits) : '–';
       });
     });
 

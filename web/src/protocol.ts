@@ -52,6 +52,10 @@ export interface TraitMeans {
   vision: number;
   invest: number;
   generation: number;
+  /** 集まり具合（Clark-Evans 比）。1 ならランダム、1 未満なら集まっている */
+  clustering: number;
+  /** 近くの仲間との向きのそろい具合。0 ならばらばら、1 なら全員同じ向き */
+  alignment: number;
 }
 
 /** inspect 配列の各要素の位置。sim/src/lib.rs の inspect() と一致させること */

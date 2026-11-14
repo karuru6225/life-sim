@@ -41,7 +41,15 @@ pub const IN_PREY_NEAR: usize = 9;
 pub const IN_KIN_FWD: usize = 10;
 pub const IN_KIN_RIGHT: usize = 11;
 pub const IN_KIN_NEAR: usize = 12;
-pub const N_IN: usize = 13;
+// 群れの知覚（見えている仲間全体の集計）
+/// 見えている仲間の数（softsign(数 / 4) で 0〜1 に縮める）
+pub const IN_KIN_COUNT: usize = 13;
+/// 見えている仲間の平均の向き（自分基準の前方・右方成分。向きがそろっているほど長い）
+pub const IN_KIN_HEAD_FWD: usize = 14;
+pub const IN_KIN_HEAD_RIGHT: usize = 15;
+/// 見えている仲間のうち、興奮している（草食は天敵が、肉食は獲物が見えている）割合
+pub const IN_KIN_ALERT: usize = 16;
+pub const N_IN: usize = 17;
 
 pub const N_HIDDEN: usize = 8;
 
@@ -188,6 +196,31 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     out_bias(&mut g, OUT_REPRODUCE, 2.0);
     out_bias(&mut g, OUT_EAT, 2.0);
     g
+}
+
+/// 群れの知覚につながる配線（中間ニューロン 6, 7）を、小さなランダムな重みで足す。
+/// 手で群れを作る配線を入れると「進化で生まれた群れ」ではなくなるので、ばらつきの元だけ用意して、
+/// 群れるかどうかは進化に任せる。初期の脳では中間ニューロン 6, 7 はどちらの種類も使っていない
+pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
+    const SIGMA_IN: f32 = 1.0;
+    const SIGMA_OUT: f32 = 0.3;
+    let kin_inputs = [
+        IN_KIN_FWD,
+        IN_KIN_RIGHT,
+        IN_KIN_NEAR,
+        IN_KIN_COUNT,
+        IN_KIN_HEAD_FWD,
+        IN_KIN_HEAD_RIGHT,
+        IN_KIN_ALERT,
+    ];
+    for h in [6, 7] {
+        for &k in &kin_inputs {
+            wire_hidden(g, h, k, rng.gaussian() * SIGMA_IN);
+        }
+        for o in [OUT_DIR_FWD, OUT_DIR_RIGHT, OUT_THROTTLE] {
+            wire_out(g, o, h, rng.gaussian() * SIGMA_OUT);
+        }
+    }
 }
 
 /// 変異の設定

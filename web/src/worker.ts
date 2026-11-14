@@ -193,21 +193,23 @@ function reportStats(s: SimExports, now: number): void {
   if (elapsed < STATS_INTERVAL_MS) return;
   // 並びは sim/src/lib.rs の summary() を参照
   const v = new Float64Array(s.memory.buffer, s.summary(), s.summary_len());
-  const means = (o: number) => ({
+  const means = (o: number, herd: number) => ({
     count: v[o],
     size: v[o + 1],
     speed: v[o + 2],
     vision: v[o + 3],
     invest: v[o + 4],
     generation: v[o + 5],
+    clustering: v[herd],
+    alignment: v[herd + 1],
   });
   post({
     type: 'stats',
     ticksPerSecond: (statTicks * 1000) / elapsed,
     msPerTick: statTicks > 0 ? statStepMs / statTicks : 0,
     plantTotal: v[0],
-    herbivore: means(1),
-    carnivore: means(7),
+    herbivore: means(1, 13),
+    carnivore: means(7, 15),
   });
   statStart = now;
   statTicks = 0;

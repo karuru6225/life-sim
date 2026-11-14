@@ -102,6 +102,11 @@ struct Senses {
     predator: Seen,
     prey: Seen,
     kin: Seen,
+    /// 見えている仲間の数・向きの合計・興奮している数
+    kin_count: u32,
+    kin_hx: f32,
+    kin_hy: f32,
+    kin_alert: u32,
 }
 
 struct Birth {
@@ -208,7 +213,8 @@ impl World {
                 let (x, y) = world.random_position();
                 // 初期個体は 1 体ずつ違う標識色にする。系統の広がりが色で見える
                 let hue = world.rng.f32();
-                let g = genome::initial(kind == HERBIVORE, size, speed, vision, hue);
+                let mut g = genome::initial(kind == HERBIVORE, size, speed, vision, hue);
+                genome::add_kin_wiring(&mut g, &mut world.rng);
                 world.spawn(x, y, kind, energy, 0, &g);
             }
         }
@@ -336,6 +342,7 @@ impl World {
         // [天敵, 獲物, 仲間]
         let mut best: [Seen; 3] = [None, None, None];
         let mut best_d2 = [f32::MAX; 3];
+        let (mut kin_count, mut kin_hx, mut kin_hy, mut kin_alert) = (0u32, 0.0f32, 0.0f32, 0u32);
         let vision2 = vision * vision;
         // 相手の種類と足元の草はグリッドがセル順に並べた写しから受け取る（離れたメモリを読まずに済む）。
         // 安い判定から順に行い、遠い相手はそこで打ち切る
@@ -359,9 +366,17 @@ impl World {
                     best_d2[rel] = d2;
                     best[rel] = Some((j, dx, dy, d2));
                 }
+                if rel == 2 {
+                    kin_count += 1;
+                    kin_hx += self.hx[j];
+                    kin_hy += self.hy[j];
+                    // 草食なら天敵が、肉食なら獲物が見えている仲間
+                    let s = self.state[j];
+                    kin_alert += (s == state::FLEE || s == state::CHASE) as u32;
+                }
             }
         });
-        Senses { predator: best[0], prey: best[1], kin: best[2] }
+        Senses { predator: best[0], prey: best[1], kin: best[2], kin_count, kin_hx, kin_hy, kin_alert }
     }
 
     /// 知覚 → 脳 → 行動。戻り値は (この tick の移動速度, 繁殖したいか)
@@ -396,6 +411,15 @@ impl World {
                 // 「見えたか」と「どれだけ近いか」の両方をこの 1 つで伝える
                 input[at + 2] = 1.0 - 0.5 * (d / t.vision).min(1.0);
             }
+        }
+
+        if senses.kin_count > 0 {
+            let n = senses.kin_count as f32;
+            input[genome::IN_KIN_COUNT] = softsign(n / 4.0);
+            let (f, r) = to_local(senses.kin_hx / n, senses.kin_hy / n);
+            input[genome::IN_KIN_HEAD_FWD] = f;
+            input[genome::IN_KIN_HEAD_RIGHT] = r;
+            input[genome::IN_KIN_ALERT] = senses.kin_alert as f32 / n;
         }
 
         let out = genome::think(self.genome(i), &input);
@@ -650,6 +674,59 @@ impl World {
             }
         }
         sum
+    }
+
+    /// 群れの度合い。[集まり具合（Clark-Evans 比）, 向きのそろい具合]
+    ///
+    /// - 集まり具合: 最寄りの仲間までの平均距離 ÷ 同じ密度でランダムに散らばった場合の期待値（0.5 / √密度）。
+    ///   1 ならランダム、1 未満なら集まっている、1 より大きければ互いに避けている
+    /// - 向きのそろい具合: 自分と、半径 HERD_RADIUS 内の仲間の進行方向の cos の平均。0 ならばらばら、1 なら全員同じ向き
+    ///
+    /// 集まり具合だけだと「草の多い場所に別々に集まっている」のと区別できないので、向きも見る。
+    /// 計算を軽くするため、HERD_SAMPLE_STEP 体に 1 体だけ調べる。
+    /// グリッドを今の位置で作り直す（step の最初にも作り直すので、シミュレーションには影響しない）
+    pub fn herd_stats(&mut self, kind: u8) -> [f64; 2] {
+        const HERD_RADIUS: f32 = 32.0;
+        const HERD_SAMPLE_STEP: usize = 4;
+        /// 最寄りの仲間を探す範囲。これより遠ければこの距離として数える（疎な種類ではやや過小になる）
+        const NN_LIMIT: f32 = 128.0;
+
+        self.grid.build(&self.xs, &self.ys, &self.kind, &self.cover);
+        let n_kind = self.count_kind(kind);
+        if n_kind < 2 {
+            return [f64::NAN, f64::NAN];
+        }
+        let (w, h) = (self.width, self.height);
+        let (mut nn_sum, mut nn_n) = (0.0f64, 0usize);
+        let (mut align_sum, mut align_n) = (0.0f64, 0usize);
+        for i in (0..self.count()).step_by(HERD_SAMPLE_STEP) {
+            if self.kind[i] != kind {
+                continue;
+            }
+            let (x, y) = (self.xs[i], self.ys[i]);
+            let (hx, hy) = (self.hx[i], self.hy[i]);
+            let mut best = NN_LIMIT * NN_LIMIT;
+            self.grid.for_each_within(x, y, NN_LIMIT, |j, xj, yj, kind_j, _| {
+                if j == i || kind_j != kind {
+                    return;
+                }
+                let dx = torus_delta(xj - x, w);
+                let dy = torus_delta(yj - y, h);
+                let d2 = dx * dx + dy * dy;
+                best = best.min(d2);
+                if d2 < HERD_RADIUS * HERD_RADIUS {
+                    align_sum += (hx * self.hx[j] + hy * self.hy[j]) as f64;
+                    align_n += 1;
+                }
+            });
+            nn_sum += (best as f64).sqrt();
+            nn_n += 1;
+        }
+        let density = n_kind as f64 / (w as f64 * h as f64);
+        let expected = 0.5 / density.sqrt();
+        let ratio = if nn_n > 0 { nn_sum / nn_n as f64 / expected } else { f64::NAN };
+        let align = if align_n > 0 { align_sum / align_n as f64 } else { 0.0 };
+        [ratio, align]
     }
 }
 

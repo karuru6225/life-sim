@@ -18,7 +18,7 @@ use world::{CARNIVORE, HERBIVORE, RENDER_STRIDE, World};
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
 const INSPECT_LEN: usize = 27;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
-const SUMMARY_LEN: usize = 13;
+const SUMMARY_LEN: usize = 17;
 
 thread_local! {
     static WORLD: RefCell<Option<World>> = const { RefCell::new(None) };
@@ -197,6 +197,8 @@ pub extern "C" fn inspect_len() -> u32 {
 ///  0: 植物量の合計
 ///  1〜6: 草食の [個体数, 平均の大きさ, 平均の最高速度, 平均の視野, 平均の子への投資, 平均の世代]
 ///  7〜12: 肉食の同じもの
+/// 13, 14: 草食の群れの度合い [集まり具合（Clark-Evans 比）, 向きのそろい具合]
+/// 15, 16: 肉食の同じもの
 #[unsafe(no_mangle)]
 pub extern "C" fn summary() -> *const f64 {
     SUMMARY.with(|buf| {
@@ -205,6 +207,8 @@ pub extern "C" fn summary() -> *const f64 {
             out[0] = w.plants.total();
             out[1..7].copy_from_slice(&w.trait_means(HERBIVORE));
             out[7..13].copy_from_slice(&w.trait_means(CARNIVORE));
+            out[13..15].copy_from_slice(&w.herd_stats(HERBIVORE));
+            out[15..17].copy_from_slice(&w.herd_stats(CARNIVORE));
         });
         out.as_ptr()
     })
