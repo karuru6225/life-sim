@@ -16,6 +16,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.GRAZE]: '草を食べている',
     [STATE.SEEK]: '食べずに移動している',
     [STATE.FLEE]: '肉食が見えている',
+    [STATE.COURT]: '繁殖相手に向かっている',
     [STATE.WANDER]: '歩き回っている',
   },
   [CARNIVORE]: {
@@ -23,6 +24,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.CHASE]: '獲物が見えている',
     [STATE.EAT]: '獲物を食べた',
     [STATE.MISSED]: '襲ったが逃げられた',
+    [STATE.COURT]: '繁殖相手に向かっている',
   },
 };
 
@@ -67,6 +69,7 @@ export class Inspector {
           <dt title="足元の草で、相手から見つかる距離が何割縮むか">隠れ</dt><dd data-k="hidden">–</dd>
         </dl>
         <div class="insp-section">脳の判断（直前の tick）</div>
+        <div class="priorities" data-k="priorities" title="どの欲求をどれだけ優先しているか。進む向きは、欲求ごとの方向をこの割合で混ぜて決まる"></div>
         <dl class="hud-rows">
           <dt>向き</dt><dd data-k="turn">–</dd>
           <dt>速さ</dt><dd data-k="throttle">–</dd>
@@ -147,6 +150,19 @@ export class Inspector {
     this.el.speed.textContent = `${v[INSPECT.speed].toFixed(2)} px/tick`;
     this.el.pos.textContent = `${Math.round(v[INSPECT.x])}, ${Math.round(v[INSPECT.y])}`;
     this.el.hidden.textContent = `見つかる距離 −${Math.round(v[INSPECT.hidden] * 100)}%`;
+
+    const pri: [string, number][] = [
+      ['食べる', v[INSPECT.priFood]],
+      ['繁殖', v[INSPECT.priMate]],
+      ['逃げる', v[INSPECT.priFlee]],
+      ['自由', v[INSPECT.priFree]],
+    ];
+    this.el.priorities.innerHTML = pri
+      .map(
+        ([label, p]) =>
+          `<div class="pri-row"><span>${label}</span><div class="meter"><div class="meter-fill" style="width:${Math.round(p * 100)}%"></div></div><span class="pri-value">${Math.round(p * 100)}%</span></div>`,
+      )
+      .join('');
 
     const turnDeg = (v[INSPECT.turn] * 180) / Math.PI;
     this.el.turn.textContent =

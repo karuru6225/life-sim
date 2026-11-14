@@ -115,13 +115,18 @@ export const INSPECT = {
   growth: 28,
   /** 繁殖相手との相性（繁殖が成功する確率）。相手がいなければ負 */
   mateCompat: 29,
+  /** 欲求ごとの優先度（0〜1）。食べる・繁殖・逃げる・自由 */
+  priFood: 30,
+  priMate: 31,
+  priFlee: 32,
+  priFree: 33,
 } as const;
 
 export const HERBIVORE = 0;
 export const CARNIVORE = 1;
 
 /** sim/src/world.rs の state と一致させること */
-export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6 } as const;
+export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6, COURT: 7 } as const;
 
 /** sim/src/world.rs の death と一致させること */
 export const DEATH = { STARVED: 1, OLD_AGE: 2, EATEN: 3 } as const;
