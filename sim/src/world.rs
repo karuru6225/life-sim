@@ -244,13 +244,19 @@ impl World {
         let height = params.world_height;
         // 地形は個体とは別の乱数の流れで作る（地形の作り方を変えても、個体の歴史の乱数がずれないように）
         let terrain = if params.water_fraction <= 0.0 && params.fertility_min >= 1.0 {
-            Terrain::flat(width, height, params.plant_cell)
+            Terrain::flat(width, height, params.plant_cell, params.temp_mean)
         } else {
             let spec = TerrainSpec {
                 water_fraction: params.water_fraction,
                 elevation_scale: params.elevation_scale,
                 fertility_scale: params.fertility_scale,
                 fertility_min: params.fertility_min,
+                temp_mean: params.temp_mean,
+                temp_latitude: params.temp_latitude,
+                temp_lapse: params.temp_lapse,
+                temp_noise: params.temp_noise,
+                plant_temp_opt: params.plant_temp_opt,
+                plant_temp_width: params.plant_temp_width,
             };
             Terrain::generate(width, height, params.plant_cell, &spec, &mut Rng::new(seed ^ 0x7e44_a1d3))
         };
@@ -312,6 +318,8 @@ impl World {
                 let (x, y) = world.random_position();
                 // 初期個体は 1 体ずつ違う標識色にする。系統の広がりが色で見える
                 g[genome::G_HUE] = world.rng.f32();
+                // 初期個体は、置かれた場所の気候に適応している
+                g[genome::G_TEMP_PREF] = world.terrain.temperature_at(x, y);
                 world.spawn(x, y, kind, energy, 0, &g);
             }
         }
@@ -613,6 +621,7 @@ impl World {
         input[genome::IN_PLANT_HERE] = self.cover[i];
         let fit_here = self.habitat_fit(i, self.terrain.fertility[self.terrain.cell_index(x, y)]);
         input[genome::IN_HABITAT_FIT] = fit_here;
+        input[genome::IN_TEMP_DIFF] = (self.terrain.temperature_at(x, y) - t.temp_pref) / 10.0;
         // 草食は、自分の食べられる植生の草を優先して探す
         let gradient = if self.kind[i] == HERBIVORE {
             let (natal, p) = (self.natal[i], &self.params);
@@ -1011,10 +1020,13 @@ impl World {
         // 持っている以上は失えない（エネルギーが負になって帳尻が狂うのを防ぐ）
         // 速く走れる体は、走っていなくても維持費がかかる（最高速度 × 大きさの 0.75 乗に比例）
         let upkeep = p.speed_upkeep * t.max_speed * t.size_pow075;
+        // 体温を保つ費用: 好みの気温との差に比例し、大きいほど体積あたりは割安
+        let temp_here = self.terrain.temperature_at(self.xs[i], self.ys[i]);
+        let thermal = p.thermo_cost * (temp_here - t.temp_pref).abs() * t.thermal_scale;
         // 基本の代謝は動いている度合いに応じて変わる（止まっていれば rest_metabolism 倍。待ち伏せや休息で消費を抑えられる）
         let activity = (speed / t.max_speed).clamp(0.0, 1.0);
         let basal = metabolism * t.size_pow075 * (p.rest_metabolism + (1.0 - p.rest_metabolism) * activity);
-        let cost = (basal + upkeep + p.vision_cost * t.vision + p.move_cost * t.size * speed * speed).min(self.energy[i]);
+        let cost = (basal + upkeep + thermal + p.vision_cost * t.vision + p.move_cost * t.size * speed * speed).min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
         self.age[i] += 1;
@@ -1060,7 +1072,13 @@ impl World {
     /// i と j が繁殖に成功する確率（遺伝的に遠いほど下がる）
     pub fn mating_chance(&self, i: usize, j: usize) -> f32 {
         let p = &self.params;
-        let d = genome::genetic_distance(self.genome(i), self.genome(j), p.mutation_trait_sigma, p.mutation_weight_sigma);
+        let d = genome::genetic_distance(
+            self.genome(i),
+            self.genome(j),
+            p.mutation_trait_sigma,
+            p.mutation_weight_sigma,
+            p.mutation_temp_sigma,
+        );
         genome::compatibility(d, p.compat_full_distance, p.compat_zero_distance)
     }
 
@@ -1102,6 +1120,7 @@ impl World {
             trait_sigma: self.params.mutation_trait_sigma,
             weight_sigma: self.params.mutation_weight_sigma,
             hue_sigma: self.params.mutation_hue_sigma,
+            temp_sigma: self.params.mutation_temp_sigma,
         };
         genome::mutate(&mut self.births_genomes[genome_at..], &m, &mut self.rng);
 
@@ -1747,6 +1766,20 @@ mod tests {
         w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
         let prey = w.sense(0).prey.map(|(j, ..)| j);
         assert_eq!(prey, Some(2), "小さすぎる獲物は無視して、好みの大きさの獲物を狙う");
+    }
+
+    #[test]
+    fn 好みの気温から離れた場所では消費が多い() {
+        let mut w = empty_world();
+        let mut warm = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        warm[genome::G_TEMP_PREF] = w.params.temp_mean;
+        let mut cold = warm.clone();
+        cold[genome::G_TEMP_PREF] = w.params.temp_mean - 20.0;
+        w.spawn(100.0, 100.0, HERBIVORE, 10.0, 0, &warm);
+        w.spawn(300.0, 300.0, HERBIVORE, 10.0, 0, &cold);
+        w.live(0, 0.0, false, Mate::Missing);
+        w.live(1, 0.0, false, Mate::Missing);
+        assert!(w.energy[0] > w.energy[1], "好みの気温と合わない個体のほうが消費が多い");
     }
 
     #[test]

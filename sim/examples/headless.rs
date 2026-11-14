@@ -15,6 +15,8 @@
 //!   同系/他系: そろい具合を、同じ系統どうし・違う系統どうしに分けたもの
 //!   失敗: 区間内で、交配が相性で失敗した割合
 //!   肉食の集まり・そろい・同系: 肉食の群れの度合い（草食と同じ指標）
+//!   寒/暖: 草食を今いる場所の気温で寒い半分・暖かい半分に分けたときの、大人の大きさの平均（ベルクマンの法則の確認用）
+//!   適温: 草食の好みの気温の平均
 
 use sim::params::Params;
 use sim::world::{CARNIVORE, HERBIVORE, World};
@@ -41,8 +43,8 @@ fn main() {
 
     let mut w = World::new(seed, params);
     println!(
-        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} {:>5} {:>5} {:>5} | {:>5} | {:>6}",
-        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "集まり", "そろい", "同系", "失敗", "ms/tick"
+        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} {:>5} {:>5} {:>5} | {:>5} | {:>9} {:>5} | {:>6}",
+        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "集まり", "そろい", "同系", "失敗", "寒/暖", "適温", "ms/tick"
     );
     let mut t = Instant::now();
     let mut last = w.ledger.clone();
@@ -68,10 +70,20 @@ fn main() {
             let failed = w.failed_matings - last_failed;
             (last_matings, last_failed) = (w.matings, w.failed_matings);
             let fail = if matings > 0 { failed as f64 / matings as f64 } else { 0.0 };
+            // 草食を今いる場所の気温で寒い半分・暖かい半分に分け、大人の大きさの平均を比べる
+            let mut herbs: Vec<(f32, f32, f32)> = (0..w.count())
+                .filter(|&i| w.kind[i] == HERBIVORE)
+                .map(|i| (w.terrain.temperature_at(w.xs[i], w.ys[i]), w.traits[i].adult_size, w.traits[i].temp_pref))
+                .collect();
+            herbs.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let half = herbs.len() / 2;
+            let mean = |s: &[(f32, f32, f32)]| s.iter().map(|v| v.1).sum::<f32>() / s.len().max(1) as f32;
+            let (cold, warm) = (mean(&herbs[..half]), mean(&herbs[half..]));
+            let pref = herbs.iter().map(|v| v.2).sum::<f32>() / herbs.len().max(1) as f32;
             println!(
-                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.3} | {ms:>6.2}",
+                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.3} | {:>4.2}/{:<4.2} {:>5.1} | {ms:>6.2}",
                 h[0], c[0], w.plants.total(), 1.0 / ratio.max(1e-9), plant_to_herb, herb_to_carn,
-                h[1], h[2], h[3], h[5], vig, hh[0], hh[1], hh[2], hh[3], c[1], c[2], ch[0], ch[1], ch[2], fail
+                h[1], h[2], h[3], h[5], vig, hh[0], hh[1], hh[2], hh[3], c[1], c[2], ch[0], ch[1], ch[2], fail, cold, warm, pref
             );
             if w.count_kind(HERBIVORE) == 0 && w.count_kind(CARNIVORE) == 0 {
                 println!("全滅");

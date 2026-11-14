@@ -17,7 +17,10 @@ pub const G_HUE: usize = 4;
 /// 好みの獲物の大きさ（獲物の大きさ ÷ 自分の大きさ）の下限と上限。肉食はこの範囲の獲物だけを狙う（草食は使わない）
 pub const G_PREY_MIN: usize = 5;
 pub const G_PREY_MAX: usize = 6;
-pub const N_TRAITS: usize = 7;
+/// 好みの気温（度）。今いる場所の気温との差に応じて、体温を保つ代謝が増える。
+/// 0 や負にもなるので、他の形質のような「何倍」ではなく「± 何度」で変異させる
+pub const G_TEMP_PREF: usize = 7;
+pub const N_TRAITS: usize = 8;
 
 /// 形質が取りうる範囲（変異でこの外に出たら切り詰める）
 pub const SIZE_RANGE: (f32, f32) = (0.4, 3.0);
@@ -26,6 +29,7 @@ pub const VISION_RANGE: (f32, f32) = (5.0, VISION_MAX);
 pub const INVEST_RANGE: (f32, f32) = (0.1, 0.9);
 pub const PREY_MIN_RANGE: (f32, f32) = (0.05, 2.0);
 pub const PREY_MAX_RANGE: (f32, f32) = (0.2, 4.0);
+pub const TEMP_PREF_RANGE: (f32, f32) = (-30.0, 50.0);
 /// 視野の上限。近傍探索のグリッドのセルはこれ以上の大きさにする
 pub const VISION_MAX: f32 = 64.0;
 
@@ -72,7 +76,9 @@ pub const IN_PREY_SIZE: usize = 23;
 pub const IN_PRED_SIZE: usize = 24;
 /// 今いる場所の植生が、自分（草食）の食べられる植生にどれだけ合っているか（0〜1。肉食は常に 1）
 pub const IN_HABITAT_FIT: usize = 25;
-pub const N_IN: usize = 26;
+/// 今いる場所の気温 − 好みの気温（10 度を 1 とする）
+pub const IN_TEMP_DIFF: usize = 26;
+pub const N_IN: usize = 27;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -189,6 +195,11 @@ pub struct Traits {
     /// 好みの獲物の大きさの比の下限と上限（肉食のみ使う）
     pub prey_min: f32,
     pub prey_max: f32,
+    /// 好みの気温（度）
+    pub temp_pref: f32,
+    /// 体温を保つ費用の大きさによる倍率（いまの大きさの 0.42 乗）。
+    /// 代謝は大きさの 0.75 乗、熱の逃げやすさは体積に対する表面積で大きさの −1/3 乗。大きいほど体積あたりは割安
+    pub thermal_scale: f32,
     /// 0〜1（色相）
     pub hue: f32,
 }
@@ -198,6 +209,7 @@ impl Traits {
     pub fn grow_to(&mut self, growth: f32, max_turn: f32) {
         self.size = self.adult_size * growth;
         self.size_pow075 = self.size.powf(0.75);
+        self.thermal_scale = self.size.powf(0.75 - 1.0 / 3.0);
         let (turn_sin, turn_cos) = (max_turn / self.size.sqrt()).min(std::f32::consts::PI).sin_cos();
         self.turn_cos = turn_cos;
         self.turn_sin = turn_sin;
@@ -219,6 +231,8 @@ pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
         invest: genome[G_INVEST].clamp(INVEST_RANGE.0, INVEST_RANGE.1),
         prey_min: genome[G_PREY_MIN].clamp(PREY_MIN_RANGE.0, PREY_MIN_RANGE.1),
         prey_max: genome[G_PREY_MAX].clamp(PREY_MAX_RANGE.0, PREY_MAX_RANGE.1),
+        temp_pref: genome[G_TEMP_PREF].clamp(TEMP_PREF_RANGE.0, TEMP_PREF_RANGE.1),
+        thermal_scale: 0.0,
         hue: genome[G_HUE].rem_euclid(1.0),
     };
     t.grow_to(1.0, max_turn);
@@ -255,6 +269,8 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     // 自分の 0.4〜1.3 倍の獲物を狙う（小さすぎると割に合わず、大きすぎると狩れないうえ反撃を受ける）
     g[G_PREY_MIN] = 0.4;
     g[G_PREY_MAX] = 1.3;
+    // 好みの気温は、初期個体を置くときにその場所の気温で上書きする
+    g[G_TEMP_PREF] = 15.0;
 
     // 自由な移動は、ゆるく前へ
     out_bias(&mut g, OUT_DIR_FWD, 0.3);
@@ -336,14 +352,18 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
 /// 2 つの遺伝子の違い（遺伝的距離）。標識色を除く全遺伝子の差を、変異 1 回の大きさを単位にして
 /// 二乗平均の平方根を取る。形質は比（対数）で、脳の重みは差で測る。
 /// 同じ系統の中では小さく、別々に変異を重ねた系統どうしほど大きくなる
-pub fn genetic_distance(a: &[f32], b: &[f32], trait_sigma: f32, weight_sigma: f32) -> f32 {
+pub fn genetic_distance(a: &[f32], b: &[f32], trait_sigma: f32, weight_sigma: f32, temp_sigma: f32) -> f32 {
     let mut sum = 0.0f32;
     let mut n = 0;
     for k in 0..N_TRAITS {
         if k == G_HUE {
             continue; // 標識色は見分けの手がかりで、交配の可否には使わない
         }
-        let d = (a[k].abs().max(1e-3) / b[k].abs().max(1e-3)).ln() / trait_sigma;
+        let d = if k == G_TEMP_PREF {
+            (a[k] - b[k]) / temp_sigma
+        } else {
+            (a[k].abs().max(1e-3) / b[k].abs().max(1e-3)).ln() / trait_sigma
+        };
         sum += d * d;
         n += 1;
     }
@@ -401,6 +421,8 @@ pub struct Mutation {
     pub weight_sigma: f32,
     /// 標識色の変異の大きさ（毎回必ず漂う）
     pub hue_sigma: f32,
+    /// 好みの気温の変異の大きさ（度、変異確率は他の遺伝子と同じ）
+    pub temp_sigma: f32,
 }
 
 /// 遺伝子に変異を加える
@@ -413,7 +435,9 @@ pub fn mutate(g: &mut [f32], m: &Mutation, rng: &mut Rng) {
         if rng.f32() >= m.rate {
             continue;
         }
-        if k < N_TRAITS {
+        if k == G_TEMP_PREF {
+            *v += rng.gaussian() * m.temp_sigma;
+        } else if k < N_TRAITS {
             *v *= 1.0 + rng.gaussian() * m.trait_sigma;
         } else {
             *v += rng.gaussian() * m.weight_sigma;
@@ -540,9 +564,9 @@ mod tests {
 
     #[test]
     fn 遺伝的距離は同じなら0で変異を重ねるほど大きい() {
-        let m = Mutation { rate: 0.02, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01 };
+        let m = Mutation { rate: 0.02, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5 };
         let base = initial(true, 1.0, 1.3, 30.0, 0.3);
-        assert_eq!(genetic_distance(&base, &base, 0.05, 0.1), 0.0);
+        assert_eq!(genetic_distance(&base, &base, 0.05, 0.1, 0.5), 0.0);
         let mut rng = Rng::new(1);
         let (mut a, mut b) = (base.clone(), base.clone());
         let mut last = 0.0;
@@ -550,7 +574,7 @@ mod tests {
             mutate(&mut a, &m, &mut rng);
             mutate(&mut b, &m, &mut rng);
             if generation % 50 == 0 {
-                let d = genetic_distance(&a, &b, 0.05, 0.1);
+                let d = genetic_distance(&a, &b, 0.05, 0.1, 0.5);
                 assert!(d > last, "{generation} 世代: {d} が前回 {last} 以下");
                 last = d;
             }
@@ -573,7 +597,7 @@ mod tests {
 
     #[test]
     fn 変異は同じ乱数なら同じ結果になる() {
-        let m = Mutation { rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02 };
+        let m = Mutation { rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02, temp_sigma: 0.5 };
         let mut a = initial(true, 1.0, 1.3, 30.0, 0.3);
         let mut b = a.clone();
         mutate(&mut a, &m, &mut Rng::new(5));
