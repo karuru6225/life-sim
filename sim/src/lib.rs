@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 27;
+const INSPECT_LEN: usize = 28;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
 const SUMMARY_LEN: usize = 17;
 
@@ -134,6 +134,7 @@ pub extern "C" fn deselect() {
 /// 23: 繁殖の出力（正なら繁殖したい）          24: 食べるの出力（正なら食べたい）
 /// 25: 隠れ具合（足元の草で、相手の視野が何割縮むか）
 /// 26: 蓄えられるエネルギーの上限
+/// 27: 繁殖相手が近くにいるか（1 = いる。無性生殖の設定なら常に 1）
 /// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
 #[unsafe(no_mangle)]
 pub extern "C" fn inspect() -> *const f64 {
@@ -183,6 +184,7 @@ pub extern "C" fn inspect() -> *const f64 {
             out[24] = watch.output[genome::OUT_EAT] as f64;
             out[25] = (p.cover_strength * w.cover[i]) as f64;
             out[26] = w.energy_cap(i) as f64;
+            out[27] = if watch.mate_nearby { 1.0 } else { 0.0 };
         });
         out.as_ptr()
     })

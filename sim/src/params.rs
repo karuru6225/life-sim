@@ -39,9 +39,9 @@ params! {
     /// 植物のマス目の一辺
     plant_cell = 32.0,
     /// 初期の草食の数
-    herb_initial = 45000.0,
+    herb_initial = 25000.0,
     /// 初期の肉食の数
-    carn_initial = 3400.0,
+    carn_initial = 1500.0,
     /// 初期の植物量（plant_capacity に対する割合）
     plant_initial_ratio = 0.5,
 
@@ -85,6 +85,8 @@ params! {
     herb_initial_speed = 1.3,
     /// 初期の視野
     herb_initial_vision = 30.0,
+    /// 繁殖相手を探せる距離。この距離以内に見えている草食がいないと繁殖できない。0 以下なら無性生殖
+    herb_mate_range = 12.0,
     /// 1 tick に食べる植物量の上限（大きさ 1 のとき。大きさに比例）
     herb_bite = 0.12,
     /// 食べた植物のうち自分のエネルギーになる割合（残りは熱として失われる）
@@ -107,6 +109,8 @@ params! {
     carn_initial_speed = 1.8,
     /// 初期の視野
     carn_initial_vision = 48.0,
+    /// 繁殖相手を探せる距離。肉食は数が少なく相手を見つけにくいので、草食より広くする。0 以下なら無性生殖
+    carn_mate_range = 20.0,
     /// 獲物を捕まえられる距離（大きさ 1 のとき。大きさに比例）
     carn_attack_range = 6.0,
     /// 襲える獲物の大きさの上限（自分の大きさに対する倍率）

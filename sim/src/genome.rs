@@ -223,6 +223,29 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
     }
 }
 
+/// 両親の遺伝子を混ぜた子の遺伝子を out の末尾に追加する。
+/// 体の形質は 1 個ずつ、脳はニューロン単位（1 つのニューロンへ入る重みとバイアスのまとまり）で、
+/// どちらかの親からそのまま受け継ぐ。脳の重みを 1 個ずつ混ぜると、ニューロンへ入る重みが
+/// 両親の寄せ集めになり、親が持っていた機能が壊れやすいため
+pub fn crossover(a: &[f32], b: &[f32], rng: &mut Rng, out: &mut Vec<f32>) {
+    let start = out.len();
+    out.extend_from_slice(a);
+    let child = &mut out[start..];
+    for k in 0..N_TRAITS {
+        if rng.f32() < 0.5 {
+            child[k] = b[k];
+        }
+    }
+    let blocks = (0..N_HIDDEN)
+        .map(|h| W1 + h * (N_IN + 1)..W1 + (h + 1) * (N_IN + 1))
+        .chain((0..N_OUT).map(|o| W2 + o * (N_HIDDEN + 1)..W2 + (o + 1) * (N_HIDDEN + 1)));
+    for range in blocks {
+        if rng.f32() < 0.5 {
+            child[range.clone()].copy_from_slice(&b[range]);
+        }
+    }
+}
+
 /// 変異の設定
 pub struct Mutation {
     /// 遺伝子 1 個あたりの変異確率
@@ -303,6 +326,22 @@ mod tests {
         for herb in [true, false] {
             let out = think(&initial(herb, 1.0, 1.0, 30.0, 0.0), &input());
             assert!(out[OUT_EAT] > 0.0 && out[OUT_REPRODUCE] > 0.0);
+        }
+    }
+
+    #[test]
+    fn 交叉した子の遺伝子は各部分がどちらかの親のもの() {
+        let a = vec![1.0f32; GENOME_LEN];
+        let b = vec![2.0f32; GENOME_LEN];
+        let mut out = Vec::new();
+        crossover(&a, &b, &mut Rng::new(9), &mut out);
+        assert_eq!(out.len(), GENOME_LEN);
+        assert!(out.iter().all(|&v| v == 1.0 || v == 2.0));
+        assert!(out.contains(&1.0) && out.contains(&2.0), "両親から受け継いでいる");
+        // 1 つのニューロンへ入る重みは、同じ親から来る
+        for h in 0..N_HIDDEN {
+            let block = &out[W1 + h * (N_IN + 1)..W1 + (h + 1) * (N_IN + 1)];
+            assert!(block.iter().all(|&v| v == block[0]), "中間ニューロン {h} が混ざっている");
         }
     }
 

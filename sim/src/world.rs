@@ -91,8 +91,21 @@ pub struct Watch {
     pub turn: f32,
     /// 直前の tick の速さ（最高速度に対する割合）
     pub throttle: f32,
+    /// 直前の tick に、繁殖相手が近くにいたか（無性生殖の設定なら常に true）
+    pub mate_nearby: bool,
     /// 死んだときの (死因, tick)
     pub death: Option<(u8, u64)>,
+}
+
+/// 繁殖相手の見つかり具合
+#[derive(Clone, Copy)]
+enum Mate {
+    /// 相手がいる（配列上の位置）
+    Partner(usize),
+    /// 相手が要らない（無性生殖の設定）
+    Asexual,
+    /// 相手が近くにいない
+    Missing,
 }
 
 /// 1 回の知覚で見つけた相手。(配列上の位置, dx, dy, 距離の 2 乗)
@@ -321,9 +334,9 @@ impl World {
             if !self.alive[i] {
                 continue; // この tick ですでに食べられた
             }
-            let (speed, wants_child) = self.act(i);
+            let (speed, wants_child, mate) = self.act(i);
             self.move_agent(i, speed);
-            self.live(i, speed, wants_child);
+            self.live(i, speed, wants_child, mate);
         }
 
         self.apply_births();
@@ -379,8 +392,8 @@ impl World {
         Senses { predator: best[0], prey: best[1], kin: best[2], kin_count, kin_hx, kin_hy, kin_alert }
     }
 
-    /// 知覚 → 脳 → 行動。戻り値は (この tick の移動速度, 繁殖したいか)
-    fn act(&mut self, i: usize) -> (f32, bool) {
+    /// 知覚 → 脳 → 行動。戻り値は (この tick の移動速度, 繁殖したいか, 繁殖相手)
+    fn act(&mut self, i: usize) -> (f32, bool, Mate) {
         let senses = self.sense(i);
         let t = self.traits[i];
         let (x, y) = (self.xs[i], self.ys[i]);
@@ -446,6 +459,10 @@ impl World {
         }
         let wants_eat = out[genome::OUT_EAT] > 0.0;
         let wants_child = out[genome::OUT_REPRODUCE] > 0.0;
+        let mate = self.find_mate(i, &senses);
+        if is_watched {
+            self.watch.mate_nearby = !matches!(mate, Mate::Missing);
+        }
 
         if self.kind[i] == HERBIVORE {
             let ate = wants_eat && self.graze(i);
@@ -456,16 +473,29 @@ impl World {
             } else {
                 state::SEEK
             };
-            (speed, wants_child)
+            (speed, wants_child, mate)
         } else {
             if wants_eat && let Some((j, _, _, d2)) = senses.prey {
                 if self.try_hunt(i, j, d2) {
                     self.state[i] = state::EAT;
-                    return (0.0, wants_child); // 食べた tick は動かない
+                    return (0.0, wants_child, mate); // 食べた tick は動かない
                 }
             }
             self.state[i] = if senses.prey.is_some() { state::CHASE } else { state::WANDER };
-            (speed, wants_child)
+            (speed, wants_child, mate)
+        }
+    }
+
+    /// 繁殖相手を探す。繁殖相手を探せる距離以内に見えている最寄りの仲間が相手になる。
+    /// その距離が 0 以下なら無性生殖（相手は要らない）
+    fn find_mate(&self, i: usize, senses: &Senses) -> Mate {
+        let range = if self.kind[i] == HERBIVORE { self.params.herb_mate_range } else { self.params.carn_mate_range };
+        if range <= 0.0 {
+            return Mate::Asexual;
+        }
+        match senses.kin {
+            Some((j, _, _, d2)) if d2 <= range * range => Mate::Partner(j),
+            _ => Mate::Missing,
         }
     }
 
@@ -525,7 +555,7 @@ impl World {
     }
 
     /// エネルギー消費・加齢・死亡・繁殖
-    fn live(&mut self, i: usize, speed: f32, wants_child: bool) {
+    fn live(&mut self, i: usize, speed: f32, wants_child: bool, mate: Mate) {
         let p = &self.params;
         let t = self.traits[i];
         let herb = self.kind[i] == HERBIVORE;
@@ -559,12 +589,17 @@ impl World {
             return;
         }
         if wants_child && self.energy[i] >= self.repro_threshold(i) {
-            self.reproduce(i, birth_cost * t.size);
+            match mate {
+                Mate::Partner(j) => self.reproduce(i, birth_cost * t.size, Some(j)),
+                Mate::Asexual => self.reproduce(i, birth_cost * t.size, None),
+                Mate::Missing => {} // 相手がいなければ繁殖できない
+            }
         }
     }
 
-    /// 繁殖コストを引いた残りのうち、子への投資の割合を子に渡す
-    fn reproduce(&mut self, i: usize, birth_cost: f32) {
+    /// 繁殖コストを引いた残りのうち、子への投資の割合を子に渡す。
+    /// エネルギーを払うのは繁殖を決めた側（i）だけで、相手（mate）は遺伝子を渡すだけ
+    fn reproduce(&mut self, i: usize, birth_cost: f32, mate: Option<usize>) {
         let before = self.energy[i];
         let available = before - birth_cost;
         let child = available * self.traits[i].invest;
@@ -574,7 +609,14 @@ impl World {
         self.children[i] += 1;
 
         let genome_at = self.births_genomes.len();
-        self.births_genomes.extend_from_slice(&self.genomes[i * GENOME_LEN..(i + 1) * GENOME_LEN]);
+        let mine = &self.genomes[i * GENOME_LEN..(i + 1) * GENOME_LEN];
+        match mate {
+            Some(j) => {
+                let theirs = &self.genomes[j * GENOME_LEN..(j + 1) * GENOME_LEN];
+                genome::crossover(mine, theirs, &mut self.rng, &mut self.births_genomes);
+            }
+            None => self.births_genomes.extend_from_slice(mine),
+        }
         let m = Mutation {
             rate: self.params.mutation_rate,
             trait_sigma: self.params.mutation_trait_sigma,
@@ -902,6 +944,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn 相手がいなければ繁殖しない() {
+        let mut p = small_params();
+        p.herb_initial = 0.0;
+        p.carn_initial = 0.0;
+        p.sunlight = 0.0;
+        let mut w = World::new(1, p);
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        // 1 体だけ、繁殖に十分なエネルギーを持たせる
+        w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &g);
+        for _ in 0..50 {
+            w.step();
+        }
+        assert_eq!(w.count(), 1, "相手がいないのに繁殖した");
+
+        // 近くに相手がいれば繁殖する
+        w.spawn(w.xs[0] + 3.0, w.ys[0], HERBIVORE, 5.0, 0, &g);
+        w.energy[0] = 15.0;
+        w.step();
+        assert!(w.count() > 2, "相手がいるのに繁殖しなかった");
     }
 
     #[test]
