@@ -21,7 +21,7 @@ export const SIM_PARAMS = {
   fertility_min: 0.3,
 
   // 植物
-  sunlight: 0.045,
+  sunlight: 0.08,
   plant_capacity: 10,
 
   // 共通
@@ -33,6 +33,8 @@ export const SIM_PARAMS = {
   cover_strength: 0.85,
   energy_cap_ratio: 2,
   birth_spread: 6,
+  personal_space: 5,
+  separation_weight: 1.5,
 
   // 成長
   min_birth_growth: 0.2,
@@ -44,6 +46,8 @@ export const SIM_PARAMS = {
   hunt_impossible_ratio: 1.5,
   guard_radius: 12,
   guard_strength: 0.15,
+  counter_start_ratio: 1.2,
+  counter_damage: 8,
   attack_cost: 0.3,
   attack_cooldown: 10,
 

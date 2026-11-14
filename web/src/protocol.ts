@@ -139,4 +139,4 @@ export const CARNIVORE = 1;
 export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6, COURT: 7 } as const;
 
 /** sim/src/world.rs の death と一致させること */
-export const DEATH = { STARVED: 1, OLD_AGE: 2, EATEN: 3 } as const;
+export const DEATH = { STARVED: 1, OLD_AGE: 2, EATEN: 3, INJURED: 4 } as const;

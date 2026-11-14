@@ -32,6 +32,7 @@ const DEATH_LABEL: Record<number, string> = {
   [DEATH.STARVED]: '餓死',
   [DEATH.OLD_AGE]: '寿命',
   [DEATH.EATEN]: '肉食に食べられた',
+  [DEATH.INJURED]: '獲物の反撃を受けた',
 };
 
 export class Inspector {
