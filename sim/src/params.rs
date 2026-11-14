@@ -33,15 +33,15 @@ macro_rules! params {
 params! {
     // ---- 世界（リセット時のみ反映） ----
     /// 世界の幅
-    world_width = 4800.0,
+    world_width = 7200.0,
     /// 世界の高さ
-    world_height = 3200.0,
+    world_height = 4800.0,
     /// 植物のマス目の一辺
     plant_cell = 32.0,
     /// 初期の草食の数
-    herb_initial = 20000.0,
+    herb_initial = 45000.0,
     /// 初期の肉食の数
-    carn_initial = 1500.0,
+    carn_initial = 3400.0,
     /// 初期の植物量（plant_capacity に対する割合）
     plant_initial_ratio = 0.5,
 
@@ -52,53 +52,73 @@ params! {
     plant_capacity = 10.0,
 
     // ---- 共通 ----
-    /// 移動のエネルギー消費（速度の 2 乗に掛ける）
-    move_cost = 0.004,
+    /// 移動のエネルギー消費（大きさ × 速度の 2 乗に掛ける）
+    move_cost = 0.006,
+    /// 視野 1px あたりの代謝（目と脳の維持費）
+    vision_cost = 0.00008,
+    /// 1 tick に曲がれる最大の角度（ラジアン）。大きい個体ほど小回りが利かない
+    max_turn = 0.5,
+    /// 進む向きに毎 tick 加わる揺れ（ラジアン）
+    turn_noise = 0.15,
+    /// 草による隠れの強さ。草が満杯のマスにいる相手は、視野が (1 - この値) 倍に縮んで見える
+    cover_strength = 0.85,
+    /// 蓄えられるエネルギーの上限（繁殖に必要な量に対する倍率）
+    energy_cap_ratio = 2.0,
     /// 生まれた子の出現位置のばらつき
     birth_spread = 6.0,
 
-    // ---- 草食 ----
-    /// 天敵が見える距離
-    herb_vision = 30.0,
-    /// 草を食べながらの移動速度
-    herb_graze_speed = 0.4,
-    /// 草を探して移動するときの速度
-    herb_speed = 0.9,
-    /// 逃げるときの速度
-    herb_flee_speed = 1.3,
-    /// 1 tick に食べる植物量の上限
+    // ---- 変異 ----
+    /// 遺伝子 1 個あたりの変異確率
+    mutation_rate = 0.02,
+    /// 形質の変異の大きさ（現在値に対する割合の標準偏差）
+    mutation_trait_sigma = 0.05,
+    /// 脳の重みの変異の大きさ（標準偏差）
+    mutation_weight_sigma = 0.1,
+    /// 標識色の変異の大きさ（毎回必ず漂う。色相 1 周 = 1）
+    mutation_hue_sigma = 0.01,
+
+    // ---- 草食（形質は初期個体の値。以後は遺伝子として進化する） ----
+    /// 初期の大きさ
+    herb_initial_size = 1.0,
+    /// 初期の最高速度
+    herb_initial_speed = 1.3,
+    /// 初期の視野
+    herb_initial_vision = 30.0,
+    /// 1 tick に食べる植物量の上限（大きさ 1 のとき。大きさに比例）
     herb_bite = 0.12,
     /// 食べた植物のうち自分のエネルギーになる割合（残りは熱として失われる）
     herb_efficiency = 0.6,
-    /// 生きているだけで 1 tick に失うエネルギー
-    herb_metabolism = 0.01,
-    /// このエネルギーに達したら繁殖する
+    /// 生きているだけで 1 tick に失うエネルギー（大きさ 1 のとき。大きさの 0.75 乗に比例。視野の分は別）
+    herb_metabolism = 0.0076,
+    /// 繁殖に必要なエネルギー（大きさ 1 のとき。大きさに比例）
     herb_repro_threshold = 10.0,
-    /// 繁殖 1 回で失うエネルギー
+    /// 繁殖 1 回で失うエネルギー（大きさ 1 のとき。大きさに比例）
     herb_birth_cost = 1.0,
-    /// 寿命
+    /// 寿命（大きさ 1 のとき。大きさの平方根に比例）
     herb_max_age = 2400.0,
     /// 初期個体のエネルギー
     herb_initial_energy = 5.0,
 
-    // ---- 肉食 ----
-    /// 獲物が見える距離
-    carn_vision = 48.0,
-    /// 獲物を捕まえられる距離
+    // ---- 肉食（形質は初期個体の値。以後は遺伝子として進化する） ----
+    /// 初期の大きさ
+    carn_initial_size = 1.0,
+    /// 初期の最高速度
+    carn_initial_speed = 1.8,
+    /// 初期の視野
+    carn_initial_vision = 48.0,
+    /// 獲物を捕まえられる距離（大きさ 1 のとき。大きさに比例）
     carn_attack_range = 6.0,
-    /// 獲物がいないときの移動速度
-    carn_wander_speed = 0.6,
-    /// 獲物を追うときの速度
-    carn_chase_speed = 1.8,
+    /// 襲える獲物の大きさの上限（自分の大きさに対する倍率）
+    prey_size_ratio = 1.3,
     /// 食べた獲物のエネルギーのうち自分のものになる割合
     carn_efficiency = 0.5,
-    /// 生きているだけで 1 tick に失うエネルギー
-    carn_metabolism = 0.012,
-    /// このエネルギーに達したら繁殖する
+    /// 生きているだけで 1 tick に失うエネルギー（大きさ 1 のとき。視野の分は別）
+    carn_metabolism = 0.011,
+    /// 繁殖に必要なエネルギー（大きさ 1 のとき）
     carn_repro_threshold = 16.0,
-    /// 繁殖 1 回で失うエネルギー
+    /// 繁殖 1 回で失うエネルギー（大きさ 1 のとき）
     carn_birth_cost = 2.0,
-    /// 寿命
+    /// 寿命（大きさ 1 のとき）
     carn_max_age = 3600.0,
     /// 初期個体のエネルギー
     carn_initial_energy = 8.0,

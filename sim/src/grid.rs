@@ -14,6 +14,10 @@ pub struct Grid {
     /// 近傍探索で座標をメモリ上の連続した位置から読めるので、キャッシュに乗りやすい
     sorted_x: Vec<f32>,
     sorted_y: Vec<f32>,
+    /// 同じくセル順にした、個体ごとの付加情報（種類と、足元の草の量）。
+    /// 近傍探索で相手の情報を読むとき、メモリ上の離れた場所を読みに行かずに済む
+    sorted_kind: Vec<u8>,
+    sorted_value: Vec<f32>,
     cursor: Vec<u32>,
 }
 
@@ -31,6 +35,8 @@ impl Grid {
             items: Vec::new(),
             sorted_x: Vec::new(),
             sorted_y: Vec::new(),
+            sorted_kind: Vec::new(),
+            sorted_value: Vec::new(),
             cursor: vec![0; cols * rows],
         }
     }
@@ -41,8 +47,11 @@ impl Grid {
         (cx, cy)
     }
 
-    pub fn build(&mut self, xs: &[f32], ys: &[f32]) {
+    /// kinds と values は個体ごとの付加情報。近傍探索のときに一緒に渡される
+    pub fn build(&mut self, xs: &[f32], ys: &[f32], kinds: &[u8], values: &[f32]) {
         let n = xs.len();
+        self.sorted_kind.resize(n, 0);
+        self.sorted_value.resize(n, 0.0);
         self.cell_start.fill(0);
         self.items.resize(n, 0);
         self.sorted_x.resize(n, 0.0);
@@ -66,47 +75,58 @@ impl Grid {
             self.items[slot] = i as u32;
             self.sorted_x[slot] = xs[i];
             self.sorted_y[slot] = ys[i];
+            self.sorted_kind[slot] = kinds[i];
+            self.sorted_value[slot] = values[i];
             self.cursor[c] += 1;
         }
     }
 
-    /// (x, y) を含むセルと周囲 8 セルに入っている個体を、(個体番号, x, y) として順に `f` に渡す。
-    /// 座標は build() した時点のもの。距離の判定はしないので、呼び出し側で行う。
-    pub fn for_each_nearby(&self, x: f32, y: f32, mut f: impl FnMut(usize, f32, f32)) {
+    /// (x, y) から radius 以内に入りうるセルの個体を、(個体番号, x, y, 種類, 付加値) として順に `f` に渡す。
+    /// セルを細かくしておけば、視野の小さい個体は狭い範囲だけ調べればよい。
+    /// 距離の判定はしないので、呼び出し側で行う。
+    pub fn for_each_within(&self, x: f32, y: f32, radius: f32, mut f: impl FnMut(usize, f32, f32, u8, f32)) {
         let (cx, cy) = self.cell_xy(x, y);
-        // 端では反対側に折り返す。剰余（%）は割り算で遅いので、条件分岐で求める
-        let rows = [
-            if cy == 0 { self.rows - 1 } else { cy - 1 },
-            cy,
-            if cy + 1 == self.rows { 0 } else { cy + 1 },
-        ];
-        let cols = [
-            if cx == 0 { self.cols - 1 } else { cx - 1 },
-            cx,
-            if cx + 1 == self.cols { 0 } else { cx + 1 },
-        ];
-        let wraps_x = cx == 0 || cx + 1 == self.cols;
-        for row in rows {
+        // 調べるセルの半径。世界を一周して同じセルを二度数えないよう、列数・行数の半分未満に抑える
+        let r = ((radius / self.cell_size).ceil() as usize)
+            .min((self.cols - 1) / 2)
+            .min((self.rows - 1) / 2);
+        let wraps_x = cx < r || cx + r >= self.cols;
+        for dy in 0..=2 * r {
+            // 端では反対側に折り返す（cy + rows - r + dy を rows で割った余り。剰余は遅いので分岐で）
+            let mut row = cy + self.rows + dy - r;
+            if row >= self.rows {
+                row -= self.rows;
+            }
+            if row >= self.rows {
+                row -= self.rows;
+            }
             let base = row * self.cols;
             if wraps_x {
-                // 左右の端: 3 セルがメモリ上で離れているので 1 セルずつ
-                for col in cols {
+                // 左右の端: 範囲が折り返してメモリ上で離れるので 1 セルずつ
+                for dx in 0..=2 * r {
+                    let mut col = cx + self.cols + dx - r;
+                    if col >= self.cols {
+                        col -= self.cols;
+                    }
+                    if col >= self.cols {
+                        col -= self.cols;
+                    }
                     self.visit_span(base + col, base + col + 1, &mut f);
                 }
             } else {
-                // 同じ行で横に並ぶ 3 セルは items 上で連続しているので、まとめて 1 区間で回す
-                self.visit_span(base + cx - 1, base + cx + 2, &mut f);
+                // 同じ行で横に並ぶセルは items 上で連続しているので、まとめて 1 区間で回す
+                self.visit_span(base + cx - r, base + cx + r + 1, &mut f);
             }
         }
     }
 
     /// セル first_cell から end_cell の手前までに入っている個体を順に f に渡す
     #[inline(always)]
-    fn visit_span(&self, first_cell: usize, end_cell: usize, f: &mut impl FnMut(usize, f32, f32)) {
+    fn visit_span(&self, first_cell: usize, end_cell: usize, f: &mut impl FnMut(usize, f32, f32, u8, f32)) {
         let start = self.cell_start[first_cell] as usize;
         let end = self.cell_start[end_cell] as usize;
         for k in start..end {
-            f(self.items[k] as usize, self.sorted_x[k], self.sorted_y[k]);
+            f(self.items[k] as usize, self.sorted_x[k], self.sorted_y[k], self.sorted_kind[k], self.sorted_value[k]);
         }
     }
 
@@ -126,22 +146,23 @@ mod tests {
 
     #[test]
     fn 半径内の個体を総当たりと同じだけ見つける() {
-        let (w, h, r) = (320.0, 240.0, 16.0);
+        let (w, h) = (320.0, 240.0);
         let mut rng = Rng::new(3);
         let xs: Vec<f32> = (0..2000).map(|_| rng.range(0.0, w)).collect();
         let ys: Vec<f32> = (0..2000).map(|_| rng.range(0.0, h)).collect();
-        let mut grid = Grid::new(w, h, r);
-        grid.build(&xs, &ys);
-        for i in 0..xs.len() {
+        let mut grid = Grid::new(w, h, 8.0);
+        grid.build(&xs, &ys, &vec![0; xs.len()], &vec![0.0; xs.len()]);
+        // セルより小さい半径・何セルにもまたがる半径・半端な半径を試す（世界の端の折り返しも含む）
+        for (i, r) in (0..xs.len()).map(|i| (i, [5.0, 16.0, 30.0, 47.5][i % 4])) {
             let within = |xj: f32, yj: f32| {
                 let dx = torus_delta(xj - xs[i], w);
                 let dy = torus_delta(yj - ys[i], h);
                 dx * dx + dy * dy < r * r
             };
             let mut found = 0;
-            grid.for_each_nearby(xs[i], ys[i], |_, xj, yj| found += within(xj, yj) as u32);
+            grid.for_each_within(xs[i], ys[i], r, |_, xj, yj, _, _| found += within(xj, yj) as u32);
             let expected = (0..xs.len()).filter(|&j| within(xs[j], ys[j])).count() as u32;
-            assert_eq!(found, expected, "個体 {i}");
+            assert_eq!(found, expected, "個体 {i}（半径 {r}）");
         }
     }
 }

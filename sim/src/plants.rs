@@ -36,25 +36,30 @@ impl PlantField {
         r * self.cols + c
     }
 
+    /// (x, y) のマスの植物量を上限に対する割合（0〜1）で返す
+    pub fn ratio_at(&self, x: f32, y: f32, capacity: f32) -> f32 {
+        (self.biomass[self.cell_index(x, y)] / capacity).clamp(0.0, 1.0)
+    }
+
     /// 周囲 8 マスのうち、いまいるマスより植物が多いマスがあれば、その方向（単位ベクトルでない）を返す
     pub fn richer_direction(&self, x: f32, y: f32) -> Option<(f32, f32)> {
-        let c = ((x / self.cell_size) as usize).min(self.cols - 1) as isize;
-        let r = ((y / self.cell_size) as usize).min(self.rows - 1) as isize;
-        let here = self.biomass[r as usize * self.cols + c as usize];
+        let c = ((x / self.cell_size) as usize).min(self.cols - 1);
+        let r = ((y / self.cell_size) as usize).min(self.rows - 1);
+        let here = self.biomass[r * self.cols + c];
         let mut best = here * 1.1 + 0.05;
         let mut dir = None;
-        for dr in -1..=1isize {
-            for dc in -1..=1isize {
-                if dr == 0 && dc == 0 {
+        // トーラスなので端は反対側につながる。剰余（%）は遅いので分岐で折り返す
+        let rows = [if r == 0 { self.rows - 1 } else { r - 1 }, r, if r + 1 == self.rows { 0 } else { r + 1 }];
+        let cols = [if c == 0 { self.cols - 1 } else { c - 1 }, c, if c + 1 == self.cols { 0 } else { c + 1 }];
+        for (dr, &rr) in rows.iter().enumerate() {
+            for (dc, &cc) in cols.iter().enumerate() {
+                if dr == 1 && dc == 1 {
                     continue;
                 }
-                // トーラスなので端は反対側につながる
-                let rr = (r + dr).rem_euclid(self.rows as isize) as usize;
-                let cc = (c + dc).rem_euclid(self.cols as isize) as usize;
                 let b = self.biomass[rr * self.cols + cc];
                 if b > best {
                     best = b;
-                    dir = Some((dc as f32, dr as f32));
+                    dir = Some((dc as f32 - 1.0, dr as f32 - 1.0));
                 }
             }
         }

@@ -34,6 +34,13 @@ impl Rng {
     pub fn range(&mut self, lo: f32, hi: f32) -> f32 {
         lo + (hi - lo) * self.f32()
     }
+
+    /// 平均 0・標準偏差 1 の正規分布（Box-Muller 法）
+    pub fn gaussian(&mut self) -> f32 {
+        let u1 = self.f32().max(1e-7); // ln(0) を避ける
+        let u2 = self.f32();
+        (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
+    }
 }
 
 #[cfg(test)]

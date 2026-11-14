@@ -4,6 +4,7 @@
 //! 文字列（パラメータ名）は、JS が scratch_ptr() の指す領域に UTF-8 で書き込んでから渡す。
 //! JS は render_buffer_ptr() などが返すアドレスから、WASM のメモリを TypedArray として直接読む。
 
+pub mod genome;
 mod grid;
 pub mod params;
 pub mod plants;
@@ -15,7 +16,9 @@ use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 17;
+const INSPECT_LEN: usize = 27;
+/// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
+const SUMMARY_LEN: usize = 13;
 
 thread_local! {
     static WORLD: RefCell<Option<World>> = const { RefCell::new(None) };
@@ -25,6 +28,7 @@ thread_local! {
     static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// 選択中の個体の情報。id が f32 の精度を超えうるので f64 で持つ
     static INSPECT: RefCell<[f64; INSPECT_LEN]> = const { RefCell::new([0.0; INSPECT_LEN]) };
+    static SUMMARY: RefCell<[f64; SUMMARY_LEN]> = const { RefCell::new([0.0; SUMMARY_LEN]) };
 }
 
 fn with_world<R>(f: impl FnOnce(&mut World) -> R) -> R {
@@ -140,7 +144,11 @@ pub extern "C" fn deselect() {
 /// 10: 直前の速度    11: 直前の消費エネルギー
 /// 12: 子の数        13: 世代
 /// 14: 死因（world::death）  15: 死んだ tick
-/// 16: 視野の半径
+/// 16: 視野の半径    17: 大きさ        18: 最高速度       19: 子への投資    20: 標識色（0〜1）
+/// 21: 直前に曲がった角度（ラジアン、正で右）  22: 直前の速さ（最高速度に対する割合）
+/// 23: 繁殖の出力（正なら繁殖したい）          24: 食べるの出力（正なら食べたい）
+/// 25: 隠れ具合（足元の草で、相手の視野が何割縮むか）
+/// 26: 蓄えられるエネルギーの上限
 /// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
 #[unsafe(no_mangle)]
 pub extern "C" fn inspect() -> *const f64 {
@@ -170,15 +178,26 @@ pub extern "C" fn inspect() -> *const f64 {
             out[3] = w.xs[i] as f64;
             out[4] = w.ys[i] as f64;
             out[5] = w.energy[i] as f64;
-            out[6] = if herb { p.herb_repro_threshold } else { p.carn_repro_threshold } as f64;
+            let t = w.traits[i];
+            out[6] = w.repro_threshold(i) as f64;
             out[7] = w.age[i] as f64;
-            out[8] = if herb { p.herb_max_age } else { p.carn_max_age } as f64;
+            out[8] = (if herb { p.herb_max_age } else { p.carn_max_age } * t.size_sqrt) as f64;
             out[9] = w.state[i] as f64;
             out[10] = watch.speed as f64;
             out[11] = watch.cost as f64;
             out[12] = w.children[i] as f64;
             out[13] = w.generation[i] as f64;
-            out[16] = if herb { p.herb_vision } else { p.carn_vision } as f64;
+            out[16] = t.vision as f64;
+            out[17] = t.size as f64;
+            out[18] = t.max_speed as f64;
+            out[19] = t.invest as f64;
+            out[20] = t.hue as f64;
+            out[21] = watch.turn as f64;
+            out[22] = watch.throttle as f64;
+            out[23] = watch.output[genome::OUT_REPRODUCE] as f64;
+            out[24] = watch.output[genome::OUT_EAT] as f64;
+            out[25] = (p.cover_strength * w.cover[i]) as f64;
+            out[26] = w.energy_cap(i) as f64;
         });
         out.as_ptr()
     })
@@ -187,6 +206,28 @@ pub extern "C" fn inspect() -> *const f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn inspect_len() -> u32 {
     INSPECT_LEN as u32
+}
+
+/// 世界全体の集計を書き込み、その先頭アドレスを返す（f64 × SUMMARY_LEN）。
+///  0: 植物量の合計
+///  1〜6: 草食の [個体数, 平均の大きさ, 平均の最高速度, 平均の視野, 平均の子への投資, 平均の世代]
+///  7〜12: 肉食の同じもの
+#[unsafe(no_mangle)]
+pub extern "C" fn summary() -> *const f64 {
+    SUMMARY.with(|buf| {
+        let mut out = buf.borrow_mut();
+        with_world(|w| {
+            out[0] = w.plants.total();
+            out[1..7].copy_from_slice(&w.trait_means(HERBIVORE));
+            out[7..13].copy_from_slice(&w.trait_means(CARNIVORE));
+        });
+        out.as_ptr()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn summary_len() -> u32 {
+    SUMMARY_LEN as u32
 }
 
 /// 植物量の配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス
