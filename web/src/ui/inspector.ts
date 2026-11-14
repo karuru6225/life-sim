@@ -154,7 +154,9 @@ export class Inspector {
     this.el.throttle.textContent = `最高速度の ${Math.round(v[INSPECT.throttle] * 100)}%`;
     this.el.wantEat.textContent = v[INSPECT.wantEat] > 0 ? '食べたい' : '食べない';
     this.el.wantChild.textContent = v[INSPECT.wantChild] > 0 ? 'したい' : 'しない';
-    this.el.mate.textContent = v[INSPECT.mateNearby] > 0 ? '近くにいる' : '近くにいない';
+    const compat = v[INSPECT.mateCompat];
+    this.el.mate.textContent =
+      v[INSPECT.mateNearby] > 0 ? `近くにいる（相性 ${Math.round(Math.max(0, compat) * 100)}%）` : '近くにいない';
 
     const growth = v[INSPECT.growth];
     this.el.growth.textContent =

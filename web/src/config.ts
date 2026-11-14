@@ -40,6 +40,11 @@ export const SIM_PARAMS = {
   attack_cost: 0.3,
   attack_cooldown: 10,
 
+  // 系統
+  compat_full_distance: 1.2,
+  compat_zero_distance: 2.5,
+  hue_similar: 0.05,
+
   // 変異
   mutation_rate: 0.02,
   mutation_trait_sigma: 0.05,
@@ -133,6 +138,12 @@ export const COLORS = {
   /** 選択中の個体の目印 */
   marker: '#dde6e4',
 };
+
+/** 強調中の種類を描く、画面上の最小の半径（px）。全体表示まで引いても分布が見えるように */
+export const HIGHLIGHT_MIN_RADIUS_PX = 2.5;
+
+/** 「薄くする」強調のとき、強調していない種類の不透明度 */
+export const DIMMED_ALPHA = 0.15;
 
 /**
  * 個体の描画上の半径（世界座標の px）。大きさの遺伝子 1 のときの値で、実際は大きさに比例する。

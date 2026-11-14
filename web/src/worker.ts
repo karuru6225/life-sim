@@ -70,6 +70,10 @@ let lastPublish = 0;
 let accumulator = 0;
 let lastTime = performance.now();
 
+/** 前回の集計時点での、交配の累計回数と失敗の累計回数 */
+let lastMatings = 0;
+let lastFailed = 0;
+
 let statStart = performance.now();
 let statTicks = 0;
 let statStepMs = 0;
@@ -107,6 +111,8 @@ function handle(s: SimExports, msg: ToWorker): void {
     case 'init':
       sunlightFactor = 1;
       smoothedMs = 0;
+      lastMatings = 0;
+      lastFailed = 0;
       for (const [name, value] of Object.entries(msg.params)) applyParam(s, name, value);
       s.init(msg.seed);
       sim = s;
@@ -255,7 +261,15 @@ function reportStats(s: SimExports, now: number): void {
     generation: v[o + 5],
     clustering: v[herd],
     alignment: v[herd + 1],
+    alignSame: v[herd + 2],
+    alignOther: v[herd + 3],
+    sameShare: v[herd + 4],
   });
+  // 交配の回数は累計なので、前回からの差で失敗率を出す
+  const matings = v[23] - lastMatings;
+  const failed = v[24] - lastFailed;
+  lastMatings = v[23];
+  lastFailed = v[24];
   post({
     type: 'stats',
     ticksPerSecond: (statTicks * 1000) / elapsed,
@@ -263,8 +277,9 @@ function reportStats(s: SimExports, now: number): void {
     plantTotal: v[0],
     sunlight: baseSunlight * sunlightFactor,
     sunlightFactor,
+    matingFailRate: matings > 0 ? failed / matings : NaN,
     herbivore: means(1, 13),
-    carnivore: means(7, 15),
+    carnivore: means(7, 18),
   });
   statStart = now;
   statTicks = 0;

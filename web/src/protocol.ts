@@ -49,6 +49,8 @@ export type FromWorker =
       sunlight: number;
       /** 自動調整で設定値の何倍にしているか（1 なら下げていない） */
       sunlightFactor: number;
+      /** 直前の集計区間で、交配が相性で失敗した割合（交配がなければ NaN） */
+      matingFailRate: number;
       herbivore: TraitMeans;
       carnivore: TraitMeans;
     };
@@ -65,6 +67,11 @@ export interface TraitMeans {
   clustering: number;
   /** 近くの仲間との向きのそろい具合。0 ならばらばら、1 なら全員同じ向き */
   alignment: number;
+  /** 向きのそろい具合を、同じ系統どうし・違う系統どうしに分けたもの */
+  alignSame: number;
+  alignOther: number;
+  /** 近くの仲間のうち、同じ系統の割合 */
+  sameShare: number;
 }
 
 /** inspect 配列の各要素の位置。sim/src/lib.rs の inspect() と一致させること */
@@ -106,6 +113,8 @@ export const INSPECT = {
   mateNearby: 27,
   /** 成長度（1 で成熟）。size は大人の大きさで、いまの大きさは size × growth */
   growth: 28,
+  /** 繁殖相手との相性（繁殖が成功する確率）。相手がいなければ負 */
+  mateCompat: 29,
 } as const;
 
 export const HERBIVORE = 0;

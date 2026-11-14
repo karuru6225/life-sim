@@ -1,11 +1,11 @@
 import { Application, Container, Graphics } from 'pixi.js';
-import { AUTO_RESELECT, BODY_RADIUS, COLORS, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
+import { AUTO_RESELECT, BODY_RADIUS, COLORS, DIMMED_ALPHA, HIGHLIGHT_MIN_RADIUS_PX, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
 import { CARNIVORE, HERBIVORE, INSPECT, type FromWorker, type ToWorker } from './protocol';
 import { AgentLayer, type ColorMode } from './render/agents';
 import { Camera } from './render/camera';
 import { PlantLayer } from './render/plants';
 import { SelectionMarker } from './render/selection';
-import { Hud } from './ui/hud';
+import { Hud, type Highlight, type HighlightStyle } from './ui/hud';
 import { Inspector, Toast } from './ui/inspector';
 import './style.css';
 
@@ -42,6 +42,9 @@ const dot = (radius: number) =>
     resolution: 8,
     antialias: true,
   });
+/** 三角形の頂点（外接円の半径 r、+x を指す） */
+const arrowPoints = (r: number) => [r, 0, -0.7 * r, 0.75 * r, -0.7 * r, -0.75 * r];
+
 /**
  * 進行方向（+x）を指す、少し細長い三角形。肉食を形で見分けるため（系統色の表示でも色に頼らず区別できる）。
  * 同じ半径の円より小さく見えるので、外接円の半径を 1.3 倍にしている
@@ -49,7 +52,7 @@ const dot = (radius: number) =>
 const arrow = (radius: number) => {
   const r = radius * 1.3;
   return app.renderer.generateTexture({
-    target: new Graphics().poly([r, 0, -0.7 * r, 0.75 * r, -0.7 * r, -0.75 * r]).fill(0xffffff),
+    target: new Graphics().poly(arrowPoints(r)).fill(0xffffff),
     resolution: 8,
     antialias: true,
   });
@@ -65,8 +68,36 @@ const carnivores = new AgentLayer(
   params.world_width,
   params.world_height,
 );
+
+// 「枠線」の強調に使う輪。体より一回り大きい輪を、個体の上に重ねて描く。
+// テクスチャの大きさで体との比を決めているので、描画倍率は体と同じでよい
+const ringTexture = (shape: 'circle' | 'arrow', radius: number) =>
+  app.renderer.generateTexture({
+    target:
+      shape === 'circle'
+        ? new Graphics().circle(0, 0, radius * 1.7).stroke({ width: radius * 0.4, color: 0xffffff })
+        : new Graphics().poly(arrowPoints(radius * 1.3 * 1.6)).stroke({ width: radius * 0.4, color: 0xffffff }),
+    resolution: 8,
+    antialias: true,
+  });
+const herbOutline = new AgentLayer(
+  ringTexture('circle', BODY_RADIUS.herbivore),
+  COLORS.marker,
+  1,
+  false,
+  params.world_width,
+  params.world_height,
+);
+const carnOutline = new AgentLayer(
+  ringTexture('arrow', BODY_RADIUS.herbivore),
+  COLORS.marker,
+  BODY_RADIUS.carnivore / BODY_RADIUS.herbivore,
+  true,
+  params.world_width,
+  params.world_height,
+);
 const marker = new SelectionMarker();
-world.addChild(herbivores.container, carnivores.container, marker.graphics);
+world.addChild(herbivores.container, carnivores.container, herbOutline.container, carnOutline.container, marker.graphics);
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 const send = (msg: ToWorker, transfer: Transferable[] = []) => worker.postMessage(msg, transfer);
@@ -76,6 +107,20 @@ let latest: Frame | null = null;
 let speed = 1;
 let paused = false;
 let colorMode: ColorMode = 'kind';
+let highlight: Highlight = 'none';
+let highlightStyle: HighlightStyle = 'dim';
+
+/** 指定した種類を強調する（個体の選択とは独立）。方法は、もう一方を薄くするか、枠線を付けるか */
+function setHighlight(target: Highlight, style: HighlightStyle): void {
+  highlight = target;
+  highlightStyle = style;
+  const dim = style === 'dim';
+  herbivores.container.alpha = dim && target === 'carnivore' ? DIMMED_ALPHA : 1;
+  carnivores.container.alpha = dim && target === 'herbivore' ? DIMMED_ALPHA : 1;
+  herbOutline.container.visible = !dim && target === 'herbivore';
+  carnOutline.container.visible = !dim && target === 'carnivore';
+  hud.setHighlight(target, style);
+}
 /** 選択中の個体をカメラで追うか */
 let following = false;
 /**
@@ -165,6 +210,8 @@ const hud = new Hud(document.getElementById('hud')!, {
     send({ type: 'setParam', name: 'sunlight', value });
   },
   onAutoSunlight: (enabled) => send({ type: 'setAutoSunlight', enabled }),
+  onHighlight: (target) => setHighlight(target, highlightStyle),
+  onHighlightStyle: (style) => setHighlight(highlight, style),
   onColorMode: (mode) => {
     colorMode = mode;
     hud.setColorMode(mode);
@@ -226,8 +273,15 @@ app.ticker.add(() => {
   const f = latest;
   const agentFloats = f.agentCount * f.stride;
   const agents = new Float32Array(f.buffer, 0, agentFloats);
-  herbivores.apply(agents, f.agentCount, f.stride, HERBIVORE, colorMode);
-  carnivores.apply(agents, f.agentCount, f.stride, CARNIVORE, colorMode);
+  // 強調中の種類は、画面上で最低 HIGHLIGHT_MIN_RADIUS_PX の半径で描く（テクスチャの半径は草食の半径）
+  const minScale = HIGHLIGHT_MIN_RADIUS_PX / camera.scale / BODY_RADIUS.herbivore;
+  const herbMin = highlight === 'herbivore' ? minScale : 0;
+  const carnMin = highlight === 'carnivore' ? minScale : 0;
+  herbivores.apply(agents, f.agentCount, f.stride, HERBIVORE, colorMode, herbMin);
+  carnivores.apply(agents, f.agentCount, f.stride, CARNIVORE, colorMode, carnMin);
+  // 枠線は表示中のときだけ更新する（計算の節約）
+  if (herbOutline.container.visible) herbOutline.apply(agents, f.agentCount, f.stride, HERBIVORE, 'kind', herbMin);
+  if (carnOutline.container.visible) carnOutline.apply(agents, f.agentCount, f.stride, CARNIVORE, 'kind', carnMin);
   plants.apply(new Float32Array(f.buffer, agentFloats * 4, f.plantCols * f.plantRows), f.plantCols, f.plantRows);
   hud.setTick(f.tick);
   if (f.inspect) showSelection(f.inspect);
@@ -269,4 +323,5 @@ hud.setSpeed(speed);
 hud.setPaused(paused);
 hud.setSunlight(params.sunlight);
 hud.setColorMode(colorMode);
+setHighlight('none', 'dim');
 start();

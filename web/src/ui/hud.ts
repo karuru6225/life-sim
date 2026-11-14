@@ -3,6 +3,11 @@
 import { COLORS, HISTORY_LENGTH, SPEEDS, SUNLIGHT_RANGE, TICK_HZ } from '../config';
 import type { FromWorker, TraitMeans } from '../protocol';
 import type { ColorMode } from '../render/agents';
+
+/** 強調表示する種類（none は強調なし） */
+export type Highlight = 'none' | 'herbivore' | 'carnivore';
+/** 強調の方法: もう一方を薄くする / 強調する種類に枠線を付ける */
+export type HighlightStyle = 'dim' | 'outline';
 import { HUE_PALETTE } from '../render/palette';
 
 type Stats = Extract<FromWorker, { type: 'stats' }>;
@@ -14,6 +19,8 @@ export interface HudHandlers {
   onSunlight(value: number): void;
   onColorMode(mode: ColorMode): void;
   onAutoSunlight(enabled: boolean): void;
+  onHighlight(target: Highlight): void;
+  onHighlightStyle(style: HighlightStyle): void;
 }
 
 const fmtInt = new Intl.NumberFormat('ja-JP');
@@ -27,12 +34,17 @@ const TRAIT_ROWS: [string, (m: TraitMeans) => number, number][] = [
   ['世代', (m) => m.generation, 0],
   ['集まり具合', (m) => m.clustering, 2],
   ['向きのそろい', (m) => m.alignment, 2],
+  ['　同じ系統どうし', (m) => m.alignSame, 2],
+  ['　違う系統どうし', (m) => m.alignOther, 2],
+  ['近くの同系統の割合', (m) => m.sameShare, 2],
 ];
 
 export class Hud {
   private readonly el: Record<string, HTMLElement> = {};
   private readonly speedButtons: HTMLButtonElement[] = [];
   private readonly modeButtons: HTMLButtonElement[] = [];
+  private readonly highlightButtons: HTMLButtonElement[] = [];
+  private readonly styleButtons: HTMLButtonElement[] = [];
   private readonly traitCells: HTMLElement[][] = [];
   private readonly chart: PopulationChart;
 
@@ -58,6 +70,7 @@ export class Hud {
       </table>
       <dl class="hud-rows">
         <dt>植物量</dt><dd data-k="plant">–</dd>
+        <dt title="繁殖相手と遺伝的に遠く、交配に失敗した割合。上がってきたら種が分かれつつある">交配失敗</dt><dd data-k="mateFail">–</dd>
         <dt>日射量</dt>
         <dd class="slider-row">
           <input type="range" data-k="sun" min="${SUNLIGHT_RANGE.min}" max="${SUNLIGHT_RANGE.max}" step="${SUNLIGHT_RANGE.step}" aria-label="日射量" />
@@ -76,6 +89,8 @@ export class Hud {
         </div>
         <div class="group" data-k="speeds"><span class="group-label">速度</span></div>
         <div class="group" data-k="modes"><span class="group-label">色分け</span></div>
+        <div class="group" data-k="highlights"><span class="group-label">強調（引いても見えるよう大きめに描く）</span></div>
+        <div class="group" data-k="styles"><span class="group-label">強調の方法</span></div>
       </div>
       <dl class="hud-rows hud-perf">
         <dt>描画</dt><dd><span data-k="fps">–</span> fps</dd>
@@ -94,7 +109,7 @@ export class Hud {
         <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.background}, ${COLORS.plant})"></div>
         <div class="swatch-scale"><span>なし</span><span>上限</span></div>
         <p class="legend-note">草食は丸、肉食は進行方向を指す三角。大きさは個体のいまの大きさに比例（肉食は見やすさのため 1.5 倍で表示）</p>
-        <p class="legend-note">集まり具合: 最寄りの仲間までの距離 ÷ ランダムに散らばった場合の期待値（1 でランダム、小さいほど集まっている）。向きのそろい: 近くの仲間との向きの一致度（0 でばらばら、1 で同じ向き）</p>
+        <p class="legend-note">集まり具合: 最寄りの仲間までの距離 ÷ ランダムに散らばった場合の期待値（1 でランダム、小さいほど集まっている）。向きのそろい: 近くの仲間との向きの一致度（0 でばらばら、1 で同じ向き）。同じ系統どうしだけ高ければ、系統ごとの群れができている</p>
       </div>
       <p class="hud-help">ドラッグ: 移動 · ホイール: ズーム · ダブルクリック: 全体 · 拡大してクリック: 個体を選択 · Space: 一時停止</p>
     `;
@@ -128,6 +143,27 @@ export class Hud {
       this.el.modes.append(b);
     }
 
+    for (const [target, label] of [
+      ['none', 'なし'],
+      ['herbivore', '草食'],
+      ['carnivore', '肉食'],
+    ] as const) {
+      const b = button(label, () => handlers.onHighlight(target));
+      b.dataset.value = target;
+      this.highlightButtons.push(b);
+      this.el.highlights.append(b);
+    }
+
+    for (const [style, label] of [
+      ['dim', 'もう一方を薄く'],
+      ['outline', '枠線'],
+    ] as const) {
+      const b = button(label, () => handlers.onHighlightStyle(style));
+      b.dataset.value = style;
+      this.styleButtons.push(b);
+      this.el.styles.append(b);
+    }
+
     for (const [label] of TRAIT_ROWS) {
       const tr = document.createElement('tr');
       const th = document.createElement('th');
@@ -150,6 +186,7 @@ export class Hud {
     this.el.herb.textContent = fmtInt.format(s.herbivore.count);
     this.el.carn.textContent = fmtInt.format(s.carnivore.count);
     this.el.plant.textContent = fmtInt.format(Math.round(s.plantTotal));
+    this.el.mateFail.textContent = Number.isFinite(s.matingFailRate) ? `${(s.matingFailRate * 100).toFixed(1)}%` : '–';
     this.el.autoState.textContent =
       s.sunlightFactor < 1
         ? `実効 ${s.sunlight.toFixed(3)}（設定値の −${((1 - s.sunlightFactor) * 100).toFixed(1)}%）`
@@ -189,6 +226,11 @@ export class Hud {
   setColorMode(mode: ColorMode): void {
     for (const b of this.modeButtons) b.classList.toggle('active', b.dataset.value === mode);
     this.el.lineageLegend.hidden = mode !== 'lineage';
+  }
+
+  setHighlight(target: Highlight, style: HighlightStyle): void {
+    for (const b of this.highlightButtons) b.classList.toggle('active', b.dataset.value === target);
+    for (const b of this.styleButtons) b.classList.toggle('active', b.dataset.value === style);
   }
 
   setPaused(paused: boolean): void {

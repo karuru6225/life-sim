@@ -39,7 +39,8 @@ export class AgentLayer {
    * data: [x, y, 種類, 大きさ, 標識色, 向き] × count のうち、種類が kind の個体だけを描く。
    * 個体数は毎 tick 変わるので、表示数を合わせてから書き込む
    */
-  apply(data: Float32Array, count: number, stride: number, kind: number, mode: ColorMode): void {
+  /** minScale: 描画倍率の下限（引いた表示でも小さくなりすぎないように。0 なら下限なし） */
+  apply(data: Float32Array, count: number, stride: number, kind: number, mode: ColorMode, minScale = 0): void {
     let n = 0;
     for (let i = 0; i < count; i++) {
       const o = i * stride;
@@ -47,7 +48,7 @@ export class AgentLayer {
       const p = this.particle(n++);
       p.x = data[o];
       p.y = data[o + 1];
-      const s = data[o + 3] * this.baseScale;
+      const s = Math.max(minScale, data[o + 3] * this.baseScale);
       p.scaleX = s;
       p.scaleY = s;
       p.color = mode === 'kind' ? this.kindColor : this.huePalette[hueIndex(data[o + 4])];
