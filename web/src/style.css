@@ -497,3 +497,25 @@ button:disabled {
 #inspector.dead .pri-value {
   color: var(--muted);
 }
+
+.terrain-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 6px 0 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.terrain-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  display: inline-block;
+  width: 18px;
+  height: 10px;
+  border: 1px solid var(--line);
+}

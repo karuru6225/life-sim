@@ -20,7 +20,14 @@ export type ToWorker =
   | { type: 'returnBuffer'; buffer: ArrayBuffer };
 
 export type FromWorker =
-  | { type: 'ready'; generation: number }
+  | {
+      type: 'ready';
+      generation: number;
+      /** 地形（Float32、cols × rows、行優先）。水は −1、陸は肥沃度 0〜1。世界を作り直すまで変わらない */
+      terrain: ArrayBuffer;
+      terrainCols: number;
+      terrainRows: number;
+    }
   /** select の結果。id が 0 なら近くに個体がいなかった */
   | { type: 'selected'; id: number }
   | {

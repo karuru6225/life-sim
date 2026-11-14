@@ -4,6 +4,7 @@ import { CARNIVORE, HERBIVORE, INSPECT, type FromWorker, type ToWorker } from '.
 import { AgentLayer, type ColorMode } from './render/agents';
 import { Camera } from './render/camera';
 import { PlantLayer } from './render/plants';
+import { TerrainLayer } from './render/terrain';
 import { SelectionMarker } from './render/selection';
 import { Hud, type Highlight, type HighlightStyle } from './ui/hud';
 import { Inspector, Toast } from './ui/inspector';
@@ -27,8 +28,9 @@ document.getElementById('stage')!.append(app.canvas);
 const world = new Container();
 app.stage.addChild(world);
 
+const terrain = new TerrainLayer(params.plant_cell);
 const plants = new PlantLayer(params.plant_cell, params.plant_capacity);
-world.addChild(plants.sprite);
+world.addChild(terrain.sprite, plants.sprite);
 
 // 世界の外枠。トーラスなので端はつながっているが、どこまでが世界かは見せておく
 world.addChild(
@@ -243,6 +245,7 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
   switch (msg.type) {
     case 'ready':
       generation = msg.generation;
+      terrain.apply(new Float32Array(msg.terrain), msg.terrainCols, msg.terrainRows);
       break;
     case 'selected':
       selectedId = msg.id;

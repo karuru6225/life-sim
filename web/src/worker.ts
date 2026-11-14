@@ -20,6 +20,7 @@ interface SimExports {
   plant_ptr(): number;
   plant_cols(): number;
   plant_rows(): number;
+  terrain_ptr(): number;
   select_at(x: number, y: number, radius: number): number;
   select_near_kind(x: number, y: number, radius: number, kind: number): number;
   deselect(): void;
@@ -122,7 +123,16 @@ function handle(s: SimExports, msg: ToWorker): void {
       allocated = 0;
       accumulator = 0;
       dirty = true;
-      post({ type: 'ready', generation });
+      {
+        const cols = s.plant_cols();
+        const rows = s.plant_rows();
+        const terrain = new Float32Array(cols * rows);
+        terrain.set(new Float32Array(s.memory.buffer, s.terrain_ptr(), cols * rows));
+        post(
+          { type: 'ready', generation, terrain: terrain.buffer, terrainCols: cols, terrainRows: rows },
+          [terrain.buffer],
+        );
+      }
       break;
     case 'setParam':
       applyParam(s, msg.name, msg.value);

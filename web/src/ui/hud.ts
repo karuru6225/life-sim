@@ -105,6 +105,11 @@ export class Hud {
           <div class="plant-bar" style="background:linear-gradient(to right, ${HUE_PALETTE.join(', ')})"></div>
           <p class="legend-note">生存に影響しない遺伝子で、親から子へ少しずつずれながら受け継がれる。近い色ほど近い系統</p>
         </div>
+        <span class="group-label">地形</span>
+        <div class="terrain-legend">
+          <span><i class="swatch" style="background:${COLORS.water}"></i>水域（入れない）</span>
+          <span><i class="swatch" style="background:linear-gradient(to right, ${COLORS.landPoor}, ${COLORS.landRich})"></i>陸（明るいほど肥沃）</span>
+        </div>
         <span class="group-label">植物量</span>
         <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.background}, ${COLORS.plant})"></div>
         <div class="swatch-scale"><span>なし</span><span>上限</span></div>

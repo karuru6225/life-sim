@@ -14,6 +14,12 @@ export const SIM_PARAMS = {
   carn_initial: 700,
   plant_initial_ratio: 0.5,
 
+  // 地形（リセット時のみ反映）
+  water_fraction: 0.25,
+  elevation_scale: 1200,
+  fertility_scale: 600,
+  fertility_min: 0.3,
+
   // 植物
   sunlight: 0.045,
   plant_capacity: 10,
@@ -148,6 +154,13 @@ export const COLORS = {
   carnivore: '#ffa878',
   /** 選択中の個体の目印 */
   marker: '#dde6e4',
+  /**
+   * 地形。水域は青、陸は肥沃度に応じて痩せた陸〜肥沃な陸の間（植物の緑はこの上に重なる）。
+   * 水域と陸の明るさの差は 1.6〜1.8:1 と小さいが、広い面で、青と黒・緑の色相の違いで見分けられる
+   */
+  water: '#163a58',
+  landPoor: '#06090b',
+  landRich: '#0e140f',
 };
 
 /** 強調中の種類を描く、画面上の最小の半径（px）。全体表示まで引いても分布が見えるように */
