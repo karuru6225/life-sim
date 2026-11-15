@@ -1,6 +1,6 @@
 // 観察パネル。個体数の推移と形質の平均（＝進化の進み具合）が主役。性能の数値は脇に置く。
 
-import { COLORS, HISTORY_LENGTH, SIM_PARAMS, SPEEDS, SUNLIGHT_RANGE, TICK_HZ } from '../config';
+import { AUTO_SUNLIGHT, COLORS, HISTORY_LENGTH, SIM_PARAMS, SPEEDS, SUNLIGHT_RANGE, TICK_HZ } from '../config';
 import type { FromWorker, TraitMeans } from '../protocol';
 import type { ColorMode } from '../render/agents';
 import type { MapMode } from '../render/terrain';
@@ -104,9 +104,9 @@ export class Hud {
           <input type="range" data-k="sun" min="${SUNLIGHT_RANGE.min}" max="${SUNLIGHT_RANGE.max}" step="${SUNLIGHT_RANGE.step}" aria-label="日射量" />
           <span data-k="sunValue">–</span>
         </dd>
-        <dt title="計算が重くなったら日射量を少しずつ下げて個体数を減らし、軽くなったら設定値まで戻す">自動調整</dt>
+        <dt title="計算が重くなったら日射量を少しずつ下げて個体数を減らし、軽くなったら設定値まで戻す（最大 3 割まで）。既定はオフで、重いときは再生が遅くなる">自動調整</dt>
         <dd>
-          <label class="check"><input type="checkbox" data-k="auto" checked /> 重いとき下げる</label>
+          <label class="check"><input type="checkbox" data-k="auto" ${AUTO_SUNLIGHT.enabledByDefault ? 'checked' : ''} /> 重いとき下げる</label>
           <div class="auto-state" data-k="autoState">–</div>
         </dd>
       </dl>

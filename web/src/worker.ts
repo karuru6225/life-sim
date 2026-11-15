@@ -66,7 +66,7 @@ let paused = false;
 let watching = false;
 
 // 日射量の自動調整（config.ts の AUTO_SUNLIGHT を参照）
-let autoSunlight = true;
+let autoSunlight = AUTO_SUNLIGHT.enabledByDefault;
 /** スライダーで設定された日射量 */
 let baseSunlight = 0;
 /** 設定値に掛ける倍率。計算が重いと 1 から下がる */
