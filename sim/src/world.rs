@@ -16,6 +16,7 @@ use crate::params::Params;
 use crate::plants::PlantField;
 use crate::rng::Rng;
 use crate::terrain::{Terrain, TerrainSpec};
+use std::collections::VecDeque;
 
 pub const HERBIVORE: u8 = 0;
 pub const CARNIVORE: u8 = 1;
@@ -76,8 +77,11 @@ const GRID_CELL: f32 = 16.0;
 /// 系統の統計（World::lineage_stats）の要素数と並び:
 /// 0 個体数, 1 幼体の割合, 2 大人の大きさ, 3 最高速度, 4 視野, 5 視野角（度）, 6 好みの気温, 7 子への投資,
 /// 8 繁殖シグナル, 9 世代, 10・11 重心の x・y, 12 重心からの距離の平均, 13 エネルギー ÷ 繁殖に必要な量, 14 寒い半分にいる割合,
-/// 15・16 使っている中間ニューロンの数（1 層目・2 層目）, 17 一度に産む数
-pub const LINEAGE_STATS: usize = 18;
+/// 15・16 使っている中間ニューロンの数（1 層目・2 層目）, 17 一度に産む数,
+/// 18〜23 直近 DEATH_WINDOW tick の死因ごとの死亡数（死因 1〜6: 餓死・寿命・食べられた・けが・病気・争い）
+pub const LINEAGE_STATS: usize = 24;
+/// 系統ごとの死因の内訳を数える期間（tick）
+pub const DEATH_WINDOW: u64 = 1200;
 
 /// 描画用バッファの 1 個体あたりの要素数: [x, y, 種類, 大きさ, 標識色, 向き]
 pub const RENDER_STRIDE: usize = 6;
@@ -352,6 +356,17 @@ pub struct World {
     pub matings: u64,
     pub failed_matings: u64,
     pub census: Census,
+    /// 直近 DEATH_WINDOW tick の死亡の記録（古い順）。系統ごとの死因の内訳に使う
+    recent_deaths: VecDeque<DeathRecord>,
+}
+
+/// 死亡の記録（系統ごとの死因の内訳用）
+#[derive(Clone, Copy)]
+struct DeathRecord {
+    tick: u64,
+    kind: u8,
+    cause: u8,
+    hue: f32,
 }
 
 impl World {
@@ -434,6 +449,7 @@ impl World {
             matings: 0,
             failed_matings: 0,
             census: Census::default(),
+            recent_deaths: VecDeque::new(),
             params,
         };
         let p = world.params.clone();
@@ -911,6 +927,10 @@ impl World {
 
         self.apply_births();
         self.remove_dead();
+        // 古い死亡の記録を捨てる
+        while self.recent_deaths.front().is_some_and(|d| d.tick + DEATH_WINDOW <= self.tick) {
+            self.recent_deaths.pop_front();
+        }
         self.tick += 1;
     }
 
@@ -1576,6 +1596,7 @@ impl World {
             self.drop_carrion(self.xs[i], self.ys[i], body);
         }
         self.census.deaths[self.kind[i] as usize][cause as usize] += 1;
+        self.recent_deaths.push_back(DeathRecord { tick: self.tick, kind: self.kind[i], cause, hue: self.traits[i].hue });
         if self.growth[i] < 1.0 {
             self.census.juvenile_deaths[self.kind[i] as usize][cause as usize] += 1;
         }
@@ -1877,6 +1898,12 @@ impl World {
         let (tw, th) = (std::f64::consts::TAU / self.width as f64, std::f64::consts::TAU / self.height as f64);
         // 位置の平均はトーラスなので、座標を角度にして cos と sin の平均から求める
         let (mut cx, mut sx, mut cy, mut sy) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        // 直近の死因の内訳（死んだ個体は数に入らないので、個体がいなくても数える）
+        for d in &self.recent_deaths {
+            if d.kind == kind && (all || (d.hue - hue_from).rem_euclid(1.0) < hue_width) && (1..=6).contains(&d.cause) {
+                out[17 + d.cause as usize] += 1.0;
+            }
+        }
         let members: Vec<usize> = (0..self.count())
             .filter(|&i| self.kind[i] == kind && (all || (self.traits[i].hue - hue_from).rem_euclid(1.0) < hue_width))
             .collect();
@@ -2990,6 +3017,26 @@ mod tests {
         assert_eq!(one_rest, three_rest, "渡した合計が同じなら休みも同じ");
         let (_, _, small_rest) = born(1.0, 0.1);
         assert!(small_rest < one_rest / 3, "少し渡すだけなら休みは短い: {one_rest} → {small_rest}");
+    }
+
+    #[test]
+    fn 系統ごとに直近の死因を数える() {
+        let mut w = empty_world();
+        w.plants.biomass.fill(0.0);
+        let mut g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        g[genome::G_HUE] = 0.1;
+        w.spawn(100.0, 100.0, HERBIVORE, 0.001, 0, &g);
+        g[genome::G_HUE] = 0.6;
+        w.spawn(300.0, 100.0, HERBIVORE, 0.001, 0, &g);
+        w.step(); // どちらも餓死する
+        let s = w.lineage_stats(HERBIVORE, 0.05, 0.1);
+        assert_eq!(s[17 + death::STARVED as usize], 1.0, "範囲内の 1 体だけ");
+        assert_eq!(w.lineage_stats(HERBIVORE, 0.0, 1.0)[17 + death::STARVED as usize], 2.0);
+        // 期間を過ぎると消える
+        for _ in 0..DEATH_WINDOW {
+            w.step();
+        }
+        assert_eq!(w.lineage_stats(HERBIVORE, 0.0, 1.0)[17 + death::STARVED as usize], 0.0);
     }
 
     #[test]
