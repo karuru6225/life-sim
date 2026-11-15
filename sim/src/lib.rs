@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 59;
+const INSPECT_LEN: usize = 60;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
 const SUMMARY_LEN: usize = 31;
 
@@ -226,7 +226,7 @@ pub extern "C" fn deselect() {
 /// 49, 50: 親の id（繁殖を決めた側, 相手。初期個体と無性生殖の相手は 0）  51: 生きている子の数
 /// 52, 53: 好みの獲物の大きさの比の下限と上限（肉食のみ使う）  54: 襲いかかった回数
 /// 55, 56: 使っている中間ニューロンの数（1 層目, 2 層目）  57: 追い払う欲求の優先度（0〜1）
-/// 58: 仲間（同じ種類）を最後に見てからの tick 数
+/// 58: 仲間（同じ種類）を最後に見てからの tick 数  59: 一度に産む数
 /// 28: 成長度（1 で成熟）。17 の大きさは遺伝子が決める大人の大きさで、いまの大きさは 17 × 28
 /// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
 #[unsafe(no_mangle)]
@@ -286,6 +286,7 @@ pub extern "C" fn inspect() -> *const f64 {
             out[34] = watch.priorities[5] as f64;
             out[57] = watch.priorities[4] as f64;
             out[58] = w.alone[i] as f64;
+            out[59] = t.litter as f64;
             out[35] = w.vigilance[i] as f64;
             out[36] = w.natal[i] as f64;
             out[37] = w.habitat_fit(i, w.terrain.soil_at(w.xs[i], w.ys[i])) as f64;

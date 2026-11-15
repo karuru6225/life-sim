@@ -25,7 +25,9 @@ pub const G_PREY_MAX: usize = 6;
 pub const G_TEMP_PREF: usize = 7;
 /// 視野角（ラジアン）。正面を中心にこの角度の扇形の中だけが見える。2π なら全方位
 pub const G_FOV: usize = 8;
-pub const N_TRAITS: usize = 9;
+/// 一度に産む子の数（四捨五入して 1〜6）。子に渡すエネルギーを等分するので、多く産むほど 1 体は小さい
+pub const G_LITTER: usize = 9;
+pub const N_TRAITS: usize = 10;
 
 /// 形質が取りうる範囲（変異でこの外に出たら切り詰める）
 pub const SIZE_RANGE: (f32, f32) = (0.4, 3.0);
@@ -36,6 +38,7 @@ pub const PREY_MIN_RANGE: (f32, f32) = (0.05, 2.0);
 pub const PREY_MAX_RANGE: (f32, f32) = (0.2, 4.0);
 pub const TEMP_PREF_RANGE: (f32, f32) = (-30.0, 50.0);
 pub const FOV_RANGE: (f32, f32) = (0.5, std::f32::consts::TAU);
+pub const LITTER_RANGE: (f32, f32) = (1.0, 6.0);
 /// 視野の上限。近傍探索のグリッドのセルはこれ以上の大きさにする
 pub const VISION_MAX: f32 = 64.0;
 
@@ -303,6 +306,8 @@ pub struct Traits {
     pub fov_cos: f32,
     /// 使っている中間ニューロンの数（1 層目, 2 層目）。脳の維持費に使う
     pub brain: (u32, u32),
+    /// 一度に産む子の数
+    pub litter: u32,
 }
 
 impl Traits {
@@ -338,6 +343,7 @@ pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
         fov: 0.0,
         fov_cos: 0.0,
         brain: active_neurons(genome),
+        litter: genome[G_LITTER].clamp(LITTER_RANGE.0, LITTER_RANGE.1).round() as u32,
     };
     t.fov = genome[G_FOV].clamp(FOV_RANGE.0, FOV_RANGE.1);
     t.fov_cos = (t.fov * 0.5).cos();
@@ -385,6 +391,8 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     g[G_TEMP_PREF] = 15.0;
     // 視野角: 草食は目が横に付いて広く（死角は真後ろだけ）、肉食は目が前に付いて狭い
     g[G_FOV] = if herbivore { 300f32.to_radians() } else { 120f32.to_radians() };
+    // 一度に 1 体ずつ産む（多く産むかどうかは進化に任せる）
+    g[G_LITTER] = 1.0;
 
     // 自由な移動は、ゆるく前へ
     out_bias(&mut g, OUT_DIR_FWD, 0.3);

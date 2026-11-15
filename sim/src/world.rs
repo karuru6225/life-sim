@@ -76,8 +76,8 @@ const GRID_CELL: f32 = 16.0;
 /// 系統の統計（World::lineage_stats）の要素数と並び:
 /// 0 個体数, 1 幼体の割合, 2 大人の大きさ, 3 最高速度, 4 視野, 5 視野角（度）, 6 好みの気温, 7 子への投資,
 /// 8 繁殖シグナル, 9 世代, 10・11 重心の x・y, 12 重心からの距離の平均, 13 エネルギー ÷ 繁殖に必要な量, 14 寒い半分にいる割合,
-/// 15・16 使っている中間ニューロンの数（1 層目・2 層目）
-pub const LINEAGE_STATS: usize = 17;
+/// 15・16 使っている中間ニューロンの数（1 層目・2 層目）, 17 一度に産む数
+pub const LINEAGE_STATS: usize = 18;
 
 /// 描画用バッファの 1 個体あたりの要素数: [x, y, 種類, 大きさ, 標識色, 向き]
 pub const RENDER_STRIDE: usize = 6;
@@ -1711,26 +1711,23 @@ impl World {
         }
     }
 
-    /// 繁殖コストを引いた残りのうち、子への投資の割合を子に渡す。
-    /// エネルギーを払うのは繁殖を決めた側（i）だけで、相手（mate）は遺伝子を渡すだけ
+    /// 繁殖コストを引いた残りのうち、子への投資の割合を子に渡す。一度に産む数（遺伝子）だけ産み、渡すエネルギーは等分する。
+    /// エネルギーを払うのは繁殖を決めた側（i）だけで、相手（mate）は遺伝子を渡すだけ。
+    /// 次に繁殖できるまでの休みは、子に渡したエネルギーの合計に比例する（妊娠と子育てにあたる）
     fn reproduce(&mut self, i: usize, birth_cost: f32, mate: Option<usize>) {
         let before = self.energy[i];
         let available = before - birth_cost;
-        let child = available * self.traits[i].invest;
-        let parent = available - child;
+        let given = available * self.traits[i].invest;
+        let parent = available - given;
         self.energy[i] = parent;
-        self.ledger.lost_birth += (before - parent - child) as f64;
-        self.children[i] += 1;
+        self.ledger.lost_birth += (before - parent - given) as f64;
+        let litter = self.traits[i].litter.max(1);
+        self.children[i] += litter;
+        // 休み = 基本の休み × 渡した量 ÷ (繁殖に必要な量の半分)。0.1〜3 倍に収める
+        let base_rest = if self.kind[i] == HERBIVORE { self.params.herb_repro_rest } else { self.params.carn_repro_rest };
+        let ratio = (given / (0.5 * self.repro_threshold(i))).clamp(0.1, 3.0);
+        self.rest[i] = (base_rest * ratio) as u16;
 
-        let genome_at = self.births_genomes.len();
-        let mine = &self.genomes[i * GENOME_LEN..(i + 1) * GENOME_LEN];
-        match mate {
-            Some(j) => {
-                let theirs = &self.genomes[j * GENOME_LEN..(j + 1) * GENOME_LEN];
-                genome::crossover(mine, theirs, &mut self.rng, &mut self.births_genomes);
-            }
-            None => self.births_genomes.extend_from_slice(mine),
-        }
         let m = Mutation {
             rate: self.params.mutation_rate,
             trait_sigma: self.params.mutation_trait_sigma,
@@ -1739,24 +1736,35 @@ impl World {
             temp_sigma: self.params.mutation_temp_sigma,
             neuron_flip: self.params.mutation_neuron,
         };
-        genome::mutate(&mut self.births_genomes[genome_at..], &m, &mut self.rng);
-
-        let spread = self.params.birth_spread;
-        let x = self.xs[i] + self.rng.range(-spread, spread);
-        let y = self.ys[i] + self.rng.range(-spread, spread);
-        self.census.births[self.kind[i] as usize] += 1;
         let mate_id = mate.map(|j| self.id[j]).unwrap_or(0);
-        self.births.push(Birth {
-            parents: [self.id[i], mate_id],
-            x,
-            y,
-            parent_x: self.xs[i],
-            parent_y: self.ys[i],
-            kind: self.kind[i],
-            energy: child,
-            generation: self.generation[i] + 1,
-            genome_at,
-        });
+        let spread = self.params.birth_spread;
+        // きょうだいは、それぞれ別に交叉と変異をする（遺伝子が少しずつ違う）
+        for _ in 0..litter {
+            let genome_at = self.births_genomes.len();
+            let mine = &self.genomes[i * GENOME_LEN..(i + 1) * GENOME_LEN];
+            match mate {
+                Some(j) => {
+                    let theirs = &self.genomes[j * GENOME_LEN..(j + 1) * GENOME_LEN];
+                    genome::crossover(mine, theirs, &mut self.rng, &mut self.births_genomes);
+                }
+                None => self.births_genomes.extend_from_slice(mine),
+            }
+            genome::mutate(&mut self.births_genomes[genome_at..], &m, &mut self.rng);
+            let x = self.xs[i] + self.rng.range(-spread, spread);
+            let y = self.ys[i] + self.rng.range(-spread, spread);
+            self.census.births[self.kind[i] as usize] += 1;
+            self.births.push(Birth {
+                parents: [self.id[i], mate_id],
+                x,
+                y,
+                parent_x: self.xs[i],
+                parent_y: self.ys[i],
+                kind: self.kind[i],
+                energy: given / litter as f32,
+                generation: self.generation[i] + 1,
+                genome_at,
+            });
+        }
     }
 
     fn apply_births(&mut self) {
@@ -1893,13 +1901,14 @@ impl World {
             out[14] += ((std::f32::consts::TAU * self.ys[i] / self.height).cos() > 0.0) as u8 as f64;
             out[15] += t.brain.0 as f64;
             out[16] += t.brain.1 as f64;
+            out[17] += t.litter as f64;
             let (ax, ay) = (self.xs[i] as f64 * tw, self.ys[i] as f64 * th);
             cx += ax.cos();
             sx += ax.sin();
             cy += ay.cos();
             sy += ay.sin();
         }
-        for k in [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 16] {
+        for k in [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 16, 17] {
             out[k] /= n;
         }
         let mx = sx.atan2(cx).rem_euclid(std::f64::consts::TAU) / tw;
@@ -2957,6 +2966,30 @@ mod tests {
         w.step();
         let i = w.index_of(1).unwrap();
         assert_eq!(w.alone[i], 0, "仲間が見えたら 0");
+    }
+
+    #[test]
+    fn 一度に複数産むと子は小さく_休みは渡した量に比例する() {
+        let born = |litter: f32, invest: f32| {
+            let mut w = empty_world();
+            let mut g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+            g[genome::G_LITTER] = litter;
+            g[genome::G_INVEST] = invest;
+            w.spawn(100.0, 100.0, HERBIVORE, 20.0, 0, &g);
+            w.spawn(103.0, 100.0, HERBIVORE, 5.0, 0, &g);
+            w.live(0, 0.0, true, Mate::Partner(1));
+            let rest = w.rest[0];
+            w.apply_births();
+            let kids: Vec<usize> = (2..w.count()).collect();
+            (kids.len(), kids.iter().map(|&k| w.growth[k]).fold(0.0f32, f32::max), rest)
+        };
+        let (one, one_size, one_rest) = born(1.0, 0.5);
+        let (three, three_size, three_rest) = born(3.0, 0.5);
+        assert_eq!((one, three), (1, 3));
+        assert!(three_size < one_size * 0.5, "3 体なら 1 体あたり小さい: {one_size} → {three_size}");
+        assert_eq!(one_rest, three_rest, "渡した合計が同じなら休みも同じ");
+        let (_, _, small_rest) = born(1.0, 0.1);
+        assert!(small_rest < one_rest / 3, "少し渡すだけなら休みは短い: {one_rest} → {small_rest}");
     }
 
     #[test]
