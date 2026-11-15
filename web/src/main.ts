@@ -6,7 +6,7 @@ import { Camera } from './render/camera';
 import { PlantLayer } from './render/plants';
 import { TerrainLayer, type MapMode } from './render/terrain';
 import { SelectionMarker } from './render/selection';
-import { Hud, type Highlight, type HighlightStyle } from './ui/hud';
+import { Hud, type Highlight, type HighlightStyle, type Layers } from './ui/hud';
 import { Inspector, Toast } from './ui/inspector';
 import { LineageHistogram, LineagePanel } from './ui/lineage';
 import './style.css';
@@ -36,9 +36,8 @@ const carrion = new PlantLayer(params.plant_cell, 8, COLORS.carrion, 0.25, 0.2);
 world.addChild(terrain.sprite, plants.sprite, carrion.sprite);
 
 // 世界の外枠。トーラスなので端はつながっているが、どこまでが世界かは見せておく
-world.addChild(
-  new Graphics().rect(0, 0, params.world_width, params.world_height).stroke({ width: 2, color: 0x56696f }),
-);
+const border = new Graphics().rect(0, 0, params.world_width, params.world_height).stroke({ width: 2, color: 0x56696f });
+world.addChild(border);
 
 // 拡大しても角張らないよう、テクスチャは高解像度で作る（見た目の大きさは radius のまま）
 const dot = (radius: number) =>
@@ -104,13 +103,16 @@ const carnOutline = new AgentLayer(
 const marker = new SelectionMarker();
 /** 選んだ系統の重心（十字）と広がり（円） */
 const lineageMark = new Graphics();
+/** 選択の印の入れ物。印そのものは選択に合わせて表示を切り替えるので、表示するものの切り替えはこちらで行う */
+const markerLayer = new Container();
+markerLayer.addChild(marker.graphics);
 world.addChild(
   herbivores.container,
   carnivores.container,
   herbOutline.container,
   carnOutline.container,
   lineageMark,
-  marker.graphics,
+  markerLayer,
 );
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
@@ -125,6 +127,45 @@ let highlight: Highlight = 'none';
 let highlightStyle: HighlightStyle = 'dim';
 /** 統計を見ている系統（null なら選んでいない）。選んでいる間は、系統の外の個体と、もう一方の種類を薄く描く */
 let lineageSel: LineageSelection | null = null;
+
+/** 地図の上に重ねるものの表示。ブラウザに覚えておき、次に開いたときも同じにする */
+const LAYERS_KEY = 'life-sim.layers';
+const layers: Layers = {
+  terrain: true,
+  plants: true,
+  carrion: true,
+  herbivores: true,
+  carnivores: true,
+  border: true,
+  lineage: true,
+  marker: true,
+};
+try {
+  Object.assign(layers, JSON.parse(localStorage.getItem(LAYERS_KEY) ?? '{}'));
+} catch {
+  // 覚えておけない環境（プライベートウィンドウなど）では既定のまま
+}
+
+/** 表示するものを反映する */
+function applyLayers(): void {
+  terrain.sprite.visible = layers.terrain;
+  plants.sprite.visible = layers.plants;
+  carrion.sprite.visible = layers.carrion;
+  herbivores.container.visible = layers.herbivores;
+  carnivores.container.visible = layers.carnivores;
+  border.visible = layers.border;
+  lineageMark.visible = layers.lineage;
+  markerLayer.visible = layers.marker;
+  // 枠線の強調は、その種類を表示しているときだけ
+  herbOutline.container.visible = layers.herbivores && highlightStyle === 'outline' && highlight === 'herbivore';
+  carnOutline.container.visible = layers.carnivores && highlightStyle === 'outline' && highlight === 'carnivore';
+  hud.setLayers(layers);
+  try {
+    localStorage.setItem(LAYERS_KEY, JSON.stringify(layers));
+  } catch {
+    // 覚えておけなくても表示は切り替わる
+  }
+}
 /** 選び直す前の系統の統計が届くことがあるので、選んだ時刻より前の集計は使わない */
 let lineageSince = 0;
 
@@ -138,8 +179,8 @@ function setHighlight(target: Highlight, style: HighlightStyle): void {
   const dimCarn = lineageSel ? lineageSel.kind !== CARNIVORE : dim && target === 'herbivore';
   herbivores.container.alpha = dimHerb ? DIMMED_ALPHA : 1;
   carnivores.container.alpha = dimCarn ? DIMMED_ALPHA : 1;
-  herbOutline.container.visible = !dim && target === 'herbivore';
-  carnOutline.container.visible = !dim && target === 'carnivore';
+  herbOutline.container.visible = !dim && target === 'herbivore' && layers.herbivores;
+  carnOutline.container.visible = !dim && target === 'carnivore' && layers.carnivores;
   hud.setHighlight(target, style);
 }
 /** 選択中の個体をカメラで追うか */
@@ -266,6 +307,11 @@ const hud = new Hud(document.getElementById('hud')!, {
   onMapMode: (mode: MapMode) => {
     terrain.setMode(mode);
     hud.setMapMode(mode);
+    hud.setTempRange(mode === 'tempNow' ? terrain.tempNowRange : terrain.tempRange);
+  },
+  onLayer: (layer) => {
+    layers[layer] = !layers[layer];
+    applyLayers();
   },
   onColorMode: (mode) => {
     colorMode = mode;
@@ -314,7 +360,7 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
     case 'ready':
       generation = msg.generation;
       terrain.setData(new Float32Array(msg.terrain), new Float32Array(msg.temperature), msg.terrainCols, msg.terrainRows);
-      hud.setTempRange(terrain.tempRange);
+      hud.setTempRange(terrain.currentMode === 'tempNow' ? terrain.tempNowRange : terrain.tempRange);
       break;
     case 'selected':
       selectedId = msg.id;
@@ -359,6 +405,10 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       if (msg.params) Object.assign(params, msg.params);
       hud.setSunlight(params.sunlight);
       toast.show(`tick ${msg.tick.toLocaleString('ja-JP')} の世界を読み込みました${msg.message ? `。${msg.message}` : ''}`);
+      break;
+    case 'climate':
+      if (msg.generation !== generation) break;
+      terrain.setClimate(new Float32Array(msg.temperature), new Float32Array(msg.fertility));
       break;
     case 'stats':
       hud.setStats(msg, speed, paused);
@@ -472,4 +522,5 @@ hud.setSunlight(params.sunlight);
 hud.setColorMode(colorMode);
 setHighlight('none', 'dim');
 hud.setMapMode('vegetation');
+applyLayers();
 start();

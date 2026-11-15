@@ -47,6 +47,8 @@ export type FromWorker =
    * params は読み込んだ世界のパラメータ（成功時のみ）
    */
   | { type: 'loaded'; ok: boolean; message: string; params: Record<string, number> | null; tick: number }
+  /** 季節で変わる地図のデータ（今の気温と、今の植物の育ちやすさ。Float32、cols × rows）。約 1 秒ごとに届く */
+  | { type: 'climate'; generation: number; temperature: ArrayBuffer; fertility: ArrayBuffer }
   /** select の結果。id が 0 なら近くに個体がいなかった */
   | { type: 'selected'; id: number }
   | {

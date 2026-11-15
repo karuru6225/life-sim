@@ -29,6 +29,8 @@ interface SimExports {
   load_error_ptr(): number;
   load_error_len(): number;
   get_param(nameLen: number): number;
+  temperature_now_ptr(): number;
+  fertility_now_ptr(): number;
   select_random_in_lineage(kind: number, from: number, width: number, nonce: number): number;
   brain_ptr(): number;
   brain_inputs(): number;
@@ -155,6 +157,9 @@ function onNewWorld(s: SimExports): void {
     { type: 'ready', generation, terrain: terrain.buffer, temperature: temperature.buffer, terrainCols: cols, terrainRows: rows },
     [terrain.buffer, temperature.buffer],
   );
+  // 季節で変わる地図のデータもすぐ送る（地図の表示を切り替えたときに空にならないように）
+  sendClimate(s);
+  lastClimate = performance.now();
 }
 
 const decoder = new TextDecoder();
@@ -393,7 +398,26 @@ function adjustSunlight(s: SimExports, msPerTick: number, ticks: number): void {
   if (sunlightFactor !== before) setSunlight(s);
 }
 
+/** 季節で変わる地図のデータ（今の気温と育ちやすさ）を送る */
+let lastClimate = 0;
+const CLIMATE_INTERVAL_MS = 1000;
+function sendClimate(s: SimExports): void {
+  const n = s.plant_cols() * s.plant_rows();
+  const temperature = new Float32Array(n);
+  temperature.set(new Float32Array(s.memory.buffer, s.temperature_now_ptr(), n));
+  const fertility = new Float32Array(n);
+  fertility.set(new Float32Array(s.memory.buffer, s.fertility_now_ptr(), n));
+  post({ type: 'climate', generation, temperature: temperature.buffer, fertility: fertility.buffer }, [
+    temperature.buffer,
+    fertility.buffer,
+  ]);
+}
+
 function reportStats(s: SimExports, now: number): void {
+  if (now - lastClimate >= CLIMATE_INTERVAL_MS) {
+    sendClimate(s);
+    lastClimate = now;
+  }
   const elapsed = now - statStart;
   if (elapsed < STATS_INTERVAL_MS) return;
   // 一時停止中は計っていないので、調整もしない

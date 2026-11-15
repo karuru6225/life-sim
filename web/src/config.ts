@@ -213,6 +213,8 @@ export const HISTORY_LENGTH = 240;
 export const COLORS = {
   background: '#06090b',
   plant: '#2a6b42',
+  /** 地図「育ちやすさ」の最も育ちやすい色（最も育ちにくい landPoor に対して 4.5:1） */
+  growthHigh: '#6b7f2a',
   /** 死体。植物の上に重ねるので、植物の色に対しても 3:1 を確保（3.07:1、地の色に対して 9.6:1） */
   carrion: '#d9a0e0',
   herbivore: '#9fd8c4',

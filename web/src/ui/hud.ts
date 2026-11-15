@@ -5,6 +5,30 @@ import type { FromWorker, TraitMeans } from '../protocol';
 import type { ColorMode } from '../render/agents';
 import type { MapMode } from '../render/terrain';
 
+/** 地図の上に重ねるものの表示・非表示 */
+export interface Layers {
+  terrain: boolean;
+  plants: boolean;
+  carrion: boolean;
+  herbivores: boolean;
+  carnivores: boolean;
+  border: boolean;
+  lineage: boolean;
+  marker: boolean;
+}
+
+/** 表示の切り替えボタンの並びと名前 */
+export const LAYER_LABELS: [keyof Layers, string, string][] = [
+  ['terrain', '地形', '水域・陸の色（地図の表示方法で変わる）'],
+  ['plants', '植物', '植物量'],
+  ['carrion', '死体', '死体の量'],
+  ['herbivores', '草食', '草食の個体'],
+  ['carnivores', '肉食', '肉食の個体'],
+  ['border', '枠', '世界の外枠'],
+  ['lineage', '系統の印', '選んだ系統の重心と広がり'],
+  ['marker', '選択の印', '選んだ個体の印と視野の円'],
+];
+
 /** 強調表示する種類（none は強調なし） */
 export type Highlight = 'none' | 'herbivore' | 'carnivore';
 /** 強調の方法: もう一方を薄くする / 強調する種類に枠線を付ける */
@@ -23,6 +47,8 @@ export interface HudHandlers {
   onHighlight(target: Highlight): void;
   onHighlightStyle(style: HighlightStyle): void;
   onMapMode(mode: MapMode): void;
+  /** 地図の上に重ねるものの表示を切り替える */
+  onLayer(layer: keyof Layers): void;
   /** 世界をファイルに保存する */
   onSave(): void;
   /** 保存したファイルから世界を読み込む */
@@ -67,6 +93,7 @@ export class Hud {
   private readonly highlightButtons: HTMLButtonElement[] = [];
   private readonly styleButtons: HTMLButtonElement[] = [];
   private readonly mapButtons: HTMLButtonElement[] = [];
+  private readonly layerButtons: HTMLButtonElement[] = [];
   private readonly traitCells: HTMLElement[][] = [];
   private readonly chart: PopulationChart;
 
@@ -126,7 +153,8 @@ export class Hud {
         <div class="group" data-k="modes"><span class="group-label">色分け</span></div>
         <div class="group" data-k="highlights"><span class="group-label">強調（引いても見えるよう大きめに描く）</span></div>
         <div class="group" data-k="styles"><span class="group-label">強調の方法</span></div>
-        <div class="group" data-k="maps"><span class="group-label">地図</span></div>
+        <div class="group" data-k="maps"><span class="group-label">地図の表示方法</span></div>
+        <div class="group" data-k="layers"><span class="group-label">表示するもの</span></div>
       </div>
       <dl class="hud-rows hud-perf">
         <dt>描画</dt><dd><span data-k="fps">–</span> fps</dd>
@@ -142,9 +170,14 @@ export class Hud {
           <p class="legend-note">生存に影響しない遺伝子で、親から子へ少しずつずれながら受け継がれる。近い色ほど近い系統</p>
         </div>
         <div data-k="tempLegend" hidden>
-          <span class="group-label">平均気温</span>
+          <span class="group-label" data-k="tempLegendLabel">平均気温</span>
           <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.tempCold}, ${COLORS.tempMild}, ${COLORS.tempHot})"></div>
           <div class="swatch-scale"><span data-k="tempMin">–</span><span data-k="tempMax">–</span></div>
+        </div>
+        <div data-k="growthLegend" hidden>
+          <span class="group-label">今の育ちやすさ（土の肥えかた × 今の気温による育ちやすさ）</span>
+          <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.landPoor}, ${COLORS.growthHigh})"></div>
+          <div class="swatch-scale"><span>育たない</span><span>最も育つ</span></div>
         </div>
         <span class="group-label">地形</span>
         <div class="terrain-legend">
@@ -221,14 +254,25 @@ export class Hud {
       this.el.styles.append(b);
     }
 
-    for (const [mode, label] of [
-      ['vegetation', '植生'],
-      ['temperature', '気温'],
+    for (const [mode, label, title] of [
+      ['vegetation', '植生', '植生の種類（土の肥えかた）。季節で変わらない'],
+      ['temperature', '平均気温', '1 年を通した平均の気温'],
+      ['tempNow', '今の気温', '季節の変化を含めた今の気温。寒い地域ほど季節で大きく変わる'],
+      ['growth', '育ちやすさ', '今の植物の育ちやすさ。冬は寒い地域で育たない'],
     ] as const) {
       const b = button(label, () => handlers.onMapMode(mode));
       b.dataset.value = mode;
+      b.title = title;
       this.mapButtons.push(b);
       this.el.maps.append(b);
+    }
+    for (const [layer, label, title] of LAYER_LABELS) {
+      const b = button(label, () => handlers.onLayer(layer));
+      b.dataset.value = layer;
+      b.title = `${title}の表示・非表示`;
+      b.setAttribute('aria-pressed', 'true');
+      this.layerButtons.push(b);
+      this.el.layers.append(b);
     }
 
     for (const [label] of TRAIT_ROWS) {
@@ -317,7 +361,18 @@ export class Hud {
 
   setMapMode(mode: MapMode): void {
     for (const b of this.mapButtons) b.classList.toggle('active', b.dataset.value === mode);
-    this.el.tempLegend.hidden = mode !== 'temperature';
+    this.el.tempLegend.hidden = mode !== 'temperature' && mode !== 'tempNow';
+    this.el.tempLegendLabel.textContent = mode === 'tempNow' ? '今の気温（色の範囲は 1 年を通して同じ）' : '平均気温';
+    this.el.growthLegend.hidden = mode !== 'growth';
+  }
+
+  /** 表示するものの切り替えボタンの状態をそろえる（押されている = 表示中） */
+  setLayers(layers: Layers): void {
+    for (const b of this.layerButtons) {
+      const on = layers[b.dataset.value as keyof Layers];
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
   }
 
   setTempRange([min, max]: [number, number]): void {
