@@ -43,6 +43,8 @@ export const SIM_PARAMS = {
   vision_cost: 0.00008,
   speed_upkeep: 0.002,
   max_turn: 0.5,
+  turn_accel: 0.33,
+  turn_cost: 0.002,
   turn_noise: 0.15,
   cover_strength: 0.85,
   energy_cap_ratio: 2,

@@ -116,6 +116,27 @@ pub struct Watch {
     pub death: Option<(u8, u64)>,
 }
 
+/// 起きたことの累計（調整・診断用）。添字 [種類] は HERBIVORE / CARNIVORE
+#[derive(Default, Clone, Debug)]
+pub struct Census {
+    /// 死因ごとの死亡数 [種類][死因]
+    pub deaths: [[u64; 5]; 2],
+    /// 生まれた数 [種類]
+    pub births: [u64; 2],
+    /// 襲いかかった回数と、仕留めた回数
+    pub hunts: u64,
+    pub kills: u64,
+    /// 襲いかかったときの、獲物の大きさ ÷ 自分の大きさ（協力込み）、獲物の近くの仲間の数、
+    /// 近くの同じ系統の肉食の数、近くの系統の違う肉食の数、成功の見込み の合計
+    pub hunt_ratio: f64,
+    pub hunt_guards: f64,
+    pub hunt_allies: f64,
+    pub hunt_rivals: f64,
+    pub hunt_chance: f64,
+    /// 仕留めた獲物を分け合った人数の合計
+    pub kill_eaters: f64,
+}
+
 /// 欲求の番号（genome::mix_drives の並び）
 const DRIVE_MATE: usize = 1;
 
@@ -124,6 +145,8 @@ struct HuntOdds {
     chance: f32,
     size_ratio: f32,
     guards: u32,
+    allies: u32,
+    rivals: u32,
 }
 
 /// 狩りの結果
@@ -246,6 +269,7 @@ pub struct World {
     /// これまでの交配（相手がいて繁殖を試みた回数）と、そのうち相性で失敗した回数
     pub matings: u64,
     pub failed_matings: u64,
+    pub census: Census,
 }
 
 impl World {
@@ -315,6 +339,7 @@ impl World {
             next_id: 1,
             matings: 0,
             failed_matings: 0,
+            census: Census::default(),
             params,
         };
         let p = world.params.clone();
@@ -792,8 +817,19 @@ impl World {
             self.watch.priorities = genome::priorities(&out);
         }
 
-        // 行きたい方向へ曲がる。1 tick に曲がれる角度には上限があり、大きいほど小回りが利かない
-        let (lf, lr) = steer(df, dr, t.turn_cos, t.turn_sin);
+        let throttle = 0.5 + 0.5 * softsign(out[genome::OUT_THROTTLE]);
+        // 幼体は遅い。飢えた個体と老いた個体も遅い
+        let jv = self.params.juvenile_speed;
+        let vigor = self.vigor(i);
+        let speed = t.max_speed * throttle * vigor * (jv + (1.0 - jv) * self.growth[i]);
+
+        // 行きたい方向へ曲がる。1 tick に曲がれる角度には上限がある
+        let (turn_cos, turn_sin) = self.turn_limit(i, speed);
+        let (lf, lr) = steer(df, dr, turn_cos, turn_sin);
+        // 曲がるとエネルギーを使う（曲がった角度は 0.5 ラジアン程度までなので、sin で近似する）
+        let turn_energy = (self.params.turn_cost * lr.abs() * t.size).min(self.energy[i]);
+        self.energy[i] -= turn_energy;
+        self.ledger.lost_metabolism += turn_energy as f64;
         // 自分基準の (前方, 右方) を世界の向きに戻し、小さな揺れを加える
         let (mut nx, mut ny) = (lf * hx - lr * hy, lf * hy + lr * hx);
         let noise = self.rng.range(-self.params.turn_noise, self.params.turn_noise);
@@ -802,11 +838,6 @@ impl World {
         let len = (nx * nx + ny * ny).sqrt();
         self.hx[i] = nx / len;
         self.hy[i] = ny / len;
-        let throttle = 0.5 + 0.5 * softsign(out[genome::OUT_THROTTLE]);
-        // 幼体は遅い。飢えた個体と老いた個体も遅い
-        let jv = self.params.juvenile_speed;
-        let vigor = self.vigor(i);
-        let speed = t.max_speed * throttle * vigor * (jv + (1.0 - jv) * self.growth[i]);
         if is_watched {
             self.watch.signal = self.signal[i];
             self.watch.vigor = vigor;
@@ -860,6 +891,18 @@ impl World {
             };
             (speed, wants_child, mate)
         }
+    }
+
+    /// 速さ speed で走っている個体 i が 1 tick に曲がれる最大の角度の (cos, sin)。
+    /// 大きいほど小回りが利かず、横向きに出せる力には限りがあるので、速く走っているほど曲がれない
+    pub fn turn_limit(&self, i: usize, speed: f32) -> (f32, f32) {
+        let t = &self.traits[i];
+        let (max_turn, accel) = (self.params.max_turn, self.params.turn_accel);
+        if speed * max_turn <= accel {
+            return (t.turn_cos, t.turn_sin); // 体の大きさで決まる上限のまま（成長に合わせて計算済み）
+        }
+        let (sin, cos) = (accel / speed / t.size.sqrt()).min(std::f32::consts::PI).sin_cos();
+        (cos, sin)
     }
 
     /// いちばん効いている欲求（優先度 × 方向の長さ が最大のもの）。観察用
@@ -931,6 +974,13 @@ impl World {
         self.ledger.lost_metabolism += cost as f64;
         self.cooldown[i] = self.params.attack_cooldown as u16;
         let odds = self.hunt_odds(i, j);
+        let c = &mut self.census;
+        c.hunts += 1;
+        c.hunt_ratio += odds.size_ratio as f64;
+        c.hunt_guards += odds.guards as f64;
+        c.hunt_allies += odds.allies as f64;
+        c.hunt_rivals += odds.rivals as f64;
+        c.hunt_chance += odds.chance as f64;
         if self.rng.f32() >= odds.chance {
             self.counterattack(i, &odds);
             return Hunt::Failed; // 逃げられた
@@ -940,6 +990,8 @@ impl World {
         let prey = self.energy[j];
         let (_, mut eaters) = self.carnivore_neighbors(i);
         eaters.push(i);
+        self.census.kills += 1;
+        self.census.kill_eaters += eaters.len() as f64;
         let share = prey * self.params.carn_efficiency / eaters.len() as f32;
         let mut gained = 0.0;
         for &k in &eaters {
@@ -1032,7 +1084,7 @@ impl World {
         // 肉食どうしの干渉（獲物の横取りや縄張り争い）: 近くに系統の違う肉食が多いほど成功しにくい
         let chance =
             p.hunt_success * by_size / (1.0 + p.guard_strength * guards as f32) / (1.0 + p.carn_interference * rivals as f32);
-        HuntOdds { chance, size_ratio: ratio, guards }
+        HuntOdds { chance, size_ratio: ratio, guards, allies: helpers as u32, rivals }
     }
 
     fn move_agent(&mut self, i: usize, speed: f32) {
@@ -1062,6 +1114,7 @@ impl World {
     /// 個体 i を死亡扱いにする。エネルギーは呼び出し側で 0 にしておくこと
     fn die(&mut self, i: usize, cause: u8) {
         self.alive[i] = false;
+        self.census.deaths[self.kind[i] as usize][cause as usize] += 1;
         if self.id[i] == self.watch.id {
             self.watch.death = Some((cause, self.tick));
         }
@@ -1192,6 +1245,7 @@ impl World {
         let spread = self.params.birth_spread;
         let x = self.xs[i] + self.rng.range(-spread, spread);
         let y = self.ys[i] + self.rng.range(-spread, spread);
+        self.census.births[self.kind[i] as usize] += 1;
         self.births.push(Birth {
             x,
             y,
@@ -1777,7 +1831,7 @@ mod tests {
         let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
         w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
         w.spawn(101.5, 100.0, HERBIVORE, 5.0, 0, &g);
-        for _ in 0..20 {
+        for _ in 0..40 {
             w.step();
         }
         let d = (torus_delta(w.xs[1] - w.xs[0], w.width).powi(2) + torus_delta(w.ys[1] - w.ys[0], w.height).powi(2)).sqrt();
@@ -1922,6 +1976,18 @@ mod tests {
         let s = w.sense(0);
         assert_eq!(s.kin_count, 2);
         assert!((s.kin_signal - 1.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn 速く走っているほど曲がれない() {
+        let mut w = empty_world();
+        let g = genome::initial(false, 1.0, 2.0, 40.0, 0.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &g);
+        let angle = |(c, s): (f32, f32)| s.atan2(c);
+        let (still, walk, run) = (angle(w.turn_limit(0, 0.0)), angle(w.turn_limit(0, 0.5)), angle(w.turn_limit(0, 2.0)));
+        assert!((still - w.params.max_turn).abs() < 1e-5, "止まっていれば体の上限まで曲がれる: {still}");
+        assert_eq!(still, walk, "ゆっくりなら制限されない");
+        assert!((run - w.params.turn_accel / 2.0).abs() < 1e-5, "全速では 横の加速度 ÷ 速さ: {run}");
     }
 
     #[test]
