@@ -76,7 +76,7 @@ export const SIM_PARAMS = {
   guard_strength: 0.15,
   counter_start_ratio: 1.2,
   counter_damage: 8,
-  carrion_decay: 0.002,
+  carrion_decay: 0.01,
   carn_scavenge_bite: 0.5,
   attack_cost: 0.3,
   attack_cooldown: 10,

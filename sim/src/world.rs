@@ -55,6 +55,9 @@ pub mod death {
 const EYE_REF_RANGE: f32 = 30.0;
 const EYE_REF_AREA: f32 = 0.5 * (300.0 * std::f32::consts::PI / 180.0) * EYE_REF_RANGE * EYE_REF_RANGE;
 
+/// これより少なくなった死体は消す
+const CARRION_MIN: f32 = 0.1;
+
 /// 気温と植物の育ちやすさを更新する間隔（tick）
 const CLIMATE_EVERY: u64 = 30;
 
@@ -650,7 +653,7 @@ impl World {
         }
     }
 
-    /// 死体を腐らせる。腐った分は帳簿の lost_decay に入る。ごく少なくなった死体は消す
+    /// 死体を腐らせる。腐った分は帳簿の lost_decay に入る。CARRION_MIN を切った死体は消す
     fn decay_carrion(&mut self) {
         let rate = self.params.carrion_decay;
         let mut lost = 0.0f64;
@@ -658,7 +661,7 @@ impl World {
             if *c <= 0.0 {
                 continue;
             }
-            let d = if *c < 0.01 { *c } else { *c * rate };
+            let d = if *c < CARRION_MIN { *c } else { *c * rate };
             *c -= d;
             lost += d as f64;
         }
@@ -2526,10 +2529,14 @@ mod tests {
         // 帳簿の外から足すので、開始時の量にも足しておく
         w.drop_carrion(100.0, 100.0, 10.0);
         w.ledger.initial += 10.0;
-        for _ in 0..350 {
+        for _ in 0..70 {
             w.step();
         }
         assert!(w.carrion[c] < 6.0 && w.carrion[c] > 3.0, "半減期くらいで半分ほどに: {}", w.carrion[c]);
+        for _ in 0..500 {
+            w.step();
+        }
+        assert_eq!(w.carrion[c], 0.0, "少なくなった死体は消える");
         let err = (w.ledger.expected_total() - w.total_energy()).abs();
         assert!(err < 1e-3, "帳尻の誤差 {err}");
     }

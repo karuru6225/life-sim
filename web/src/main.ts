@@ -31,8 +31,8 @@ app.stage.addChild(world);
 
 const terrain = new TerrainLayer(params.plant_cell);
 const plants = new PlantLayer(params.plant_cell, params.plant_capacity);
-// 死体は 8 で最も濃く、少しでもあれば 4 割の濃さで見えるようにする
-const carrion = new PlantLayer(params.plant_cell, 8, COLORS.carrion, 0.4);
+// 死体は 8 で最も濃く、0.2 以上あれば 25% の濃さで見えるようにする（それ未満は描かない）
+const carrion = new PlantLayer(params.plant_cell, 8, COLORS.carrion, 0.25, 0.2);
 world.addChild(terrain.sprite, plants.sprite, carrion.sprite);
 
 // 世界の外枠。トーラスなので端はつながっているが、どこまでが世界かは見せておく

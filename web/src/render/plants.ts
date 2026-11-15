@@ -18,8 +18,10 @@ export class PlantLayer {
     /** この量で不透明度が最大になる */
     private readonly capacity: number,
     color: string = COLORS.plant,
-    /** 量が少しでもあるときの最低の不透明度（0〜1）。少量でも見落とさないようにする */
+    /** 量が threshold 以上あるときの最低の不透明度（0〜1）。少量でも見落とさないようにする */
     private readonly minAlpha = 0,
+    /** これより少ない量は描かない（minAlpha が 0 のときは使わない） */
+    private readonly threshold = 0.05,
   ) {
     this.sprite = new Sprite();
     this.rgb = new Color(color).toUint8RgbArray();
@@ -47,7 +49,8 @@ export class PlantLayer {
       px[o + 2] = b;
       // 量に比例した不透明度。capacity で色そのものになる
       const a = Math.min(1, biomass[i] / this.capacity);
-      px[o + 3] = (biomass[i] > 0.05 ? this.minAlpha + (1 - this.minAlpha) * a : a) * 255;
+      if (this.minAlpha === 0) px[o + 3] = a * 255;
+      else px[o + 3] = biomass[i] >= this.threshold ? (this.minAlpha + (1 - this.minAlpha) * a) * 255 : 0;
     }
     this.ctx.putImageData(this.image, 0, 0);
     this.texture!.source.update();
