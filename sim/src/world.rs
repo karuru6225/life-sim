@@ -222,6 +222,7 @@ enum Mate {
 /// 1 回の知覚で見つけた相手。(配列上の位置, dx, dy, 距離の 2 乗)
 type Seen = Option<(usize, f32, f32, f32)>;
 
+#[derive(Clone, Copy)]
 struct Senses {
     predator: Seen,
     prey: Seen,
@@ -254,6 +255,18 @@ struct Senses {
     rival_count: u32,
     /// 見えている獲物（好みの大きさの範囲のもの）の数（肉食のみ）
     prey_count: u32,
+}
+
+/// 知覚と脳の判断（行動の前の段階）。tick の始めの世界だけを見て作るので、全個体を並列に作れる
+#[derive(Clone, Copy)]
+struct Plan {
+    senses: Senses,
+    input: [f32; N_IN],
+    out: [f32; genome::N_OUT],
+    /// 呼び声の大きい方向（自分基準の単位ベクトル）
+    call_dir: (f32, f32),
+    /// 更新後の「仲間を最後に見てからの tick 数」（行動の段階で書き込む）
+    alone: u16,
 }
 
 /// 個体の生涯の記録（観察用）
@@ -371,6 +384,11 @@ pub struct World {
     recent_deaths: VecDeque<DeathRecord>,
     /// 世界を作ったときの乱数の種（保存した世界を読み込むときに地形を作り直すのに使う）
     pub seed: u64,
+    /// 知覚と脳の判断を並列に計算するか（parallel 機能が有効なときだけ効く。結果は並列でも順番でも同じ）
+    pub use_parallel: bool,
+    /// 作業用: 処理する個体の順番（セル順）と、その判断
+    order: Vec<usize>,
+    plans: Vec<Plan>,
 }
 
 /// 死亡の記録（系統ごとの死因の内訳用）
@@ -495,6 +513,9 @@ impl World {
             census: Census::default(),
             recent_deaths: VecDeque::new(),
             seed,
+            use_parallel: true,
+            order: Vec::new(),
+            plans: Vec::new(),
             params,
         };
         world.call_cols = ((width / world.params.call_cell).ceil() as usize).max(1);
@@ -956,19 +977,27 @@ impl World {
         self.build_grid();
         self.build_calls();
 
-        // セル順に回す（近くの個体を続けて処理するとキャッシュに乗って速い）
-        for k in 0..self.count() {
-            let i = self.grid.entry(k).0;
+        // 1 段目: 全個体が tick の始めの世界を見て、知覚と脳の判断をする（互いに書き込まないので並列にできる）。
+        // セル順に並べる（近くの個体を続けて処理するとキャッシュに乗って速い）
+        let mut order = std::mem::take(&mut self.order);
+        order.clear();
+        order.extend((0..self.count()).map(|k| self.grid.entry(k).0));
+        let mut plans = std::mem::take(&mut self.plans);
+        self.make_plans(&order, &mut plans);
+        // 2 段目: 判断に従って、1 体ずつ順番に行動する（移動・食べる・狩る・争う・繁殖）
+        for (k, &i) in order.iter().enumerate() {
             if !self.alive[i] {
                 continue; // この tick ですでに食べられた
             }
-            let (speed, wants_child, mate) = self.act(i);
+            let (speed, wants_child, mate) = self.act(i, &plans[k]);
             if !self.alive[i] {
                 continue; // 行動の途中で死んだ（反撃や病気）
             }
             self.move_agent(i, speed);
             self.live(i, speed, wants_child, mate);
         }
+        self.order = order;
+        self.plans = plans;
 
         self.apply_births();
         self.remove_dead();
@@ -1124,7 +1153,20 @@ impl World {
     }
 
     /// 知覚 → 脳 → 行動。戻り値は (この tick の移動速度, 繁殖したいか, 繁殖相手)
-    fn act(&mut self, i: usize) -> (f32, bool, Mate) {
+    /// 全個体の判断を作る。parallel 機能が有効で use_parallel なら並列に、そうでなければ順番に計算する（結果は同じ）
+    fn make_plans(&self, order: &[usize], plans: &mut Vec<Plan>) {
+        #[cfg(feature = "parallel")]
+        if self.use_parallel {
+            use rayon::prelude::*;
+            order.par_iter().map(|&i| self.plan(i)).collect_into_vec(plans);
+            return;
+        }
+        plans.clear();
+        plans.extend(order.iter().map(|&i| self.plan(i)));
+    }
+
+    /// 知覚 → 脳の判断。世界には書き込まない
+    fn plan(&self, i: usize) -> Plan {
         let senses = self.sense(i);
         let t = self.traits[i];
         let (x, y) = (self.xs[i], self.ys[i]);
@@ -1193,9 +1235,9 @@ impl World {
         }
         input[genome::IN_RIVAL_COUNT] = softsign(senses.rival_count as f32 / 4.0);
         input[genome::IN_ATTACKED] = self.attacked[i] as f32 / ATTACKED_TICKS as f32;
-        // 仲間が見えていなければ一人の時間が延びる
-        self.alone[i] = if senses.kin_count > 0 { 0 } else { self.alone[i].saturating_add(1) };
-        input[genome::IN_ALONE] = softsign(self.alone[i] as f32 / 150.0);
+        // 仲間が見えていなければ一人の時間が延びる（書き込みは行動の段階で行う）
+        let alone = if senses.kin_count > 0 { 0 } else { self.alone[i].saturating_add(1) };
+        input[genome::IN_ALONE] = softsign(alone as f32 / 150.0);
         // 周りの食べ物の乏しさ: 仲間が多く、食べ物が少ないほど 1 に近い
         if senses.kin_count > 0 {
             let food = if self.kind[i] == HERBIVORE { self.plants_around(x, y) } else { senses.prey_count as f32 };
@@ -1248,6 +1290,16 @@ impl World {
         }
 
         let out = genome::think(self.genome(i), &input);
+        Plan { senses, input, out, call_dir, alone }
+    }
+
+    /// 判断 plan に従って行動する。戻り値は (この tick の移動速度, 繁殖したいか, 繁殖相手)
+    fn act(&mut self, i: usize, plan: &Plan) -> (f32, bool, Mate) {
+        let Plan { senses, input, out, call_dir, alone } = *plan;
+        self.alone[i] = alone;
+        let t = self.traits[i];
+        let (hx, hy) = (self.hx[i], self.hy[i]);
+        let to_local = |dx: f32, dy: f32| (dx * hx + dy * hy, -dx * hy + dy * hx);
 
         // 欲求ごとの方向（自分基準の単位ベクトル。対象がいなければ (0, 0)）
         let unit = |seen: Seen| match seen {
@@ -1355,6 +1407,7 @@ impl World {
         if out[genome::OUT_ATTACK] > 0.0
             && self.cooldown[i] == 0
             && let Some((j, _, _, d2)) = senses.rival
+            && self.alive[j]
         {
             let reach = self.params.fight_range * t.size;
             if d2 < reach * reach {
@@ -1369,6 +1422,7 @@ impl World {
         if out[genome::OUT_ATTACK_KIN] > 0.0
             && self.cooldown[i] == 0
             && let Some((j, _, _, d2)) = senses.similar
+            && self.alive[j]
         {
             let reach = self.params.fight_range * t.size;
             if d2 < reach * reach {
@@ -1392,7 +1446,10 @@ impl World {
             };
             (speed, wants_child, mate)
         } else {
-            if wants_eat && let Some((j, _, _, d2)) = senses.prey {
+            // 判断のあとで、同じ tick にほかの肉食が先に仕留めていることがある
+            if wants_eat && let Some((j, _, _, d2)) = senses.prey
+                && self.alive[j]
+            {
                 match self.try_hunt(i, j, d2) {
                     Hunt::Caught => {
                         self.state[i] = state::EAT;
@@ -1456,7 +1513,7 @@ impl World {
             return Mate::Asexual;
         }
         match senses.mate {
-            Some((j, _, _, d2)) if d2 <= range * range => Mate::Partner(j),
+            Some((j, _, _, d2)) if d2 <= range * range && self.alive[j] => Mate::Partner(j),
             _ => Mate::Missing,
         }
     }
@@ -3201,6 +3258,24 @@ mod tests {
         };
         let (small, unit) = (cost(0.1), cost(1.0));
         assert!((small / unit - 0.1f32.powf(0.75)).abs() < 1e-3, "大きさの 0.75 乗に比例: {small} / {unit}");
+    }
+
+    #[test]
+    fn 判断を並列に計算しても順番に計算しても同じ歴史になる() {
+        let mut p = small_params();
+        p.herb_initial = 1500.0;
+        p.carn_initial = 120.0;
+        let (mut a, mut b) = (World::new(5, p.clone()), World::new(5, p));
+        a.use_parallel = true; // parallel 機能がなければ順番に計算する（そのときは同じ処理どうしの比較になる）
+        b.use_parallel = false;
+        for _ in 0..300 {
+            a.step();
+            b.step();
+        }
+        assert_eq!(a.id, b.id);
+        assert_eq!(a.xs, b.xs);
+        assert_eq!(a.energy, b.energy);
+        assert_eq!(a.genomes, b.genomes);
     }
 
     #[test]

@@ -12,3 +12,11 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[features]
+# 知覚と脳の判断を rayon で並列に計算する（ネイティブの画面なし実行・テスト用）。
+# ブラウザ（WASM）はスレッドが使えないので有効にしない。並列でも順番でも結果は同じ
+parallel = ["dep:rayon"]
+
+[dependencies]
+rayon = { version = "1.10", optional = true }
