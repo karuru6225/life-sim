@@ -68,8 +68,9 @@ const GRID_CELL: f32 = 16.0;
 
 /// 系統の統計（World::lineage_stats）の要素数と並び:
 /// 0 個体数, 1 幼体の割合, 2 大人の大きさ, 3 最高速度, 4 視野, 5 視野角（度）, 6 好みの気温, 7 子への投資,
-/// 8 繁殖シグナル, 9 世代, 10・11 重心の x・y, 12 重心からの距離の平均, 13 エネルギー ÷ 繁殖に必要な量, 14 寒い半分にいる割合
-pub const LINEAGE_STATS: usize = 15;
+/// 8 繁殖シグナル, 9 世代, 10・11 重心の x・y, 12 重心からの距離の平均, 13 エネルギー ÷ 繁殖に必要な量, 14 寒い半分にいる割合,
+/// 15・16 使っている中間ニューロンの数（1 層目・2 層目）
+pub const LINEAGE_STATS: usize = 17;
 
 /// 描画用バッファの 1 個体あたりの要素数: [x, y, 種類, 大きさ, 標識色, 向き]
 pub const RENDER_STRIDE: usize = 6;
@@ -1498,7 +1499,9 @@ impl World {
         let signal = p.signal_cost * self.signal[i] * t.size_pow075;
         // 目の維持費は見える面積（視野角 / 2 × 視野²）に比例。視野角 300°・視野 30px で vision_cost × 30 になるよう換算する
         let eye = p.vision_cost * EYE_REF_RANGE * (0.5 * t.fov * t.vision * t.vision) / EYE_REF_AREA;
-        let cost = (basal + upkeep + thermal + signal + eye + p.move_cost * t.size * speed * speed)
+        // 脳の維持費は、使っている中間ニューロンの数に比例
+        let brain = p.brain_cost * (t.brain.0 + t.brain.1) as f32;
+        let cost = (basal + upkeep + thermal + signal + eye + brain + p.move_cost * t.size * speed * speed)
             .min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
@@ -1623,6 +1626,7 @@ impl World {
             weight_sigma: self.params.mutation_weight_sigma,
             hue_sigma: self.params.mutation_hue_sigma,
             temp_sigma: self.params.mutation_temp_sigma,
+            neuron_flip: self.params.mutation_neuron,
         };
         genome::mutate(&mut self.births_genomes[genome_at..], &m, &mut self.rng);
 
@@ -1774,13 +1778,15 @@ impl World {
             out[13] += (self.energy[i] / self.repro_threshold(i)) as f64;
             // 寒い半分（緯度が負の側。上下の端に近い）
             out[14] += ((std::f32::consts::TAU * self.ys[i] / self.height).cos() > 0.0) as u8 as f64;
+            out[15] += t.brain.0 as f64;
+            out[16] += t.brain.1 as f64;
             let (ax, ay) = (self.xs[i] as f64 * tw, self.ys[i] as f64 * th);
             cx += ax.cos();
             sx += ax.sin();
             cy += ay.cos();
             sy += ay.sin();
         }
-        for k in [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14] {
+        for k in [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 16] {
             out[k] /= n;
         }
         let mx = sx.atan2(cx).rem_euclid(std::f64::consts::TAU) / tw;

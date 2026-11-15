@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 55;
+const INSPECT_LEN: usize = 57;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
 const SUMMARY_LEN: usize = 31;
 
@@ -225,6 +225,7 @@ pub extern "C" fn deselect() {
 /// 44〜48: 生涯の記録 [食べて身についたエネルギー, 仕留めた数, 動いた距離, 交配の回数, 相性で失敗した回数]
 /// 49, 50: 親の id（繁殖を決めた側, 相手。初期個体と無性生殖の相手は 0）  51: 生きている子の数
 /// 52, 53: 好みの獲物の大きさの比の下限と上限（肉食のみ使う）  54: 襲いかかった回数
+/// 55, 56: 使っている中間ニューロンの数（1 層目, 2 層目）
 /// 28: 成長度（1 で成熟）。17 の大きさは遺伝子が決める大人の大きさで、いまの大きさは 17 × 28
 /// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
 #[unsafe(no_mangle)]
@@ -301,6 +302,8 @@ pub extern "C" fn inspect() -> *const f64 {
             out[52] = t.prey_min as f64;
             out[53] = t.prey_max as f64;
             out[54] = life.hunts as f64;
+            out[55] = t.brain.0 as f64;
+            out[56] = t.brain.1 as f64;
         });
         out.as_ptr()
     })

@@ -3,7 +3,10 @@
 //! 1 個体の遺伝子は f32 の並び（長さ GENOME_LEN）で、前半が体の形質、後半が脳の重み。
 //! 全個体の遺伝子は 1 本の配列に GENOME_LEN ずつ詰めて持つ（SoA の一種）。
 //!
-//! 脳は 入力 N_IN → 中間 N_HIDDEN → 出力 N_OUT の 2 層ニューラルネット。
+//! 脳は 入力 N_IN → 中間 1 層目（最大 H1）→ 中間 2 層目（最大 H2）→ 出力 N_OUT のニューラルネット。
+//! 出力は 1 層目と 2 層目の両方から受け取る（1 層目からの近道があるので、2 層目を使わなくても動く）。
+//! 中間ニューロンはそれぞれ「使う／使わない」の遺伝子を持ち、使うニューロンの数だけ維持費がかかる。
+//! 使わないニューロンは計算せず、重みも変異しない（使い始めたときに重み 0 から育つ）。
 //! 活性化関数は softsign（x / (1 + |x|)）。tanh とほぼ同じ形で、指数関数を使わないので速い。
 
 use crate::rng::Rng;
@@ -104,7 +107,12 @@ pub const N_IN: usize = 37;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
-pub const N_HIDDEN: usize = 8;
+/// 中間 1 層目と 2 層目のニューロンの最大数
+pub const H1: usize = 16;
+pub const H2: usize = 16;
+pub const N_HIDDEN: usize = H1 + H2;
+/// 初期の脳で使う 1 層目のニューロンの数（0〜7 番）。2 層目は使わない
+pub const INITIAL_H1: usize = 8;
 
 // ---- 脳の出力 ----
 // 進む方向は「欲求」ごとの方向を、脳が出す優先度で混ぜて決める（mix_drives）。
@@ -170,33 +178,74 @@ pub fn mix_drives(out: &[f32; N_OUT], drives: &[(f32, f32); N_DRIVES]) -> (f32, 
     (f, r)
 }
 
-/// 中間層の重みの開始位置。1 ニューロンあたり N_IN 個の重み + バイアス 1 個
-const W1: usize = N_TRAITS;
-/// 出力層の重みの開始位置。1 出力あたり N_HIDDEN 個の重み + バイアス 1 個
-const W2: usize = W1 + N_HIDDEN * (N_IN + 1);
-pub const GENOME_LEN: usize = W2 + N_OUT * (N_HIDDEN + 1);
+// 遺伝子の並び: [形質 N_TRAITS][使うかどうか N_HIDDEN][1 層目の重み][2 層目の重み][出力の重み]
+/// 中間ニューロンを使うかどうか（正なら使う）。1 層目が 0..H1、2 層目が H1..N_HIDDEN
+const ACT: usize = N_TRAITS;
+/// 1 層目: 1 ニューロンあたり N_IN 個の重み + バイアス
+const W1: usize = ACT + N_HIDDEN;
+const W1_ROW: usize = N_IN + 1;
+/// 2 層目: 1 ニューロンあたり H1 個の重み + バイアス
+const W2: usize = W1 + H1 * W1_ROW;
+const W2_ROW: usize = H1 + 1;
+/// 出力: 1 出力あたり、1 層目と 2 層目の N_HIDDEN 個の重み + バイアス
+const W3: usize = W2 + H2 * W2_ROW;
+const W3_ROW: usize = N_HIDDEN + 1;
+pub const GENOME_LEN: usize = W3 + N_OUT * W3_ROW;
+
+/// 中間ニューロン h（0..N_HIDDEN、H1 以上は 2 層目）を使っているか
+pub fn neuron_active(genome: &[f32], h: usize) -> bool {
+    genome[ACT + h] > 0.0
+}
+
+/// 使っている中間ニューロンの数（1 層目, 2 層目）
+pub fn active_neurons(genome: &[f32]) -> (u32, u32) {
+    let count = |r: std::ops::Range<usize>| r.filter(|&h| neuron_active(genome, h)).count() as u32;
+    (count(0..H1), count(H1..N_HIDDEN))
+}
 
 pub fn softsign(x: f32) -> f32 {
     x / (1.0 + x.abs())
 }
 
-/// 脳を 1 回動かす
+/// 脳を 1 回動かす。使っている中間ニューロンだけを計算し、その重みだけを読む
 pub fn think(genome: &[f32], input: &[f32; N_IN]) -> [f32; N_OUT] {
-    let mut hidden = [0.0f32; N_HIDDEN];
-    for (h, out) in hidden.iter_mut().enumerate() {
-        let w = &genome[W1 + h * (N_IN + 1)..W1 + (h + 1) * (N_IN + 1)];
+    // 使っているニューロンの (番号, 出力)。2 層目と出力層は、これだけを読む
+    let mut idx = [0usize; N_HIDDEN];
+    let mut val = [0.0f32; N_HIDDEN];
+    let mut n = 0;
+    for h in 0..H1 {
+        if genome[ACT + h] <= 0.0 {
+            continue;
+        }
+        let w = &genome[W1 + h * W1_ROW..W1 + (h + 1) * W1_ROW];
         let mut sum = w[N_IN]; // バイアス
         for k in 0..N_IN {
             sum += w[k] * input[k];
         }
-        *out = softsign(sum);
+        idx[n] = h;
+        val[n] = softsign(sum);
+        n += 1;
+    }
+    let n1 = n;
+    for h in 0..H2 {
+        if genome[ACT + H1 + h] <= 0.0 {
+            continue;
+        }
+        let w = &genome[W2 + h * W2_ROW..W2 + (h + 1) * W2_ROW];
+        let mut sum = w[H1];
+        for k in 0..n1 {
+            sum += w[idx[k]] * val[k];
+        }
+        idx[n] = H1 + h;
+        val[n] = softsign(sum);
+        n += 1;
     }
     let mut output = [0.0f32; N_OUT];
     for (o, out) in output.iter_mut().enumerate() {
-        let w = &genome[W2 + o * (N_HIDDEN + 1)..W2 + (o + 1) * (N_HIDDEN + 1)];
+        let w = &genome[W3 + o * W3_ROW..W3 + (o + 1) * W3_ROW];
         let mut sum = w[N_HIDDEN];
-        for k in 0..N_HIDDEN {
-            sum += w[k] * hidden[k];
+        for k in 0..n {
+            sum += w[idx[k]] * val[k];
         }
         *out = sum;
     }
@@ -234,6 +283,8 @@ pub struct Traits {
     /// 視野角（ラジアン）と、その半分の cos（見えるかの判定用）
     pub fov: f32,
     pub fov_cos: f32,
+    /// 使っている中間ニューロンの数（1 層目, 2 層目）。脳の維持費に使う
+    pub brain: (u32, u32),
 }
 
 impl Traits {
@@ -268,6 +319,7 @@ pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
         hue: genome[G_HUE].rem_euclid(1.0),
         fov: 0.0,
         fov_cos: 0.0,
+        brain: active_neurons(genome),
     };
     t.fov = genome[G_FOV].clamp(FOV_RANGE.0, FOV_RANGE.1);
     t.fov_cos = (t.fov * 0.5).cos();
@@ -276,20 +328,22 @@ pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
 }
 
 /// 中間層ニューロン h を、入力 k の 1 本だけにつなぐ（手で配線するとき用）
+/// 1 層目のニューロン h を、入力 k につなぐ（手で配線するとき用）
 fn wire_hidden(g: &mut [f32], h: usize, input: usize, weight: f32) {
-    g[W1 + h * (N_IN + 1) + input] = weight;
+    g[W1 + h * W1_ROW + input] = weight;
 }
 
+/// 1 層目のニューロン hidden を、出力 o につなぐ
 fn wire_out(g: &mut [f32], o: usize, hidden: usize, weight: f32) {
-    g[W2 + o * (N_HIDDEN + 1) + hidden] = weight;
+    g[W3 + o * W3_ROW + hidden] = weight;
 }
 
 fn hidden_bias(g: &mut [f32], h: usize, bias: f32) {
-    g[W1 + h * (N_IN + 1) + N_IN] = bias;
+    g[W1 + h * W1_ROW + N_IN] = bias;
 }
 
 fn out_bias(g: &mut [f32], o: usize, bias: f32) {
-    g[W2 + o * (N_HIDDEN + 1) + N_HIDDEN] = bias;
+    g[W3 + o * W3_ROW + N_HIDDEN] = bias;
 }
 
 /// 初期個体の遺伝子。脳は Phase 1 の手書きルールとほぼ同じ動きをするように配線してある。
@@ -297,6 +351,10 @@ fn out_bias(g: &mut [f32], o: usize, bias: f32) {
 /// 中間層の各ニューロンは入力 1 本を受け取るだけ（ほぼ素通し）で、割り当ては種類ごとに違う
 pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32) -> Vec<f32> {
     let mut g = vec![0.0; GENOME_LEN];
+    // 1 層目の 0〜7 番だけを使う。残りと 2 層目は使わない（進化で使い始めるかもしれない）
+    for h in 0..N_HIDDEN {
+        g[ACT + h] = if h < INITIAL_H1 { 1.0 } else { -1.0 };
+    }
     g[G_SIZE] = size;
     g[G_SPEED] = max_speed;
     g[G_VISION] = vision;
@@ -398,10 +456,13 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
     }
 }
 
-/// 2 つの遺伝子の違い（遺伝的距離）。標識色を除く全遺伝子の差を、変異 1 回の大きさを単位にして
+/// 2 つの遺伝子の違い（遺伝的距離）。標識色を除く形質と、脳の重みの差を、変異 1 回の大きさを単位にして
 /// 二乗平均の平方根を取る。形質は比（対数）で、脳の重みは差で測る。
+/// 脳は、どちらかが使っているニューロンだけを比べる（使っていないニューロンの重みは全員 0 なので、数えると距離が薄まる）。
+/// 片方だけが使っているニューロンは、大きな違い（変異 NEURON_MISMATCH 回分）1 つとして数える。
 /// 同じ系統の中では小さく、別々に変異を重ねた系統どうしほど大きくなる
 pub fn genetic_distance(a: &[f32], b: &[f32], trait_sigma: f32, weight_sigma: f32, temp_sigma: f32) -> f32 {
+    const NEURON_MISMATCH: f32 = 3.0;
     let mut sum = 0.0f32;
     let mut n = 0;
     for k in 0..N_TRAITS {
@@ -416,10 +477,37 @@ pub fn genetic_distance(a: &[f32], b: &[f32], trait_sigma: f32, weight_sigma: f3
         sum += d * d;
         n += 1;
     }
-    for k in N_TRAITS..GENOME_LEN {
-        let d = (a[k] - b[k]) / weight_sigma;
+    let mut add = |x: f32, y: f32| {
+        let d = (x - y) / weight_sigma;
         sum += d * d;
         n += 1;
+    };
+    for h in 0..N_HIDDEN {
+        let (ia, ib) = (neuron_active(a, h), neuron_active(b, h));
+        if !ia && !ib {
+            continue;
+        }
+        if ia != ib {
+            add(0.0, NEURON_MISMATCH * weight_sigma);
+            continue;
+        }
+        // ニューロンへ入る重み（2 層目は、使っている 1 層目からの分だけ）と、出力への重み
+        let row = if h < H1 { W1 + h * W1_ROW..W1 + (h + 1) * W1_ROW } else { W2 + (h - H1) * W2_ROW..W2 + (h - H1 + 1) * W2_ROW };
+        for k in row.clone() {
+            let col = k - row.start;
+            if h >= H1 && col < H1 && !(neuron_active(a, col) || neuron_active(b, col)) {
+                continue;
+            }
+            add(a[k], b[k]);
+        }
+        for o in 0..N_OUT {
+            let k = W3 + o * W3_ROW + h;
+            add(a[k], b[k]);
+        }
+    }
+    for o in 0..N_OUT {
+        let k = W3 + o * W3_ROW + N_HIDDEN;
+        add(a[k], b[k]);
     }
     (sum / n as f32).sqrt()
 }
@@ -438,9 +526,9 @@ pub fn hue_distance(a: f32, b: f32) -> f32 {
 }
 
 /// 両親の遺伝子を混ぜた子の遺伝子を out の末尾に追加する。
-/// 体の形質は 1 個ずつ、脳はニューロン単位（1 つのニューロンへ入る重みとバイアスのまとまり）で、
-/// どちらかの親からそのまま受け継ぐ。脳の重みを 1 個ずつ混ぜると、ニューロンへ入る重みが
-/// 両親の寄せ集めになり、親が持っていた機能が壊れやすいため
+/// 体の形質は 1 個ずつ、脳はニューロン単位（使うかどうかと、そのニューロンへ入る重みとバイアスのまとまり、
+/// 出力ニューロンへ入る重みのまとまり）で、どちらかの親からそのまま受け継ぐ。脳の重みを 1 個ずつ混ぜると、
+/// ニューロンへ入る重みが両親の寄せ集めになり、親が持っていた機能が壊れやすいため
 pub fn crossover(a: &[f32], b: &[f32], rng: &mut Rng, out: &mut Vec<f32>) {
     let start = out.len();
     out.extend_from_slice(a);
@@ -450,19 +538,24 @@ pub fn crossover(a: &[f32], b: &[f32], rng: &mut Rng, out: &mut Vec<f32>) {
             child[k] = b[k];
         }
     }
-    let blocks = (0..N_HIDDEN)
-        .map(|h| W1 + h * (N_IN + 1)..W1 + (h + 1) * (N_IN + 1))
-        .chain((0..N_OUT).map(|o| W2 + o * (N_HIDDEN + 1)..W2 + (o + 1) * (N_HIDDEN + 1)));
-    for range in blocks {
+    for h in 0..N_HIDDEN {
         if rng.f32() < 0.5 {
-            child[range.clone()].copy_from_slice(&b[range]);
+            child[ACT + h] = b[ACT + h];
+            let row = if h < H1 { W1 + h * W1_ROW..W1 + (h + 1) * W1_ROW } else { W2 + (h - H1) * W2_ROW..W2 + (h - H1 + 1) * W2_ROW };
+            child[row.clone()].copy_from_slice(&b[row]);
+        }
+    }
+    for o in 0..N_OUT {
+        if rng.f32() < 0.5 {
+            let row = W3 + o * W3_ROW..W3 + (o + 1) * W3_ROW;
+            child[row.clone()].copy_from_slice(&b[row]);
         }
     }
 }
 
 /// 変異の設定
 pub struct Mutation {
-    /// 遺伝子 1 個あたりの変異確率
+    /// 遺伝子 1 個あたりの変異確率（脳の重みは、使っているニューロンのものだけが変異する）
     pub rate: f32,
     /// 形質の変異の大きさ（現在値に対する割合）
     pub trait_sigma: f32,
@@ -472,24 +565,66 @@ pub struct Mutation {
     pub hue_sigma: f32,
     /// 好みの気温の変異の大きさ（度、変異確率は他の遺伝子と同じ）
     pub temp_sigma: f32,
+    /// 中間ニューロン 1 個あたり、使う／使わないが切り替わる確率
+    pub neuron_flip: f32,
 }
 
 /// 遺伝子に変異を加える
 pub fn mutate(g: &mut [f32], m: &Mutation, rng: &mut Rng) {
-    for (k, v) in g.iter_mut().enumerate() {
+    for k in 0..N_TRAITS {
         if k == G_HUE {
-            *v += rng.gaussian() * m.hue_sigma;
+            g[k] += rng.gaussian() * m.hue_sigma;
             continue;
         }
         if rng.f32() >= m.rate {
             continue;
         }
         if k == G_TEMP_PREF {
-            *v += rng.gaussian() * m.temp_sigma;
-        } else if k < N_TRAITS {
-            *v *= 1.0 + rng.gaussian() * m.trait_sigma;
+            g[k] += rng.gaussian() * m.temp_sigma;
         } else {
-            *v += rng.gaussian() * m.weight_sigma;
+            g[k] *= 1.0 + rng.gaussian() * m.trait_sigma;
+        }
+    }
+    // 中間ニューロンを使い始める／やめる
+    for h in 0..N_HIDDEN {
+        if rng.f32() < m.neuron_flip {
+            g[ACT + h] = if g[ACT + h] > 0.0 { -1.0 } else { 1.0 };
+        }
+    }
+    // 脳の重みは、使っているニューロンにつながるものだけが変異する。使っていないニューロンの重みは 0 のまま残り、
+    // 使い始めたときに何もしない状態から育つ
+    let mut weight = |g: &mut [f32], k: usize| {
+        if rng.f32() < m.rate {
+            g[k] += rng.gaussian() * m.weight_sigma;
+        }
+    };
+    for h in 0..H1 {
+        if neuron_active(g, h) {
+            for k in W1 + h * W1_ROW..W1 + (h + 1) * W1_ROW {
+                weight(g, k);
+            }
+        }
+    }
+    for h in 0..H2 {
+        if !neuron_active(g, H1 + h) {
+            continue;
+        }
+        let row = W2 + h * W2_ROW;
+        for col in 0..W2_ROW {
+            // 使っていない 1 層目からの重みは変異しない（バイアスは常に）
+            if col < H1 && !neuron_active(g, col) {
+                continue;
+            }
+            weight(g, row + col);
+        }
+    }
+    for o in 0..N_OUT {
+        let row = W3 + o * W3_ROW;
+        for col in 0..W3_ROW {
+            if col < N_HIDDEN && !neuron_active(g, col) {
+                continue;
+            }
+            weight(g, row + col);
         }
     }
 }
@@ -637,16 +772,17 @@ mod tests {
         assert_eq!(out.len(), GENOME_LEN);
         assert!(out.iter().all(|&v| v == 1.0 || v == 2.0));
         assert!(out.contains(&1.0) && out.contains(&2.0), "両親から受け継いでいる");
-        // 1 つのニューロンへ入る重みは、同じ親から来る
-        for h in 0..N_HIDDEN {
-            let block = &out[W1 + h * (N_IN + 1)..W1 + (h + 1) * (N_IN + 1)];
+        // 1 つのニューロンへ入る重みと、使うかどうかは、同じ親から来る
+        for h in 0..H1 {
+            let block = &out[W1 + h * W1_ROW..W1 + (h + 1) * W1_ROW];
             assert!(block.iter().all(|&v| v == block[0]), "中間ニューロン {h} が混ざっている");
+            assert_eq!(out[ACT + h], block[0]);
         }
     }
 
     #[test]
     fn 遺伝的距離は同じなら0で変異を重ねるほど大きい() {
-        let m = Mutation { rate: 0.02, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5 };
+        let m = Mutation { rate: 0.02, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0 };
         let base = initial(true, 1.0, 1.3, 30.0, 0.3);
         assert_eq!(genetic_distance(&base, &base, 0.05, 0.1, 0.5), 0.0);
         let mut rng = Rng::new(1);
@@ -661,6 +797,59 @@ mod tests {
                 last = d;
             }
         }
+    }
+
+    #[test]
+    fn 初期の脳は_1_層目の_8_個だけを使う() {
+        let g = initial(true, 1.0, 1.3, 30.0, 0.3);
+        assert_eq!(active_neurons(&g), (INITIAL_H1 as u32, 0));
+    }
+
+    #[test]
+    fn 使い始めたニューロンは重み_0_から始まり行動を変えない() {
+        let mut g = initial(true, 1.0, 1.3, 30.0, 0.3);
+        let mut i = input();
+        i[IN_PRED_NEAR] = 0.8;
+        i[IN_ENERGY] = 0.7;
+        let before = think(&g, &i);
+        // 1 層目の 12 番と 2 層目の 3 番を使い始める
+        g[ACT + 12] = 1.0;
+        g[ACT + H1 + 3] = 1.0;
+        assert_eq!(active_neurons(&g), (INITIAL_H1 as u32 + 1, 1));
+        assert_eq!(think(&g, &i), before);
+    }
+
+    #[test]
+    fn 二層目は一層目の出力を受けて出力に効く() {
+        let mut g = initial(true, 1.0, 1.3, 30.0, 0.3);
+        let mut i = input();
+        i[IN_PRED_NEAR] = 0.8;
+        let before = think(&g, &i)[OUT_SIGNAL];
+        // 2 層目の 0 番: 1 層目の 0 番（天敵）を受けて、シグナルの出力へ
+        g[ACT + H1] = 1.0;
+        g[W2] = 3.0;
+        g[W3 + OUT_SIGNAL * W3_ROW + H1] = 2.0;
+        assert!(think(&g, &i)[OUT_SIGNAL] > before + 0.5);
+    }
+
+    #[test]
+    fn 使っていないニューロンの重みは変異しない() {
+        let m = Mutation { rate: 1.0, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0 };
+        let mut g = initial(true, 1.0, 1.3, 30.0, 0.3);
+        mutate(&mut g, &m, &mut Rng::new(3));
+        let unused = INITIAL_H1 + 2;
+        assert!(g[W1 + unused * W1_ROW..W1 + (unused + 1) * W1_ROW].iter().all(|&v| v == 0.0));
+        assert!((0..N_OUT).all(|o| g[W3 + o * W3_ROW + unused] == 0.0));
+        assert!(g[W1..W1 + W1_ROW].iter().any(|&v| v != 0.0), "使っているニューロンの重みは変異する");
+    }
+
+    #[test]
+    fn 片方だけが使うニューロンは遺伝的距離を広げる() {
+        let a = initial(true, 1.0, 1.3, 30.0, 0.3);
+        let mut b = a.clone();
+        b[ACT + 10] = 1.0;
+        let d = genetic_distance(&a, &b, 0.05, 0.1, 0.5);
+        assert!(d > 0.0);
     }
 
     #[test]
@@ -679,7 +868,7 @@ mod tests {
 
     #[test]
     fn 変異は同じ乱数なら同じ結果になる() {
-        let m = Mutation { rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02, temp_sigma: 0.5 };
+        let m = Mutation { rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02, temp_sigma: 0.5, neuron_flip: 0.1 };
         let mut a = initial(true, 1.0, 1.3, 30.0, 0.3);
         let mut b = a.clone();
         mutate(&mut a, &m, &mut Rng::new(5));
