@@ -98,7 +98,9 @@ pub const IN_CARRION_HERE: usize = 33;
 /// 周りで死体の多い方向（自分基準の前方・右方成分。草食は常に 0）
 pub const IN_CARRION_FWD: usize = 34;
 pub const IN_CARRION_RIGHT: usize = 35;
-pub const N_IN: usize = 36;
+/// 足元の死体の新しさ（1 で死んだばかり、古いほど 0 に近づく。死体がなければ 0）。古い死体は栄養が少なく、病気になりやすい
+pub const IN_CARRION_FRESH: usize = 36;
+pub const N_IN: usize = 37;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 

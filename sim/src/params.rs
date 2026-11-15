@@ -160,8 +160,18 @@ params! {
     counter_damage = 8.0,
     /// 死体が 1 tick に腐って失う割合。半減期はおよそ 0.69 ÷ この値（既定で約 70 tick）。0.1 を切った死体は消える
     carrion_decay = 0.01,
-    /// 肉食が死体を 1 tick に食べる量の上限（大きさ 1 のとき。大きさに比例）。吸収できる割合は carn_efficiency
-    carn_scavenge_bite = 0.5,
+    /// 肉食が死体を 1 tick に食べる量の上限（大きさ 1 のとき。大きさに比例）。吸収できる割合は carn_efficiency × 新しさ
+    carn_scavenge_bite = 0.2,
+    /// 死体の新しさが 1/e に落ちるまでの tick 数。新しさ = exp(−死んでからの tick 数 ÷ この値)
+    carrion_spoil = 150.0,
+    /// 腐りきった死体を食べたとき、1 tick に病気になる確率（新しさが 0 のとき。新しさに応じて下がる）
+    carrion_sick = 0.05,
+    /// 病気で失うエネルギー。手持ちを超えたら死ぬ
+    carrion_sick_damage = 2.0,
+    /// 死体を食べているとき、近くの系統の違う肉食 1 体あたり、1 tick にけがをする確率（奪い合い）
+    carrion_fight = 0.02,
+    /// 奪い合いのけがで失うエネルギー。手持ちを超えたら死ぬ
+    carrion_fight_damage = 1.0,
     /// 襲いかかるたびに失うエネルギー（成功・失敗にかかわらず）
     attack_cost = 0.3,
     /// 襲いかかったあと、次に襲えるようになるまでの tick 数

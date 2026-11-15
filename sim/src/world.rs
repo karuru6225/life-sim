@@ -49,6 +49,8 @@ pub mod death {
     pub const EATEN: u8 = 3;
     /// 狩りで大きな獲物を襲い、反撃を受けて死んだ
     pub const INJURED: u8 = 4;
+    /// 腐った死体を食べて病気になって死んだ
+    pub const SICK: u8 = 5;
 }
 
 /// 目の維持費の換算の基準（視野角 300°・視野 30px）。この目の維持費が vision_cost × 30 になる
@@ -144,9 +146,9 @@ pub struct Watch {
 #[derive(Default, Clone, Debug)]
 pub struct Census {
     /// 死因ごとの死亡数 [種類][死因]
-    pub deaths: [[u64; 5]; 2],
+    pub deaths: [[u64; 6]; 2],
     /// そのうち、成熟する前に死んだ数 [種類][死因]
-    pub juvenile_deaths: [[u64; 5]; 2],
+    pub juvenile_deaths: [[u64; 6]; 2],
     /// 生まれた数 [種類]
     pub births: [u64; 2],
     /// 襲いかかった回数と、仕留めた回数
@@ -308,6 +310,8 @@ pub struct World {
     pub plants: PlantField,
     /// マスごとの死体の量（植物と同じマス目）。死んだ個体の残したエネルギーで、少しずつ腐って減る。肉食の食べ物になる
     pub carrion: Vec<f32>,
+    /// マスごとの死体の古さ（死んでからの tick 数。新しい死体が足されたら量で重み付けして平均する）
+    pub carrion_age: Vec<f32>,
     pub ledger: Ledger,
     pub watch: Watch,
 
@@ -392,6 +396,7 @@ impl World {
             alive: Vec::new(),
             terrain,
             carrion: vec![0.0; plants.biomass.len()],
+            carrion_age: vec![0.0; plants.biomass.len()],
             plants,
             ledger: Ledger::default(),
             watch: Watch::default(),
@@ -649,7 +654,10 @@ impl World {
     fn drop_carrion(&mut self, x: f32, y: f32, amount: f32) {
         if amount > 0.0 {
             let c = self.plants.cell_index(x, y);
-            self.carrion[c] += amount;
+            // 古さは量で重み付けした平均（新しい死体は古さ 0）
+            let total = self.carrion[c] + amount;
+            self.carrion_age[c] *= self.carrion[c] / total;
+            self.carrion[c] = total;
         }
     }
 
@@ -657,13 +665,14 @@ impl World {
     fn decay_carrion(&mut self) {
         let rate = self.params.carrion_decay;
         let mut lost = 0.0f64;
-        for c in &mut self.carrion {
+        for (c, age) in self.carrion.iter_mut().zip(self.carrion_age.iter_mut()) {
             if *c <= 0.0 {
                 continue;
             }
             let d = if *c < CARRION_MIN { *c } else { *c * rate };
             *c -= d;
             lost += d as f64;
+            *age = if *c > 0.0 { *age + 1.0 } else { 0.0 };
         }
         self.ledger.lost_decay += lost;
     }
@@ -673,7 +682,9 @@ impl World {
         let (cols, rows) = (self.plants.cols, self.plants.rows);
         let c = ((x / self.plants.cell_size) as usize).min(cols - 1);
         let r = ((y / self.plants.cell_size) as usize).min(rows - 1);
-        let mut best = self.carrion[r * cols + c] + 0.05;
+        // 新しい死体の多い方へ（量 × 新しさ で比べる）
+        let value = |k: usize| self.carrion[k] * self.carrion_freshness(k);
+        let mut best = value(r * cols + c) + 0.05;
         let mut dir = None;
         for dr in -1i32..=1 {
             for dc in -1i32..=1 {
@@ -682,7 +693,7 @@ impl World {
                 }
                 let rr = (r as i32 + dr).rem_euclid(rows as i32) as usize;
                 let cc = (c as i32 + dc).rem_euclid(cols as i32) as usize;
-                let v = self.carrion[rr * cols + cc];
+                let v = value(rr * cols + cc);
                 if v > best {
                     best = v;
                     dir = Some((dc as f32, dr as f32));
@@ -692,21 +703,52 @@ impl World {
         dir
     }
 
-    /// 肉食 i が足元の死体を食べる。食べたら true
+    /// マス c の死体の新しさ（0〜1）
+    fn carrion_freshness(&self, c: usize) -> f32 {
+        (-self.carrion_age[c] / self.params.carrion_spoil.max(1e-6)).exp()
+    }
+
+    /// 肉食 i が足元の死体を食べる。食べたら true。
+    /// 古い死体ほど身につく割合が下がり、病気になりやすい。近くに系統の違う肉食がいると一口が減り、奪い合いでけがをすることがある
     fn scavenge(&mut self, i: usize) -> bool {
         let room = self.energy_cap(i) - self.energy[i];
         let c = self.plants.cell_index(self.xs[i], self.ys[i]);
         if room <= 0.0 || self.carrion[c] <= 0.0 {
             return false;
         }
-        let eff = self.params.carn_efficiency;
-        let take = (self.params.carn_scavenge_bite * self.traits[i].size).min(self.carrion[c]).min(room / eff);
+        let fresh = self.carrion_freshness(c);
+        let (rivals, _) = self.carnivore_neighbors(i);
+        let p = &self.params;
+        let eff = p.carn_efficiency * fresh;
+        let bite = p.carn_scavenge_bite * self.traits[i].size / (1.0 + p.carn_interference * rivals as f32);
+        let take = bite.min(self.carrion[c]).min(room / eff.max(1e-6));
         self.carrion[c] -= take;
         let gain = take * eff;
         self.energy[i] += gain;
+        self.life[i].eaten += gain;
         self.ledger.carn_gain += gain as f64;
         self.ledger.lost_digestion += (take - gain) as f64;
+        // 腐った死体による病気と、奪い合いによるけが
+        let (sick_chance, sick_damage) = (p.carrion_sick * (1.0 - fresh), p.carrion_sick_damage);
+        let (fight_chance, fight_damage) = (1.0 - (1.0 - p.carrion_fight).powi(rivals as i32), p.carrion_fight_damage);
+        if self.rng.f32() < sick_chance {
+            self.hurt(i, sick_damage, death::SICK);
+        }
+        if self.alive[i] && self.rng.f32() < fight_chance {
+            self.hurt(i, fight_damage, death::INJURED);
+        }
         true
+    }
+
+    /// 個体 i がけがや病気でエネルギー damage を失う。手持ちを超えたら死因 cause で死ぬ（手持ちを使い切って死ぬので、死体は残らない）
+    fn hurt(&mut self, i: usize, damage: f32, cause: u8) {
+        let lost = damage.min(self.energy[i]);
+        self.energy[i] -= lost;
+        self.ledger.lost_metabolism += lost as f64;
+        if self.energy[i] <= 0.0 {
+            self.energy[i] = 0.0;
+            self.die(i, cause);
+        }
     }
 
     /// 近傍探索のグリッドを作り直す。相手からの見えにくさは、足元の草から、繁殖シグナルで目立つ分を引いたもの
@@ -985,7 +1027,11 @@ impl World {
         }
         input[genome::IN_SEASON] = self.season();
         if self.kind[i] == CARNIVORE {
-            input[genome::IN_CARRION_HERE] = softsign(self.carrion[self.plants.cell_index(x, y)] / 2.0);
+            let c = self.plants.cell_index(x, y);
+            input[genome::IN_CARRION_HERE] = softsign(self.carrion[c] / 2.0);
+            if self.carrion[c] > 0.0 {
+                input[genome::IN_CARRION_FRESH] = self.carrion_freshness(c);
+            }
             if let Some((dc, dr)) = self.carrion_direction(x, y) {
                 let len = (dc * dc + dr * dr).sqrt();
                 let (f, r) = to_local(dc / len, dr / len);
@@ -2572,6 +2618,43 @@ mod tests {
         assert_eq!(w.life[0].matings, 1);
         w.move_agent(0, 1.5);
         assert!((w.life[0].distance - 1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn 古い死体は栄養が少なく病気になりやすい() {
+        let eat = |age: f32, seed: u64| {
+            let mut p = small_params();
+            p.herb_initial = 0.0;
+            p.carn_initial = 0.0;
+            p.sunlight = 0.0;
+            let mut w = World::new(seed, p);
+            let carn = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+            w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
+            w.drop_carrion(100.0, 100.0, 20.0);
+            let c = w.plants.cell_index(100.0, 100.0);
+            w.carrion_age[c] = age;
+            w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+            let before = w.energy[0];
+            w.scavenge(0);
+            w.energy[0] - before
+        };
+        // 新鮮な死体は病気にならず、栄養がある
+        let fresh = eat(0.0, 1);
+        assert!(fresh > 0.05, "新鮮な死体の栄養 {fresh}");
+        // 腐りきった死体はほとんど栄養がなく、何度も食べると病気でエネルギーを失うことがある
+        let rotten: Vec<f32> = (0..200).map(|s| eat(2000.0, s)).collect();
+        assert!(rotten.iter().cloned().fold(f32::MIN, f32::max) < fresh * 0.1, "腐った死体の栄養は少ない");
+        assert!(rotten.iter().any(|&d| d < -1.0), "腐った死体で病気になることがある");
+    }
+
+    #[test]
+    fn 新しい死体が足されると古さは量で重み付けして平均される() {
+        let mut w = empty_world();
+        let c = w.plants.cell_index(100.0, 100.0);
+        w.drop_carrion(100.0, 100.0, 10.0);
+        w.carrion_age[c] = 100.0;
+        w.drop_carrion(100.0, 100.0, 10.0);
+        assert!((w.carrion_age[c] - 50.0).abs() < 1e-3, "古さ {}", w.carrion_age[c]);
     }
 
     #[test]
