@@ -1760,6 +1760,20 @@ impl World {
         out
     }
 
+    /// 系統（lineage_stats と同じ範囲）の中からランダムに 1 体の id を返す。いなければ 0。
+    /// 観察のための操作なので、シミュレーションの乱数は使わない（使うと歴史が変わってしまう）。nonce は呼ぶたびに変える値
+    pub fn random_in_lineage(&self, kind: u8, hue_from: f32, hue_width: f32, nonce: u64) -> u32 {
+        let all = hue_width >= 1.0;
+        let members: Vec<usize> = (0..self.count())
+            .filter(|&i| self.kind[i] == kind && (all || (self.traits[i].hue - hue_from).rem_euclid(1.0) < hue_width))
+            .collect();
+        if members.is_empty() {
+            return 0;
+        }
+        let mut r = Rng::new(nonce ^ self.tick.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        self.id[members[(r.f32() * members.len() as f32) as usize % members.len()]]
+    }
+
     /// 種類ごとの形質の平均。[個体数, 大きさ, 最高速度, 視野, 子への投資, 世代]
     pub fn trait_means(&self, kind: u8) -> [f64; 6] {
         let mut sum = [0.0f64; 6];
@@ -2655,6 +2669,19 @@ mod tests {
         w.carrion_age[c] = 100.0;
         w.drop_carrion(100.0, 100.0, 10.0);
         assert!((w.carrion_age[c] - 50.0).abs() < 1e-3, "古さ {}", w.carrion_age[c]);
+    }
+
+    #[test]
+    fn 系統の中からランダムに選べる() {
+        let mut w = empty_world();
+        let mut g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        for (x, hue) in [(100.0, 0.1), (200.0, 0.12), (300.0, 0.5)] {
+            g[genome::G_HUE] = hue;
+            w.spawn(x, 100.0, HERBIVORE, 5.0, 0, &g);
+        }
+        let picked: std::collections::HashSet<u32> = (0..50).map(|n| w.random_in_lineage(HERBIVORE, 0.05, 0.1, n)).collect();
+        assert_eq!(picked, [w.id[0], w.id[1]].into_iter().collect(), "範囲内の 2 体だけが、どちらも選ばれる");
+        assert_eq!(w.random_in_lineage(CARNIVORE, 0.0, 1.0, 0), 0);
     }
 
     #[test]

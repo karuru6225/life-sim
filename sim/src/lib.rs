@@ -147,6 +147,17 @@ pub extern "C" fn select_id(id: f64) -> f64 {
     })
 }
 
+/// 系統（種類 kind のうち、標識色が hue_from から幅 hue_width の個体）の中からランダムに 1 体を選択し、その id を返す。
+/// いなければ 0 を返し、選択は解除される。nonce は呼ぶたびに変える値
+#[unsafe(no_mangle)]
+pub extern "C" fn select_random_in_lineage(kind: u32, hue_from: f32, hue_width: f32, nonce: f64) -> f64 {
+    with_world(|w| {
+        let id = w.random_in_lineage(kind as u8, hue_from, hue_width, nonce as u64);
+        w.select(id);
+        id as f64
+    })
+}
+
 /// 選択中の個体の脳の入力と出力（f32 × (brain_inputs() + brain_outputs())）の先頭アドレス。直前の tick の値
 #[unsafe(no_mangle)]
 pub extern "C" fn brain_ptr() -> *const f32 {
