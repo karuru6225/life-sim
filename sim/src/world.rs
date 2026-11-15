@@ -452,6 +452,9 @@ impl World {
                 g[genome::G_HUE] = world.rng.f32();
                 // 初期個体は、置かれた場所の気候に適応している
                 g[genome::G_TEMP_PREF] = world.terrain.temperature_at(x, y);
+                // 攻撃する傾向は初期個体ごとにばらつかせる（攻撃する個体がいないと、争いが得か損かを選択が試せない）
+                let bias = p.initial_attack_bias + world.rng.gaussian() * p.initial_attack_spread;
+                genome::set_attack_bias(&mut g, bias);
                 world.spawn(x, y, kind, energy, 0, &g);
             }
         }
