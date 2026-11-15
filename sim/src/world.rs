@@ -1698,9 +1698,10 @@ impl World {
         // 繁殖シグナルを出す費用
         let signal = p.signal_cost * self.signal[i] * t.size_pow075;
         // 目の維持費は見える面積（視野角 / 2 × 視野²）に比例。視野角 300°・視野 30px で vision_cost × 30 になるよう換算する
-        let eye = p.vision_cost * EYE_REF_RANGE * (0.5 * t.fov * t.vision * t.vision) / EYE_REF_AREA;
+        // 目と脳の大きさも体に合わせて小さくなるので、維持費は大きさの 0.75 乗に比例する（大きさ 1 のときが基準）
+        let eye = p.vision_cost * EYE_REF_RANGE * (0.5 * t.fov * t.vision * t.vision) / EYE_REF_AREA * t.size_pow075;
         // 脳の維持費は、使っている中間ニューロンの数に比例
-        let brain = p.brain_cost * (t.brain.0 + t.brain.1) as f32;
+        let brain = p.brain_cost * (t.brain.0 + t.brain.1) as f32 * t.size_pow075;
         let cost = (basal + upkeep + thermal + signal + eye + brain + p.move_cost * t.size * speed * speed)
             .min(self.energy[i]);
         self.energy[i] -= cost;
@@ -3182,6 +3183,24 @@ mod tests {
         let cap = w.params.plant_capacity;
         w.plants.biomass.fill(cap);
         assert!((w.plants_around(100.0, 100.0) - 9.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn 目と脳の費用は小さい体ほど安い() {
+        let cost = |size: f32| {
+            let mut w = empty_world();
+            w.params.move_cost = 0.0;
+            w.params.herb_metabolism = 0.0;
+            w.params.speed_upkeep = 0.0;
+            w.params.thermo_cost = 0.0;
+            w.params.signal_cost = 0.0;
+            let g = genome::initial(true, size, 1.0, 30.0, 0.0);
+            w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+            w.live(0, 0.0, false, Mate::Missing);
+            5.0 - w.energy[0]
+        };
+        let (small, unit) = (cost(0.1), cost(1.0));
+        assert!((small / unit - 0.1f32.powf(0.75)).abs() < 1e-3, "大きさの 0.75 乗に比例: {small} / {unit}");
     }
 
     #[test]

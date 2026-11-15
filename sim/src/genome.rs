@@ -32,7 +32,8 @@ pub const G_LITTER: usize = 9;
 pub const N_TRAITS: usize = 10;
 
 /// 形質が取りうる範囲（変異でこの外に出たら切り詰める）
-pub const SIZE_RANGE: (f32, f32) = (0.4, 3.0);
+/// 大きさは体重にあたる（代謝が 0.75 乗に比例するため）。ネズミ型からシカ型くらいまでの差（40 倍）を許す
+pub const SIZE_RANGE: (f32, f32) = (0.1, 4.0);
 pub const SPEED_RANGE: (f32, f32) = (0.2, 4.0);
 pub const VISION_RANGE: (f32, f32) = (5.0, VISION_MAX);
 pub const INVEST_RANGE: (f32, f32) = (0.1, 0.9);

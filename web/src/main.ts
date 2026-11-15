@@ -1,5 +1,5 @@
 import { Application, Container, Graphics } from 'pixi.js';
-import { AUTO_RESELECT, BODY_RADIUS, COLORS, DIMMED_ALPHA, HIGHLIGHT_MIN_RADIUS_PX, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
+import { AUTO_RESELECT, BODY_RADIUS, COLORS, DIMMED_ALPHA, HIGHLIGHT_MIN_RADIUS_PX, MIN_BODY_RADIUS_PX, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
 import { CARNIVORE, HERBIVORE, INSPECT, LINEAGE, type FromWorker, type LineageSelection, type ToWorker } from './protocol';
 import { AgentLayer, type ColorMode } from './render/agents';
 import { Camera } from './render/camera';
@@ -424,8 +424,10 @@ app.ticker.add(() => {
   const agents = new Float32Array(f.buffer, 0, agentFloats);
   // 強調中の種類は、画面上で最低 HIGHLIGHT_MIN_RADIUS_PX の半径で描く（テクスチャの半径は草食の半径）
   const minScale = HIGHLIGHT_MIN_RADIUS_PX / camera.scale / BODY_RADIUS.herbivore;
-  const herbMin = highlight === 'herbivore' ? minScale : 0;
-  const carnMin = highlight === 'carnivore' ? minScale : 0;
+  // 強調していなくても、画面上で MIN_BODY_RADIUS_PX より小さくは描かない（小さな種を見失わないように）
+  const baseMin = MIN_BODY_RADIUS_PX / camera.scale / BODY_RADIUS.herbivore;
+  const herbMin = highlight === 'herbivore' ? minScale : baseMin;
+  const carnMin = highlight === 'carnivore' ? minScale : baseMin;
   herbivores.apply(agents, f.agentCount, f.stride, HERBIVORE, colorMode, herbMin, lineageSel);
   carnivores.apply(agents, f.agentCount, f.stride, CARNIVORE, colorMode, carnMin, lineageSel);
   // 枠線は表示中のときだけ更新する（計算の節約）

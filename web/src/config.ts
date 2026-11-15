@@ -241,6 +241,8 @@ export const COLORS = {
 };
 
 /** 強調中の種類を描く、画面上の最小の半径（px）。全体表示まで引いても分布が見えるように */
+/** 個体を描く画面上の最小の半径（px）。小さな種（大きさ 0.1 など）を引いた表示でも見失わないように */
+export const MIN_BODY_RADIUS_PX = 1;
 export const HIGHLIGHT_MIN_RADIUS_PX = 2.5;
 
 /** 「薄くする」強調のとき、強調していない種類の不透明度 */
