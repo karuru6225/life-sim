@@ -417,8 +417,8 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     g[G_VISION] = vision;
     g[G_INVEST] = 0.5;
     g[G_HUE] = hue;
-    // 自分の 0.4〜1.3 倍の獲物を狙う（小さすぎると割に合わず、大きすぎると狩れないうえ反撃を受ける）
-    g[G_PREY_MIN] = 0.4;
+    // 自分の 0.25〜1.3 倍の獲物を狙う（小さすぎると割に合わず、大きすぎると狩れないうえ反撃を受ける）
+    g[G_PREY_MIN] = 0.25;
     g[G_PREY_MAX] = 1.3;
     // 好みの気温は、初期個体を置くときにその場所の気温で上書きする
     g[G_TEMP_PREF] = 15.0;
@@ -655,6 +655,8 @@ pub struct Mutation {
     pub temp_sigma: f32,
     /// 中間ニューロン 1 個あたり、使う／使わないが切り替わる確率
     pub neuron_flip: f32,
+    /// 大きさの変異の大きさ（現在値に対する割合）。種類ごとに変えられるよう、ほかの形質とは分ける
+    pub size_sigma: f32,
 }
 
 /// 遺伝子に変異を加える
@@ -669,6 +671,8 @@ pub fn mutate(g: &mut [f32], m: &Mutation, rng: &mut Rng) {
         }
         if k == G_TEMP_PREF {
             g[k] += rng.gaussian() * m.temp_sigma;
+        } else if k == G_SIZE {
+            g[k] *= 1.0 + rng.gaussian() * m.size_sigma;
         } else {
             g[k] *= 1.0 + rng.gaussian() * m.trait_sigma;
         }
@@ -870,7 +874,7 @@ mod tests {
 
     #[test]
     fn 遺伝的距離は同じなら0で変異を重ねるほど大きい() {
-        let m = Mutation { rate: 0.02, trait_rate: 0.1, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0 };
+        let m = Mutation { rate: 0.02, trait_rate: 0.1, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0, size_sigma: 0.05 };
         let base = initial(true, 1.0, 1.3, 30.0, 0.3);
         assert_eq!(genetic_distance(&base, &base, 0.05, 0.1, 0.5), 0.0);
         let mut rng = Rng::new(1);
@@ -922,7 +926,7 @@ mod tests {
 
     #[test]
     fn 使っていないニューロンの重みは変異しない() {
-        let m = Mutation { rate: 1.0, trait_rate: 1.0, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0 };
+        let m = Mutation { rate: 1.0, trait_rate: 1.0, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0, size_sigma: 0.05 };
         let mut g = initial(true, 1.0, 1.3, 30.0, 0.3);
         mutate(&mut g, &m, &mut Rng::new(3));
         let unused = INITIAL_H1 + 2;
@@ -964,7 +968,7 @@ mod tests {
 
     #[test]
     fn 変異は同じ乱数なら同じ結果になる() {
-        let m = Mutation { rate: 0.5, trait_rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02, temp_sigma: 0.5, neuron_flip: 0.1 };
+        let m = Mutation { rate: 0.5, trait_rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02, temp_sigma: 0.5, neuron_flip: 0.1, size_sigma: 0.05 };
         let mut a = initial(true, 1.0, 1.3, 30.0, 0.3);
         let mut b = a.clone();
         mutate(&mut a, &m, &mut Rng::new(5));

@@ -1899,6 +1899,7 @@ impl World {
             hue_sigma: self.params.mutation_hue_sigma,
             temp_sigma: self.params.mutation_temp_sigma,
             neuron_flip: self.params.mutation_neuron,
+            size_sigma: if self.kind[i] == CARNIVORE { self.params.mutation_carn_size_sigma } else { self.params.mutation_trait_sigma },
         };
         let mate_id = mate.map(|j| self.id[j]).unwrap_or(0);
         let spread = self.params.birth_spread;
@@ -2684,18 +2685,18 @@ mod tests {
     fn 肉食は好みの大きさの獲物だけを狙う() {
         let mut w = empty_world();
         w.plants.biomass.fill(0.0);
-        // 大きさの下限は 0.4 なので、肉食を 1.5 にして小さい獲物との比を範囲外（0.27）にする
-        let carn = genome::initial(false, 1.5, 1.0, 40.0, 0.0);
+        // 好みの下限は 0.25 なので、肉食を 2.0 にして小さい獲物（0.2）との比を範囲外（0.1）にする
+        let carn = genome::initial(false, 2.0, 1.0, 40.0, 0.0);
         w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
-        // 25px 先に小さすぎる獲物（比 0.27。気づく距離は 40 × 0.52 = 21px まで縮む）、30px 先に好みの大きさの獲物（比 0.53）
-        w.spawn(125.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.4, 1.0, 30.0, 0.0));
+        // 25px 先に小さすぎる獲物（比 0.1。気づく距離は 40 × 0.035 = 1.4px まで縮む）、30px 先に好みの大きさの獲物（比 0.4）
+        w.spawn(125.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.2, 1.0, 30.0, 0.0));
         w.spawn(130.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.8, 1.0, 30.0, 0.0));
         face(&mut w, 0, 1.0, 0.0);
         w.build_grid();
         let prey = w.sense(0).prey.map(|(j, ..)| j);
         assert_eq!(prey, Some(2), "少し離れた小さすぎる獲物は気にせず、好みの大きさの獲物を狙う");
         // 好みの獲物がいなければ、目の前の小さすぎる獲物も狙う
-        w.xs[1] = 105.0;
+        w.xs[1] = 101.0;
         w.xs[2] = 300.0;
         w.build_grid();
         let prey = w.sense(0).prey.map(|(j, ..)| j);

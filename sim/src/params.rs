@@ -239,6 +239,9 @@ params! {
     mutation_trait_rate = 0.1,
     /// 形質の変異の大きさ（現在値に対する割合の標準偏差）
     mutation_trait_sigma = 0.05,
+    /// 肉食の大きさの変異の大きさ（現在値に対する割合の標準偏差）。草食は mutation_trait_sigma のまま。
+    /// 獲物の草食が小さくなったときに、小型の肉食が出てきやすいよう大きめにする
+    mutation_carn_size_sigma = 0.12,
     /// 脳の重みの変異の大きさ（標準偏差）
     mutation_weight_sigma = 0.1,
     /// 中間ニューロン 1 個あたり、生まれるときに使う／使わないが切り替わる確率
