@@ -1042,6 +1042,7 @@ impl World {
         let hue_similar = self.params.hue_similar;
         let vision2 = vision * vision;
         let (my_size, prey_min, prey_max) = (self.traits[i].size, self.traits[i].prey_min, self.traits[i].prey_max);
+        let pref_softness = self.params.prey_pref_softness;
         // 視野角: 正面 (hx, hy) から見て、相手の方向との角度が視野角の半分以内なら見える。平方根を使わずに判定する
         let (my_hx, my_hy, fov_cos) = (self.hx[i], self.hy[i], self.traits[i].fov_cos);
         let in_view = |dx: f32, dy: f32, d2: f32| {
@@ -1077,10 +1078,11 @@ impl World {
                 } else {
                     1
                 };
-                // 肉食は、好みの大きさの範囲に入らない獲物は狙わない
+                // 肉食は、好みの大きさの範囲から外れた獲物ほど、獲物として気づく距離が縮む（目の前なら狙う）
                 let wanted = rel != 1 || {
                     let ratio = self.traits[j].size / my_size;
-                    (prey_min..=prey_max).contains(&ratio)
+                    let reach = r * prey_preference(ratio, prey_min, prey_max, pref_softness);
+                    d2 < reach * reach
                 };
                 prey_count += (rel == 1 && wanted) as u32;
                 if wanted && d2 < best_d2[rel] {
@@ -2211,6 +2213,20 @@ fn steer(fwd: f32, right: f32, turn_cos: f32, turn_sin: f32) -> (f32, f32) {
     }
 }
 
+/// 獲物の大きさの好み（0〜1）。大きさの比 ratio が好みの範囲 [min, max] の中なら 1。
+/// 外れるほど、外れ方（比の対数）に応じて exp(−(外れ方 ÷ softness)²) で下がる。肉食が獲物に気づく距離に掛ける
+fn prey_preference(ratio: f32, min: f32, max: f32, softness: f32) -> f32 {
+    let off = if ratio < min {
+        (min / ratio.max(1e-6)).ln()
+    } else if ratio > max {
+        (ratio / max).ln()
+    } else {
+        return 1.0;
+    };
+    let t = off / softness.max(1e-6);
+    (-t * t).exp()
+}
+
 /// 座標を [0, size) に折り返す（トーラス世界）
 fn wrap(v: f32, size: f32) -> f32 {
     if v < 0.0 {
@@ -2665,13 +2681,18 @@ mod tests {
         // 大きさの下限は 0.4 なので、肉食を 1.5 にして小さい獲物との比を範囲外（0.27）にする
         let carn = genome::initial(false, 1.5, 1.0, 40.0, 0.0);
         w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
-        // 近くに小さすぎる獲物（比 0.27）、少し遠くに好みの大きさの獲物（比 0.53）
-        w.spawn(105.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.4, 1.0, 30.0, 0.0));
-        w.spawn(120.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.8, 1.0, 30.0, 0.0));
+        // 25px 先に小さすぎる獲物（比 0.27。気づく距離は 40 × 0.52 = 21px まで縮む）、30px 先に好みの大きさの獲物（比 0.53）
+        w.spawn(125.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.4, 1.0, 30.0, 0.0));
+        w.spawn(130.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.8, 1.0, 30.0, 0.0));
         face(&mut w, 0, 1.0, 0.0);
         w.build_grid();
         let prey = w.sense(0).prey.map(|(j, ..)| j);
-        assert_eq!(prey, Some(2), "小さすぎる獲物は無視して、好みの大きさの獲物を狙う");
+        assert_eq!(prey, Some(2), "少し離れた小さすぎる獲物は気にせず、好みの大きさの獲物を狙う");
+        // 小さすぎる獲物でも、目の前なら狙う
+        w.xs[1] = 105.0;
+        w.build_grid();
+        let prey = w.sense(0).prey.map(|(j, ..)| j);
+        assert_eq!(prey, Some(1), "目の前の小さな獲物は狙う");
     }
 
     #[test]
