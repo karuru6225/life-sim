@@ -86,6 +86,8 @@ let lastTime = performance.now();
 /** 統計を取る系統（null なら取らない） */
 let lineageSel: LineageSelection | null = null;
 let lastMatings = 0;
+let lastHunts = 0;
+let lastKills = 0;
 let lastFailed = 0;
 
 let statStart = performance.now();
@@ -127,6 +129,8 @@ function handle(s: SimExports, msg: ToWorker): void {
       smoothedMs = 0;
       lastMatings = 0;
       lastFailed = 0;
+      lastHunts = 0;
+      lastKills = 0;
       for (const [name, value] of Object.entries(msg.params)) applyParam(s, name, value);
       s.init(msg.seed);
       sim = s;
@@ -332,6 +336,11 @@ function reportStats(s: SimExports, now: number): void {
   const failed = v[24] - lastFailed;
   lastMatings = v[23];
   lastFailed = v[24];
+  // 狩りの回数も累計なので、前回からの差で成功率を出す
+  const hunts = v[29] - lastHunts;
+  const kills = v[30] - lastKills;
+  lastHunts = v[29];
+  lastKills = v[30];
   post({
     type: 'stats',
     ticksPerSecond: (statTicks * 1000) / elapsed,
@@ -340,6 +349,7 @@ function reportStats(s: SimExports, now: number): void {
     sunlight: baseSunlight * sunlightFactor,
     sunlightFactor,
     matingFailRate: matings > 0 ? failed / matings : NaN,
+    huntSuccessRate: hunts > 0 ? kills / hunts : NaN,
     season: v[25],
     seasonPhase: v[26],
     herbivore: means(1, 13, 27),

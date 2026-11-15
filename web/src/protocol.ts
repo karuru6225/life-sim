@@ -71,6 +71,8 @@ export type FromWorker =
       sunlightFactor: number;
       /** 直前の集計区間で、交配が相性で失敗した割合（交配がなければ NaN） */
       matingFailRate: number;
+      /** 直前の集計区間で、肉食の襲撃のうち仕留めた割合（襲撃がなければ NaN） */
+      huntSuccessRate: number;
       /** 季節（−1〜1、日射が最も多い時期に 1）と、1 年のうちの位置（0〜1、0.25 で日射が最も多い） */
       season: number;
       seasonPhase: number;
@@ -205,6 +207,8 @@ export const INSPECT = {
   /** 好みの獲物の大きさの比（肉食のみ） */
   preyMin: 52,
   preyMax: 53,
+  /** 襲いかかった回数（肉食） */
+  hunts: 54,
 } as const;
 
 export const HERBIVORE = 0;

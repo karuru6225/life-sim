@@ -324,7 +324,12 @@ export class Inspector {
     this.el.preyRange.textContent = herb ? '–' : `自分の ${v[INSPECT.preyMin].toFixed(2)}〜${v[INSPECT.preyMax].toFixed(2)} 倍`;
 
     this.el.eaten.textContent = v[INSPECT.eaten].toFixed(1);
-    this.el.kills.textContent = herb ? '–' : `${fmtInt.format(v[INSPECT.kills])} 体`;
+    const hunts = v[INSPECT.hunts];
+    this.el.kills.textContent = herb
+      ? '–'
+      : hunts > 0
+        ? `${fmtInt.format(v[INSPECT.kills])} 体（襲撃 ${fmtInt.format(hunts)} 回、成功率 ${Math.round((v[INSPECT.kills] / hunts) * 100)}%）`
+        : '0 体（襲撃 0 回）';
     this.el.distance.textContent = `${fmtInt.format(Math.round(v[INSPECT.distance]))} px`;
     const matings = v[INSPECT.matings];
     this.el.matings.textContent =

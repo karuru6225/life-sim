@@ -98,6 +98,7 @@ export class Hud {
         <dt>植物量</dt><dd data-k="plant">–</dd>
         <dt title="寒い地域（上下の端）ほど季節で気温が大きく変わり、冬は草が育たず夏に育つ。暖かい中央はほぼ変わらない">季節</dt><dd data-k="season">–</dd>
         <dt title="繁殖相手と遺伝的に遠く、交配に失敗した割合。上がってきたら種が分かれつつある">交配失敗</dt><dd data-k="mateFail">–</dd>
+        <dt title="肉食が届く距離の獲物に襲いかかったうち、仕留めた割合（直近 0.5 秒）。追いかけただけで襲えなかった分は数えない">狩りの成功率</dt><dd data-k="huntRate">–</dd>
         <dt>日射量</dt>
         <dd class="slider-row">
           <input type="range" data-k="sun" min="${SUNLIGHT_RANGE.min}" max="${SUNLIGHT_RANGE.max}" step="${SUNLIGHT_RANGE.step}" aria-label="日射量" />
@@ -251,6 +252,7 @@ export class Hud {
     this.el.carn.textContent = fmtInt.format(s.carnivore.count);
     this.el.plant.textContent = fmtInt.format(Math.round(s.plantTotal));
     this.el.season.textContent = seasonLabel(s.seasonPhase, s.season);
+    this.el.huntRate.textContent = Number.isFinite(s.huntSuccessRate) ? `${(s.huntSuccessRate * 100).toFixed(1)}%` : '–';
     this.el.mateFail.textContent = Number.isFinite(s.matingFailRate) ? `${(s.matingFailRate * 100).toFixed(1)}%` : '–';
     this.el.autoState.textContent =
       s.sunlightFactor < 1
