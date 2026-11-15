@@ -474,6 +474,18 @@ pub extern "C" fn temperature_ptr() -> *const f32 {
     with_world(|w| w.terrain.temperature.as_ptr())
 }
 
+/// 今の気温（季節の変化込み）の配列（plant_cols() × plant_rows() の f32、行優先、度）の先頭アドレス。30 tick ごとに変わる
+#[unsafe(no_mangle)]
+pub extern "C" fn temperature_now_ptr() -> *const f32 {
+    with_world(|w| w.terrain.temp_now.as_ptr())
+}
+
+/// 今の植物の育ちやすさ（肥沃度、季節の変化込み、0〜1）の配列（plant_cols() × plant_rows() の f32）の先頭アドレス
+#[unsafe(no_mangle)]
+pub extern "C" fn fertility_now_ptr() -> *const f32 {
+    with_world(|w| w.plants.fertility.as_ptr())
+}
+
 /// 死体の量の配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス
 #[unsafe(no_mangle)]
 pub extern "C" fn carrion_ptr() -> *const f32 {
