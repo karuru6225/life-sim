@@ -98,6 +98,12 @@ export const SIM_PARAMS = {
   coop_max_allies: 4,
   carn_interference: 0.8,
 
+  // 同じ種類の敵との争い
+  fight_range: 6,
+  fight_cost: 0.3,
+  fight_damage: 3,
+  fight_backlash: 0.25,
+
   // 系統
   compat_full_distance: 1.2,
   compat_zero_distance: 2.5,

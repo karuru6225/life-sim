@@ -21,11 +21,12 @@ const INPUT_LABELS = [
   '繁殖できる', '繁殖相手の近さ', '前方が水', '獲物の大きさ比', '天敵の大きさ比', '植生の合い具合',
   '気温の差', '季節', '仲間のシグナル', '呼び声・前', '呼び声・右', '呼び声の大きさ', '死角の見張り',
   '足元の死体', '死体の方向・前', '死体の方向・右', '死体の新しさ',
+  '敵・前', '敵・右', '敵の近さ', '敵の大きさ比', '敵の数', '攻撃された', '一人の時間',
 ];
 /** 脳の出力の名前（sim/src/genome.rs の OUT_* の並び） */
 const OUTPUT_LABELS = [
   '優先: 食べる', '優先: 繁殖', '優先: 逃げる', '優先: 仲間', '優先: 自由', '自由な方向・前', '自由な方向・右',
-  '速さ', '繁殖する', '食べる', '警戒', 'シグナル',
+  '速さ', '繁殖する', '食べる', '警戒', 'シグナル', '優先: 追い払う', '攻撃する',
 ];
 
 const fmtInt = new Intl.NumberFormat('ja-JP');
@@ -39,6 +40,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.FLEE]: '肉食が見えている',
     [STATE.COURT]: '繁殖相手に向かっている',
     [STATE.WANDER]: '歩き回っている',
+    [STATE.FIGHT]: '敵（別の系統）を攻撃した',
   },
   [CARNIVORE]: {
     [STATE.WANDER]: '獲物が見えない',
@@ -47,6 +49,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.MISSED]: '襲ったが逃げられた',
     [STATE.COURT]: '繁殖相手に向かっている',
     [STATE.SCAVENGE]: '死体を食べている',
+    [STATE.FIGHT]: '敵（別の系統）を攻撃した',
   },
 };
 
@@ -56,6 +59,7 @@ const DEATH_LABEL: Record<number, string> = {
   [DEATH.EATEN]: '肉食に食べられた',
   [DEATH.INJURED]: 'けが（獲物の反撃か、死体の奪い合い）',
   [DEATH.SICK]: '腐った死体を食べて病気になった',
+  [DEATH.FOUGHT]: '同じ種類の敵との争い',
 };
 
 export class Inspector {
@@ -94,6 +98,7 @@ export class Inspector {
           <dt>子</dt><dd data-k="children">–</dd>
           <dt>速度</dt><dd data-k="speed">–</dd>
           <dt>位置</dt><dd data-k="pos">–</dd>
+          <dt title="仲間（同じ種類）を最後に見てからの時間">一人</dt><dd data-k="alone">–</dd>
           <dt title="足元の草で、相手から見つかる距離が何割縮むか">隠れ</dt><dd data-k="hidden">–</dd>
           <dt title="草食は、生まれた場所と大きく違う植生（肥沃度）の草を食べられない">植生</dt><dd data-k="habitat">–</dd>
           <dt title="好みの気温から離れるほど、体温を保つための消費が増える（大きいほど割安）">気温</dt><dd data-k="temp">–</dd>
@@ -275,6 +280,10 @@ export class Inspector {
     this.el.generation.textContent = `第 ${fmtInt.format(v[INSPECT.generation])} 世代`;
     this.el.children.textContent = `${fmtInt.format(v[INSPECT.children])} 体`;
     this.el.speed.textContent = `${v[INSPECT.speed].toFixed(2)} px/tick`;
+    const alone = v[INSPECT.alone];
+    // シミュレーション（WASM）が古く、値がまだ届かないときは「–」
+    this.el.alone.textContent =
+      alone === undefined ? '–' : alone === 0 ? '仲間が見えている' : `仲間なし ${fmtInt.format(alone)} tick`;
     this.el.pos.textContent = `${Math.round(v[INSPECT.x])}, ${Math.round(v[INSPECT.y])}`;
     this.el.habitat.textContent = herb
       ? `生まれ ${v[INSPECT.natal].toFixed(2)}・食べやすさ ${Math.round(v[INSPECT.habitatFit] * 100)}%`
@@ -287,11 +296,13 @@ export class Inspector {
       ['繁殖', v[INSPECT.priMate]],
       ['逃げる', v[INSPECT.priFlee]],
       ['仲間', v[INSPECT.priKin]],
+      ['追い払う', v[INSPECT.priFight]],
       ['自由', v[INSPECT.priFree]],
     ];
     if (herb) pri.push(['警戒', v[INSPECT.vigilance]]);
     pri.push(['シグナル', v[INSPECT.signal]]);
     this.el.priorities.innerHTML = pri
+      .filter(([, p]) => p !== undefined)
       .map(
         ([label, p]) =>
           `<div class="pri-row"><span>${label}</span><div class="meter"><div class="meter-fill" style="width:${Math.round(p * 100)}%"></div></div><span class="pri-value">${Math.round(p * 100)}%</span></div>`,

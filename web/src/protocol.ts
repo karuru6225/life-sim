@@ -214,13 +214,17 @@ export const INSPECT = {
   /** 使っている中間ニューロンの数（1 層目, 2 層目） */
   brain1: 55,
   brain2: 56,
+  /** 追い払う欲求の優先度（0〜1） */
+  priFight: 57,
+  /** 仲間（同じ種類）を最後に見てからの tick 数 */
+  alone: 58,
 } as const;
 
 export const HERBIVORE = 0;
 export const CARNIVORE = 1;
 
 /** sim/src/world.rs の state と一致させること */
-export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6, COURT: 7, SCAVENGE: 8 } as const;
+export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6, COURT: 7, SCAVENGE: 8, FIGHT: 9 } as const;
 
 /** sim/src/world.rs の death と一致させること */
-export const DEATH = { STARVED: 1, OLD_AGE: 2, EATEN: 3, INJURED: 4, SICK: 5 } as const;
+export const DEATH = { STARVED: 1, OLD_AGE: 2, EATEN: 3, INJURED: 4, SICK: 5, FOUGHT: 6 } as const;
