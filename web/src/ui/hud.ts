@@ -42,14 +42,18 @@ const TRAIT_ROWS: [string, (m: TraitMeans) => number, number][] = [
   ['近くの同系統の割合', (m) => m.sameShare, 2],
 ];
 
-/** 1 年のうちの位置（0〜1、0.25 で日射が最も多い）を、季節の名前と日射の増減で表す */
+/** 1 年のうちの位置（0〜1、0.25 で最も暖かい）を、季節の名前と、寒い地域の気温の平年との差で表す */
 function seasonLabel(phase: number, season: number): string {
-  if (SIM_PARAMS.season_length <= 0 || SIM_PARAMS.season_amplitude === 0) return '季節なし';
+  if (SIM_PARAMS.season_length <= 0) return '季節なし';
   const names = ['春', '夏', '秋', '冬'];
-  // 日射が最も多い 0.25 を夏の真ん中にする
+  // 最も暖かい 0.25 を夏の真ん中にする
   const name = names[Math.floor(((phase + 0.125) % 1) * 4)];
-  const change = Math.round(season * SIM_PARAMS.season_amplitude * 100);
-  return `${name} · 日射 ${change >= 0 ? '+' : '−'}${Math.abs(change)}%`;
+  const parts = [name];
+  const temp = Math.round(season * SIM_PARAMS.season_temp);
+  if (SIM_PARAMS.season_temp !== 0) parts.push(`寒い地域 ${temp >= 0 ? '+' : '−'}${Math.abs(temp)}°`);
+  const sun = Math.round(season * SIM_PARAMS.season_amplitude * 100);
+  if (SIM_PARAMS.season_amplitude !== 0) parts.push(`日射 ${sun >= 0 ? '+' : '−'}${Math.abs(sun)}%`);
+  return parts.join(' · ');
 }
 
 export class Hud {
@@ -90,7 +94,7 @@ export class Hud {
       </table>
       <dl class="hud-rows">
         <dt>植物量</dt><dd data-k="plant">–</dd>
-        <dt title="日射は 1 年の間に増減する。日射の多い時期に生まれた子は育ちやすい">季節</dt><dd data-k="season">–</dd>
+        <dt title="寒い地域（上下の端）ほど季節で気温が大きく変わり、冬は草が育たず夏に育つ。暖かい中央はほぼ変わらない">季節</dt><dd data-k="season">–</dd>
         <dt title="繁殖相手と遺伝的に遠く、交配に失敗した割合。上がってきたら種が分かれつつある">交配失敗</dt><dd data-k="mateFail">–</dd>
         <dt>日射量</dt>
         <dd class="slider-row">

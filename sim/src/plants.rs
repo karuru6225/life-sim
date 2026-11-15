@@ -11,18 +11,20 @@ pub struct PlantField {
     pub cell_size: f32,
     /// マスごとの植物量。i = row * cols + col
     pub biomass: Vec<f32>,
-    /// マスごとの肥沃度（0〜1）。地形の fertility と同じ並び
+    /// マスごとの肥沃度（0〜1）。季節とともに変わる（World が地形から書き込む）
     pub fertility: Vec<f32>,
+    /// マスごとの植生の種類（土の肥えかた、0〜1）。季節で変わらない。地形の soil と同じ並び
+    pub vegetation: Vec<f32>,
 }
 
 impl PlantField {
-    /// fertility は地形のマスごとの肥沃度（cols × rows）。初期の植物量は initial × 肥沃度
-    pub fn new(width: f32, height: f32, cell_size: f32, initial: f32, fertility: &[f32]) -> Self {
+    /// fertility は地形のマスごとの肥沃度、vegetation は植生の種類（どちらも cols × rows）。初期の植物量は initial × 肥沃度
+    pub fn new(width: f32, height: f32, cell_size: f32, initial: f32, fertility: &[f32], vegetation: &[f32]) -> Self {
         let cols = ((width / cell_size).ceil() as usize).max(1);
         let rows = ((height / cell_size).ceil() as usize).max(1);
         assert_eq!(fertility.len(), cols * rows, "地形と植物のマス目がずれている");
         let biomass = fertility.iter().map(|&f| initial * f).collect();
-        PlantField { cols, rows, cell_size, biomass, fertility: fertility.to_vec() }
+        PlantField { cols, rows, cell_size, biomass, fertility: fertility.to_vec(), vegetation: vegetation.to_vec() }
     }
 
     /// 日射を受けて成長する。受け取ったエネルギーの合計を返す。
@@ -56,12 +58,12 @@ impl PlantField {
         self.richer_direction_for(x, y, |_| 1.0)
     }
 
-    /// richer_direction と同じだが、マスの植物量に weight(マスの肥沃度) を掛けて比べる。
+    /// richer_direction と同じだが、マスの植物量に weight(マスの植生の種類) を掛けて比べる。
     /// 食べられる植生が決まっている草食が、自分に合う草を探すときに使う
     pub fn richer_direction_for(&self, x: f32, y: f32, weight: impl Fn(f32) -> f32) -> Option<(f32, f32)> {
         let c = ((x / self.cell_size) as usize).min(self.cols - 1);
         let r = ((y / self.cell_size) as usize).min(self.rows - 1);
-        let value = |k: usize| self.biomass[k] * weight(self.fertility[k]);
+        let value = |k: usize| self.biomass[k] * weight(self.vegetation[k]);
         let here = value(r * self.cols + c);
         let mut best = here * 1.1 + 0.05;
         let mut dir = None;

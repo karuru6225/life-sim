@@ -182,7 +182,6 @@ pub extern "C" fn inspect() -> *const f64 {
                 return;
             };
             let p = &w.params;
-            let herb = w.kind[i] == HERBIVORE;
             out[0] = 1.0;
             out[2] = w.kind[i] as f64;
             out[3] = w.xs[i] as f64;
@@ -191,7 +190,7 @@ pub extern "C" fn inspect() -> *const f64 {
             let t = w.traits[i];
             out[6] = w.repro_threshold(i) as f64;
             out[7] = w.age[i] as f64;
-            out[8] = (if herb { p.herb_max_age } else { p.carn_max_age } * t.adult_sqrt) as f64;
+            out[8] = w.lifespan(i) as f64;
             out[9] = w.state[i] as f64;
             out[10] = watch.speed as f64;
             out[11] = watch.cost as f64;
@@ -216,7 +215,7 @@ pub extern "C" fn inspect() -> *const f64 {
             }
             out[35] = w.vigilance[i] as f64;
             out[36] = w.natal[i] as f64;
-            out[37] = w.habitat_fit(i, w.terrain.fertility[w.terrain.cell_index(w.xs[i], w.ys[i])]) as f64;
+            out[37] = w.habitat_fit(i, w.terrain.soil_at(w.xs[i], w.ys[i])) as f64;
             out[38] = w.terrain.temperature_at(w.xs[i], w.ys[i]) as f64;
             out[39] = t.temp_pref as f64;
             out[40] = watch.signal as f64;
@@ -274,7 +273,7 @@ pub extern "C" fn terrain_ptr() -> *const f32 {
         let mut out = buf.borrow_mut();
         with_world(|w| {
             out.clear();
-            out.extend(w.terrain.water.iter().zip(&w.terrain.fertility).map(|(&water, &f)| if water { -1.0 } else { f }));
+            out.extend(w.terrain.water.iter().zip(&w.terrain.soil).map(|(&water, &f)| if water { -1.0 } else { f }));
         });
         out.as_ptr()
     })

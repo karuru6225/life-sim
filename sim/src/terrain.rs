@@ -6,8 +6,11 @@
 //! どの種でも水の量がそろう。
 //!
 //! 平均気温は、緯度（南北の位置）と標高で決まり、小さなむらが乗る。世界は上下がつながっているので、
-//! 緯度による差は cos で表す。中央（赤道にあたる）が暖かく、上下の端（極にあたる）が寒い。植物は適温から離れるほど育ちにくいので、
-//! 肥沃度（＝植生）には気候の影響も含める。
+//! 緯度による差は cos で表す。中央（赤道にあたる）が暖かく、上下の端（極にあたる）が寒い。
+//!
+//! 今の気温は、平均気温に季節の変化が乗ったもの。季節の振れ幅は中央でほぼ 0、上下の端ほど大きい（現実の高緯度と同じ）。
+//! 植物の育ちやすさ（肥沃度）は「土の肥えかた × 今の気温による育ちやすさ」で、季節とともに変わる。
+//! 土の肥えかたは季節で変わらず、これを「植生の種類」として扱う（草食が生まれた場所で覚えるのはこちら）。
 
 use crate::rng::Rng;
 
@@ -17,12 +20,21 @@ pub struct Terrain {
     pub cell_size: f32,
     /// マスが水なら true。個体は入れず、植物も育たない
     pub water: Vec<bool>,
-    /// 肥沃度（陸は fertility_min〜1、水は 0）。植物が溜まる上限と育つ速さに掛かる
+    /// 土の肥えかた（陸は fertility_min〜1、水は 0）。季節で変わらない「植生の種類」
+    pub soil: Vec<f32>,
+    /// 平均気温での肥沃度（土 × 気温による育ちやすさ）。植物が溜まる上限と育つ速さの目安。季節ごとの値は productivity_into で求める
     pub fertility: Vec<f32>,
     /// 陸のマスの数
     pub land_cells: usize,
     /// 平均気温（度）
     pub temperature: Vec<f32>,
+    /// 季節による気温の振れ幅（度）。今の気温 = 平均気温 + この値 × 季節（−1〜1）
+    pub season_amp: Vec<f32>,
+    /// 今の気温（度）。set_season で更新する
+    pub temp_now: Vec<f32>,
+    /// 植物の適温と、育ちやすさが 1/e に落ちる適温からの差（度）
+    pub plant_temp_opt: f32,
+    pub plant_temp_width: f32,
 }
 
 /// 地形を作るときの設定
@@ -46,6 +58,8 @@ pub struct TerrainSpec {
     /// 植物の適温（度）と、適温からの離れにくさの幅（度）。離れるほど育ちにくい
     pub plant_temp_opt: f32,
     pub plant_temp_width: f32,
+    /// 季節による気温の振れ幅（上下の端での値、度）。中央では 0
+    pub season_temp: f32,
 }
 
 impl Terrain {
@@ -65,29 +79,55 @@ impl Terrain {
         // 平均気温: 緯度（cos で上下がつながる。中央が暖かく上下の端が寒い）− 標高（海面からの高さ）＋ むら
         let temp_noise = fbm(cols, rows, cell_size, spec.elevation_scale * 0.7, rng);
         let land_top = sorted[sorted.len() - 1];
+        // 緯度（中央で 1、上下の端で −1）
+        let latitude = |k: usize| -(std::f32::consts::TAU * ((k / cols) as f32 + 0.5) / rows as f32).cos();
         let temperature: Vec<f32> = (0..cols * rows)
             .map(|k| {
-                let r = k / cols;
-                let latitude = -(std::f32::consts::TAU * (r as f32 + 0.5) / rows as f32).cos();
                 let height = if water[k] { 0.0 } else { (elevation[k] - sea_level) / (land_top - sea_level).max(1e-6) };
-                spec.temp_mean + spec.temp_latitude * latitude - spec.temp_lapse * height
+                spec.temp_mean + spec.temp_latitude * latitude(k) - spec.temp_lapse * height
                     + spec.temp_noise * (2.0 * temp_noise[k] - 1.0)
             })
             .collect();
-
-        // 肥沃度（植生）= 土の肥えかた × 気温による育ちやすさ
-        let fertility = (0..cols * rows)
-            .map(|k| {
-                if water[k] {
-                    return 0.0;
-                }
-                let soil = spec.fertility_min + (1.0 - spec.fertility_min) * fert_noise[k];
-                let t = (temperature[k] - spec.plant_temp_opt) / spec.plant_temp_width;
-                soil * (-t * t).exp()
-            })
+        // 季節の振れ幅: 中央（赤道）で 0、上下の端（極）で season_temp
+        let season_amp = (0..cols * rows).map(|k| spec.season_temp * (1.0 - latitude(k)) * 0.5).collect();
+        let soil: Vec<f32> = (0..cols * rows)
+            .map(|k| if water[k] { 0.0 } else { spec.fertility_min + (1.0 - spec.fertility_min) * fert_noise[k] })
             .collect();
         let land_cells = water.iter().filter(|&&w| !w).count();
-        Terrain { cols, rows, cell_size, water, fertility, land_cells, temperature }
+        let mut t = Terrain {
+            cols,
+            rows,
+            cell_size,
+            water,
+            fertility: Vec::new(),
+            soil,
+            land_cells,
+            temp_now: temperature.clone(),
+            temperature,
+            season_amp,
+            plant_temp_opt: spec.plant_temp_opt,
+            plant_temp_width: spec.plant_temp_width,
+        };
+        let mut fertility = vec![0.0; cols * rows];
+        t.productivity_into(&mut fertility);
+        t.fertility = fertility;
+        t
+    }
+
+    /// 季節（−1〜1）に合わせて今の気温を更新する
+    pub fn set_season(&mut self, season: f32) {
+        for ((now, &mean), &amp) in self.temp_now.iter_mut().zip(&self.temperature).zip(&self.season_amp) {
+            *now = mean + amp * season;
+        }
+    }
+
+    /// 今の気温での肥沃度（土の肥えかた × 気温による育ちやすさ）を out に書き込む。水は 0
+    pub fn productivity_into(&self, out: &mut [f32]) {
+        let (opt, width) = (self.plant_temp_opt, self.plant_temp_width);
+        for ((o, &soil), &temp) in out.iter_mut().zip(&self.soil).zip(&self.temp_now) {
+            let t = (temp - opt) / width;
+            *o = soil * (-t * t).exp();
+        }
     }
 
     /// 地形なし（全面が肥沃度 1 の陸で、気温はどこも temp_mean）
@@ -101,13 +141,25 @@ impl Terrain {
             cell_size,
             water: vec![false; n],
             fertility: vec![1.0; n],
+            soil: vec![1.0; n],
             land_cells: n,
             temperature: vec![temp_mean; n],
+            season_amp: vec![0.0; n],
+            temp_now: vec![temp_mean; n],
+            // 平らな世界では気温が植物の育ちやすさに影響しないよう、幅を十分に広くする
+            plant_temp_opt: temp_mean,
+            plant_temp_width: f32::INFINITY,
         }
     }
 
+    /// 今の気温
     pub fn temperature_at(&self, x: f32, y: f32) -> f32 {
-        self.temperature[self.cell_index(x, y)]
+        self.temp_now[self.cell_index(x, y)]
+    }
+
+    /// 植生の種類（土の肥えかた）
+    pub fn soil_at(&self, x: f32, y: f32) -> f32 {
+        self.soil[self.cell_index(x, y)]
     }
 
     pub fn cell_index(&self, x: f32, y: f32) -> usize {
@@ -181,7 +233,35 @@ mod tests {
             temp_noise: 3.0,
             plant_temp_opt: 18.0,
             plant_temp_width: 15.0,
+            season_temp: 10.0,
         }
+    }
+
+    #[test]
+    fn 季節の振れ幅は上下の端で大きく中央で小さい() {
+        let mut t = Terrain::generate(4800.0, 3200.0, 32.0, &spec(), &mut Rng::new(4));
+        let row_mean = |t: &Terrain, r: usize| (0..t.cols).map(|c| t.temp_now[r * t.cols + c]).sum::<f32>() / t.cols as f32;
+        t.set_season(1.0);
+        let (edge_summer, mid_summer) = (row_mean(&t, 0), row_mean(&t, t.rows / 2));
+        t.set_season(-1.0);
+        let (edge_winter, mid_winter) = (row_mean(&t, 0), row_mean(&t, t.rows / 2));
+        assert!(edge_summer - edge_winter > 15.0, "端の夏と冬の差 {}", edge_summer - edge_winter);
+        assert!((mid_summer - mid_winter).abs() < 1.0, "中央の夏と冬の差 {}", mid_summer - mid_winter);
+    }
+
+    #[test]
+    fn 寒い地域の植物は冬に育ちにくく夏に育つ() {
+        let mut t = Terrain::generate(4800.0, 3200.0, 32.0, &spec(), &mut Rng::new(4));
+        let mut f = vec![0.0; t.cols * t.rows];
+        let cols = t.cols;
+        let edge = |f: &[f32]| (0..cols).map(|c| f[c]).sum::<f32>();
+        t.set_season(1.0);
+        t.productivity_into(&mut f);
+        let summer = edge(&f);
+        t.set_season(-1.0);
+        t.productivity_into(&mut f);
+        let winter = edge(&f);
+        assert!(summer > winter * 2.0, "夏 {summer} 冬 {winter}");
     }
 
     #[test]

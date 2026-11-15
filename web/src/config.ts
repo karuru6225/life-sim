@@ -31,8 +31,9 @@ export const SIM_PARAMS = {
   mutation_temp_sigma: 0.5,
 
   // 季節
-  season_length: 1200,
-  season_amplitude: 0.4,
+  season_length: 2400,
+  season_temp: 10,
+  season_amplitude: 0,
 
   // 植物
   sunlight: 0.08,
@@ -111,6 +112,7 @@ export const SIM_PARAMS = {
   herb_repro_threshold: 10,
   herb_birth_cost: 1,
   herb_max_age: 2400,
+  herb_repro_rest: 600,
   herb_maturity: 600,
   herb_initial_energy: 5,
 
@@ -125,6 +127,7 @@ export const SIM_PARAMS = {
   carn_repro_threshold: 16,
   carn_birth_cost: 2,
   carn_max_age: 3600,
+  carn_repro_rest: 900,
   carn_maturity: 900,
   carn_initial_energy: 8,
 };

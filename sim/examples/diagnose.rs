@@ -102,7 +102,7 @@ fn main() {
                 let h: Vec<f32> = (0..w.count()).filter(|&i| w.kind[i] == HERBIVORE).map(|i| w.energy[i]).collect();
                 h.iter().sum::<f32>() / h.len().max(1) as f32
             },
-            share(&|i| w.growth[i] >= 1.0 && w.energy[i] >= w.repro_threshold(i)),
+            share(&|i| w.can_breed(i)),
             mean(&|i| w.traits[i].adult_size),
             mean(&|i| w.traits[i].max_speed),
             mean(&|i| w.traits[i].vision),

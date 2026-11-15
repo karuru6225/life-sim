@@ -49,6 +49,9 @@ pub mod death {
     pub const INJURED: u8 = 4;
 }
 
+/// 気温と植物の育ちやすさを更新する間隔（tick）
+const CLIMATE_EVERY: u64 = 30;
+
 /// 近傍探索のグリッドのセルの大きさ。細かいほど、視野の小さい個体が調べる範囲を絞れる
 const GRID_CELL: f32 = 16.0;
 
@@ -242,6 +245,8 @@ pub struct World {
     pub growth: Vec<f32>,
     /// 次に襲えるようになるまでの残り tick 数（肉食のみ使う）
     pub cooldown: Vec<u16>,
+    /// 次に繁殖できるようになるまでの残り tick 数（妊娠と子育てにあたる）
+    pub rest: Vec<u16>,
     /// 直前の tick に脳が決めた警戒の度合い（0〜1、草食のみ使う）。天敵に気づける距離と一口の大きさに効く
     pub vigilance: Vec<f32>,
     /// 生まれた場所の植生（肥沃度）。草食はこれと大きく違う植生の場所では食べられない
@@ -293,6 +298,7 @@ impl World {
                 temp_noise: params.temp_noise,
                 plant_temp_opt: params.plant_temp_opt,
                 plant_temp_width: params.plant_temp_width,
+                season_temp: params.season_temp,
             };
             Terrain::generate(width, height, params.plant_cell, &spec, &mut Rng::new(seed ^ 0x7e44_a1d3))
         };
@@ -302,6 +308,7 @@ impl World {
             params.plant_cell,
             params.plant_capacity * params.plant_initial_ratio,
             &terrain.fertility,
+            &terrain.soil,
         );
         let grid = Grid::new(width, height, GRID_CELL);
         let mut world = World {
@@ -323,6 +330,7 @@ impl World {
             traits: Vec::new(),
             growth: Vec::new(),
             cooldown: Vec::new(),
+            rest: Vec::new(),
             vigilance: Vec::new(),
             natal: Vec::new(),
             cover: Vec::new(),
@@ -413,8 +421,9 @@ impl World {
         self.traits.push(traits);
         self.growth.push(growth);
         self.cooldown.push(0);
+        self.rest.push(0);
         self.vigilance.push(0.5);
-        self.natal.push(self.terrain.fertility[self.terrain.cell_index(x, y)]);
+        self.natal.push(self.terrain.soil_at(x, y));
         self.cover.push(0.0);
         self.signal.push(0.0);
         self.alive.push(true);
@@ -485,12 +494,17 @@ impl World {
         self.base_repro_threshold(self.kind[i]) * self.traits[i].adult_size
     }
 
+    /// 繁殖できる状態か（成熟していて、エネルギーが足りていて、前の繁殖から十分たっている）
+    pub fn can_breed(&self, i: usize) -> bool {
+        self.growth[i] >= 1.0 && self.energy[i] >= self.repro_threshold(i) && self.rest[i] == 0
+    }
+
     /// 蓄えられるエネルギーの上限（いまの大きさに比例。幼体は小さい）
     pub fn energy_cap(&self, i: usize) -> f32 {
         self.base_repro_threshold(self.kind[i]) * self.traits[i].size * self.params.energy_cap_ratio
     }
 
-    /// 個体 i（草食）が、肥沃度 fertility の植生の草をどれだけ食べられるか（0〜1）。
+    /// 個体 i（草食）が、植生の種類 fertility（土の肥えかた）の草をどれだけ食べられるか（0〜1）。
     /// 生まれた場所の植生との差が habitat_tolerance 以下なら 1、habitat_limit 以上なら 0。肉食は常に 1
     pub fn habitat_fit(&self, i: usize, fertility: f32) -> f32 {
         if self.kind[i] != HERBIVORE {
@@ -500,6 +514,13 @@ impl World {
         let diff = (fertility - self.natal[i]).abs();
         let t = ((diff - p.habitat_tolerance) / (p.habitat_limit - p.habitat_tolerance).max(1e-6)).clamp(0.0, 1.0);
         1.0 - t * t * (3.0 - 2.0 * t)
+    }
+
+    /// 季節に合わせて、今の気温と植物の育ちやすさを更新する
+    fn update_climate(&mut self) {
+        let season = self.season();
+        self.terrain.set_season(season);
+        self.terrain.productivity_into(&mut self.plants.fertility);
     }
 
     /// 1 年のうちの位置（0〜1）。0.25 で日射が最も多く、0.75 で最も少ない。季節がない設定なら 0
@@ -519,14 +540,28 @@ impl World {
         (std::f32::consts::TAU * self.season_phase()).sin()
     }
 
+    /// 寿命（tick）。大人の大きさの平方根に比例し、個体ごとに 0.75〜1.25 倍にばらつく。
+    /// 全員が同じ寿命だと、同じ時期に生まれた世代がそろって死に、個体数の波が強まる。
+    /// ばらつきは id から決める（乱数の流れを変えず、個体ごとの記録も増やさない）
+    pub fn lifespan(&self, i: usize) -> f32 {
+        let p = &self.params;
+        let base = if self.kind[i] == HERBIVORE { p.herb_max_age } else { p.carn_max_age };
+        // id をかき混ぜて 0〜1 にする（splitmix の混ぜ方）
+        let mut h = (self.id[i] as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        h ^= h >> 31;
+        h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h ^= h >> 29;
+        let u = (h >> 40) as f32 / (1u64 << 24) as f32;
+        base * self.traits[i].adult_sqrt * (0.75 + 0.5 * u)
+    }
+
     /// 体の調子（最高速度に掛かる倍率、frail_speed〜1）。飢えているほど、寿命に近いほど遅くなり、弱いほうの値を使う
     pub fn vigor(&self, i: usize) -> f32 {
         let p = &self.params;
         let low = p.frail_speed;
         let fed = self.energy[i] / self.repro_threshold(i);
         let hunger = if fed < p.frail_energy { low + (1.0 - low) * (fed / p.frail_energy).max(0.0) } else { 1.0 };
-        let max_age = if self.kind[i] == HERBIVORE { p.herb_max_age } else { p.carn_max_age } * self.traits[i].adult_sqrt;
-        let aged = self.age[i] as f32 / max_age;
+        let aged = self.age[i] as f32 / self.lifespan(i);
         let old = if aged > p.frail_age {
             1.0 - (1.0 - low) * ((aged - p.frail_age) / (1.0 - p.frail_age).max(1e-6)).min(1.0)
         } else {
@@ -545,6 +580,10 @@ impl World {
 
     /// 1 tick 進める
     pub fn step(&mut self) {
+        // 季節で今の気温と植物の育ちやすさが変わる。変化はゆっくりなので、更新は CLIMATE_EVERY tick ごと
+        if self.tick % CLIMATE_EVERY == 0 {
+            self.update_climate();
+        }
         let sunlight = self.params.sunlight * (1.0 + self.params.season_amplitude * self.season());
         self.ledger.sunlight_in += self.plants.grow(sunlight, self.params.plant_capacity);
 
@@ -702,7 +741,7 @@ impl World {
         let mut input = [0.0f32; N_IN];
         input[genome::IN_ENERGY] = self.energy[i] / self.repro_threshold(i);
         input[genome::IN_PLANT_HERE] = self.cover[i];
-        let fit_here = self.habitat_fit(i, self.terrain.fertility[self.terrain.cell_index(x, y)]);
+        let fit_here = self.habitat_fit(i, self.terrain.soil_at(x, y));
         input[genome::IN_HABITAT_FIT] = fit_here;
         input[genome::IN_TEMP_DIFF] = (self.terrain.temperature_at(x, y) - t.temp_pref) / 10.0;
         // 草食は、自分の食べられる植生の草を優先して探す
@@ -766,7 +805,7 @@ impl World {
         let ahead_x = wrap(x + hx * genome::WATER_LOOKAHEAD, self.width);
         let ahead_y = wrap(y + hy * genome::WATER_LOOKAHEAD, self.height);
         input[genome::IN_WATER_AHEAD] = self.terrain.is_water(ahead_x, ahead_y) as u8 as f32;
-        let ready = self.growth[i] >= 1.0 && self.energy[i] >= self.repro_threshold(i);
+        let ready = self.can_breed(i);
         input[genome::IN_READY] = ready as u8 as f32;
         if let Some((_, _, _, d2)) = senses.mate {
             input[genome::IN_MATE_NEAR] = 1.0 - 0.5 * (d2.sqrt() / t.vision).min(1.0);
@@ -945,7 +984,7 @@ impl World {
         let c = self.plants.cell_index(self.xs[i], self.ys[i]);
         // 一口の大きさ: 警戒しているほど小さく（周りを見ながらでは食べる量が減る）、
         // 生まれた場所と違う植生の草ほど小さい（うまく食べられない）
-        let fit = self.habitat_fit(i, self.plants.fertility[c]);
+        let fit = self.habitat_fit(i, self.plants.vegetation[c]);
         let bite = self.params.herb_bite
             * self.traits[i].size
             * (1.0 - self.params.vigilance_bite_cost * self.vigilance[i])
@@ -1130,10 +1169,10 @@ impl World {
         let p = &self.params;
         let t = self.traits[i];
         let herb = self.kind[i] == HERBIVORE;
-        let (metabolism, max_age, birth_cost) = if herb {
-            (p.herb_metabolism, p.herb_max_age, p.herb_birth_cost)
+        let (metabolism, birth_cost) = if herb {
+            (p.herb_metabolism, p.herb_birth_cost)
         } else {
-            (p.carn_metabolism, p.carn_max_age, p.carn_birth_cost)
+            (p.carn_metabolism, p.carn_birth_cost)
         };
 
         // 代謝は大きさの 0.75 乗と視野と最高速度に、移動は大きさと速度の 2 乗に比例する。
@@ -1154,6 +1193,7 @@ impl World {
         self.ledger.lost_metabolism += cost as f64;
         self.age[i] += 1;
         self.cooldown[i] = self.cooldown[i].saturating_sub(1);
+        self.rest[i] = self.rest[i].saturating_sub(1);
         self.grow(i, if herb { p.herb_maturity } else { p.carn_maturity });
         if self.id[i] == self.watch.id {
             self.watch.speed = speed;
@@ -1165,14 +1205,19 @@ impl World {
             self.die(i, death::STARVED);
             return;
         }
-        if self.age[i] as f32 > max_age * t.adult_sqrt {
+        if self.age[i] as f32 > self.lifespan(i) {
             self.ledger.lost_death += self.energy[i] as f64;
             self.energy[i] = 0.0;
             self.die(i, death::OLD_AGE);
             return;
         }
-        // 成熟するまで繁殖できない
-        if wants_child && self.growth[i] >= 1.0 && self.energy[i] >= self.repro_threshold(i) {
+        // 成熟するまで繁殖できない。繁殖したあとしばらくも繁殖できない
+        if wants_child && self.can_breed(i) {
+            // 交配を試みたら（成功しても失敗しても）、しばらく次の繁殖はできない
+            if !matches!(mate, Mate::Missing) {
+                let rest = if herb { self.params.herb_repro_rest } else { self.params.carn_repro_rest };
+                self.rest[i] = rest as u16;
+            }
             match mate {
                 Mate::Partner(j) => {
                     self.matings += 1;
@@ -1308,6 +1353,7 @@ impl World {
             self.traits.swap_remove(i);
             self.growth.swap_remove(i);
             self.cooldown.swap_remove(i);
+            self.rest.swap_remove(i);
             self.vigilance.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
@@ -1942,6 +1988,7 @@ mod tests {
             let mut p = small_params();
             p.herb_initial = 0.0;
             p.carn_initial = 0.0;
+            p.season_amplitude = 0.4;
             let mut w = World::new(1, p);
             w.tick = tick;
             w.step();
@@ -1993,6 +2040,54 @@ mod tests {
         assert!((still - w.params.max_turn).abs() < 1e-5, "止まっていれば体の上限まで曲がれる: {still}");
         assert_eq!(still, walk, "ゆっくりなら制限されない");
         assert!((run - w.params.turn_accel / 2.0).abs() < 1e-5, "全速では 横の加速度 ÷ 速さ: {run}");
+    }
+
+    #[test]
+    fn 繁殖したあとしばらくは繁殖できない() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 30.0, 0, &g);
+        w.spawn(103.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        assert!(w.can_breed(0));
+        w.live(0, 0.0, true, Mate::Partner(1));
+        assert_eq!(w.births.len(), 1);
+        w.energy[0] = 30.0;
+        assert!(!w.can_breed(0), "繁殖した直後は休む");
+        w.live(0, 0.0, true, Mate::Partner(1));
+        assert_eq!(w.births.len(), 1, "休んでいる間は繁殖しない");
+    }
+
+    #[test]
+    fn 寿命は個体ごとにばらつく() {
+        let w = World::new(1, small_params());
+        let spans: Vec<f32> = (0..w.count()).filter(|&i| w.kind[i] == HERBIVORE).map(|i| w.lifespan(i)).collect();
+        let (min, max) = spans.iter().fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+        let base = w.params.herb_max_age;
+        assert!(min >= base * 0.75 - 1.0 && max <= base * 1.25 + 1.0, "範囲 {min}〜{max}");
+        assert!(max - min > base * 0.4, "十分にばらつく: {min}〜{max}");
+    }
+
+    #[test]
+    fn 季節で寒い地域の植物の育ちやすさが変わる() {
+        let mut p = small_params();
+        p.water_fraction = 0.25;
+        p.fertility_min = 0.3;
+        p.world_width = 2400.0;
+        p.world_height = 1600.0;
+        p.herb_initial = 0.0;
+        p.carn_initial = 0.0;
+        let mut w = World::new(1, p);
+        let edge = |w: &World| (0..w.plants.cols).map(|c| w.plants.fertility[c]).sum::<f32>();
+        let len = w.params.season_length as u64;
+        w.tick = len / 4;
+        w.update_climate();
+        let summer = edge(&w);
+        w.tick = len * 3 / 4;
+        w.update_climate();
+        let winter = edge(&w);
+        assert!(summer > winter * 1.5, "夏 {summer} 冬 {winter}");
+        // 植生の種類（草食が覚えるもの）は季節で変わらない
+        assert_eq!(w.plants.vegetation, w.terrain.soil);
     }
 
     #[test]
