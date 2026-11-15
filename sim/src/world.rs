@@ -49,6 +49,10 @@ pub mod death {
     pub const INJURED: u8 = 4;
 }
 
+/// 目の維持費の換算の基準（視野角 300°・視野 30px）。この目の維持費が vision_cost × 30 になる
+const EYE_REF_RANGE: f32 = 30.0;
+const EYE_REF_AREA: f32 = 0.5 * (300.0 * std::f32::consts::PI / 180.0) * EYE_REF_RANGE * EYE_REF_RANGE;
+
 /// 気温と植物の育ちやすさを更新する間隔（tick）
 const CLIMATE_EVERY: u64 = 30;
 
@@ -201,6 +205,8 @@ struct Senses {
     alarm_hy: f32,
     /// 見えている仲間の繁殖シグナルの合計
     kin_signal: f32,
+    /// 見えている仲間のうち、自分の真後ろを視野に収めている個体の数
+    rear_watchers: u32,
 }
 
 struct Birth {
@@ -269,6 +275,10 @@ pub struct World {
     grid: Grid,
     /// 相手からの見えにくさ（足元の草から、繁殖シグナルで目立つ分を引いたもの）。グリッドに渡す作業用
     conceal: Vec<f32>,
+    /// 呼び声の場: 成熟した個体の繁殖シグナルを、種類ごとに粗いマス目（call_cell 四方）に足し合わせたもの
+    calls: [Vec<f32>; 2],
+    call_cols: usize,
+    call_rows: usize,
     rng: Rng,
     births: Vec<Birth>,
     births_genomes: Vec<f32>,
@@ -343,6 +353,9 @@ impl World {
             render: Vec::new(),
             grid,
             conceal: Vec::new(),
+            calls: [Vec::new(), Vec::new()],
+            call_cols: 0,
+            call_rows: 0,
             rng: Rng::new(seed),
             births: Vec::new(),
             births_genomes: Vec::new(),
@@ -353,13 +366,14 @@ impl World {
             params,
         };
         let p = world.params.clone();
-        for (kind, count, size, speed, vision, energy) in [
-            (HERBIVORE, p.herb_initial, p.herb_initial_size, p.herb_initial_speed, p.herb_initial_vision, p.herb_initial_energy),
-            (CARNIVORE, p.carn_initial, p.carn_initial_size, p.carn_initial_speed, p.carn_initial_vision, p.carn_initial_energy),
+        for (kind, count, size, speed, vision, fov, energy) in [
+            (HERBIVORE, p.herb_initial, p.herb_initial_size, p.herb_initial_speed, p.herb_initial_vision, p.herb_initial_fov, p.herb_initial_energy),
+            (CARNIVORE, p.carn_initial, p.carn_initial_size, p.carn_initial_speed, p.carn_initial_vision, p.carn_initial_fov, p.carn_initial_energy),
         ] {
             // 仲間の入力へのランダムな配線は、種類ごとに 1 回だけ引いて全員で共有する。
             // 個体ごとに引くと初期個体どうしの遺伝的距離が大きすぎて、最初から互いに繁殖できなくなる
             let mut g = genome::initial(kind == HERBIVORE, size, speed, vision, 0.0);
+            g[genome::G_FOV] = fov.to_radians();
             genome::add_kin_wiring(&mut g, &mut world.rng);
             for _ in 0..count as usize {
                 let (x, y) = world.random_position();
@@ -370,6 +384,10 @@ impl World {
                 world.spawn(x, y, kind, energy, 0, &g);
             }
         }
+        world.call_cols = ((width / world.params.call_cell).ceil() as usize).max(1);
+        world.call_rows = ((height / world.params.call_cell).ceil() as usize).max(1);
+        world.calls = [vec![0.0; world.call_cols * world.call_rows], vec![0.0; world.call_cols * world.call_rows]];
+        world.update_climate();
         world.ledger.initial = world.total_energy();
         world
     }
@@ -578,6 +596,48 @@ impl World {
         self.grid.build(&self.xs, &self.ys, &self.kind, &self.conceal);
     }
 
+    fn call_cell_of(&self, x: f32, y: f32) -> (usize, usize) {
+        let c = ((x / self.params.call_cell) as usize).min(self.call_cols - 1);
+        let r = ((y / self.params.call_cell) as usize).min(self.call_rows - 1);
+        (c, r)
+    }
+
+    /// 呼び声の場を作り直す。成熟した個体の、直前の tick の繁殖シグナルを足し合わせる
+    fn build_calls(&mut self) {
+        for field in &mut self.calls {
+            field.fill(0.0);
+        }
+        for i in 0..self.count() {
+            if self.growth[i] >= 1.0 && self.signal[i] > 0.0 {
+                let (c, r) = self.call_cell_of(self.xs[i], self.ys[i]);
+                self.calls[self.kind[i] as usize][r * self.call_cols + c] += self.signal[i];
+            }
+        }
+    }
+
+    /// 個体 i に聞こえる、同じ種類の呼び声。戻り値は (世界の向きでの方向 dx, dy（単位ベクトルでない）, 周りの大きさの合計)。
+    /// 周り 3 × 3 マスの呼び声を、マスの方向に重みを付けて足す。自分の声は除く
+    fn hear_calls(&self, i: usize) -> (f32, f32, f32) {
+        let field = &self.calls[self.kind[i] as usize];
+        let (c, r) = self.call_cell_of(self.xs[i], self.ys[i]);
+        let mine = if self.growth[i] >= 1.0 { self.signal[i] } else { 0.0 };
+        let (mut dx, mut dy, mut total) = (0.0f32, 0.0f32, 0.0f32);
+        for dr in -1i32..=1 {
+            for dc in -1i32..=1 {
+                let rr = (r as i32 + dr).rem_euclid(self.call_rows as i32) as usize;
+                let cc = (c as i32 + dc).rem_euclid(self.call_cols as i32) as usize;
+                let mut v = field[rr * self.call_cols + cc];
+                if dr == 0 && dc == 0 {
+                    v = (v - mine).max(0.0);
+                }
+                total += v;
+                dx += v * dc as f32;
+                dy += v * dr as f32;
+            }
+        }
+        (dx, dy, total)
+    }
+
     /// 1 tick 進める
     pub fn step(&mut self) {
         // 季節で今の気温と植物の育ちやすさが変わる。変化はゆっくりなので、更新は CLIMATE_EVERY tick ごと
@@ -592,6 +652,7 @@ impl World {
             self.cover[i] = self.plants.ratio_at(self.xs[i], self.ys[i], cap);
         }
         self.build_grid();
+        self.build_calls();
 
         // セル順に回す（近くの個体を続けて処理するとキャッシュに乗って速い）
         for k in 0..self.count() {
@@ -624,6 +685,7 @@ impl World {
         let (mut kin_dx, mut kin_dy, mut alarm_hx, mut alarm_hy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
         let (mut sep_dx, mut sep_dy) = (0.0f32, 0.0f32);
         let mut kin_signal = 0.0f32;
+        let mut rear_watchers = 0u32;
         // 近づきすぎない距離（体がぶつかる距離なので、草で隠れて見えなくても効く）
         let space = self.params.personal_space * self.traits[i].size;
         let space2 = space * space;
@@ -638,6 +700,13 @@ impl World {
         let hue_similar = self.params.hue_similar;
         let vision2 = vision * vision;
         let (my_size, prey_min, prey_max) = (self.traits[i].size, self.traits[i].prey_min, self.traits[i].prey_max);
+        // 視野角: 正面 (hx, hy) から見て、相手の方向との角度が視野角の半分以内なら見える。平方根を使わずに判定する
+        let (my_hx, my_hy, fov_cos) = (self.hx[i], self.hy[i], self.traits[i].fov_cos);
+        let in_view = |dx: f32, dy: f32, d2: f32| {
+            let dot = dx * my_hx + dy * my_hy;
+            let lim = d2 * fov_cos * fov_cos;
+            if fov_cos >= 0.0 { dot >= 0.0 && dot * dot >= lim } else { dot >= 0.0 || dot * dot <= lim }
+        };
         // 相手の種類と足元の草はグリッドがセル順に並べた写しから受け取る（離れたメモリを読まずに済む）。
         // 安い判定から順に行い、遠い相手はそこで打ち切る
         self.grid.for_each_within(x, y, vision, |j, xj, yj, kind_j, cover_j| {
@@ -657,7 +726,7 @@ impl World {
             if my_kind == HERBIVORE && kind_j != my_kind {
                 r *= threat_range / vision;
             }
-            if d2 < r * r && j != i && self.alive[j] {
+            if d2 < r * r && j != i && self.alive[j] && in_view(dx, dy, d2) {
                 let rel = if kind_j == my_kind {
                     2
                 } else if my_kind == HERBIVORE {
@@ -683,6 +752,9 @@ impl World {
                     let alert = s == state::FLEE || s == state::CHASE;
                     kin_alert += alert as u32;
                     kin_signal += self.signal[j];
+                    // 仲間 j が自分の真後ろの方向（−自分の向き）を見ているか。近くにいるので位置の差は無視し、向きだけで判定する
+                    let back = -(self.hx[j] * my_hx + self.hy[j] * my_hy);
+                    rear_watchers += (back >= self.traits[j].fov_cos) as u32;
                     kin_dx += dx;
                     kin_dy += dy;
                     if alert {
@@ -726,6 +798,7 @@ impl World {
             alarm_hx,
             alarm_hy,
             kin_signal,
+            rear_watchers,
         }
     }
 
@@ -786,8 +859,18 @@ impl World {
             input[genome::IN_KIN_ALERT] = senses.kin_alert as f32 / n;
             input[genome::IN_SIM_RATIO] = senses.similar_count as f32 / n;
             input[genome::IN_KIN_SIGNAL] = senses.kin_signal / n;
+            input[genome::IN_REAR_WATCH] = senses.rear_watchers as f32 / n;
         }
         input[genome::IN_SEASON] = self.season();
+        let (call_dx, call_dy, call_total) = self.hear_calls(i);
+        let call_dir = {
+            let (f, r) = to_local(call_dx, call_dy);
+            let len = (f * f + r * r).sqrt();
+            if len < 1e-6 { (0.0, 0.0) } else { (f / len, r / len) }
+        };
+        input[genome::IN_CALL_FWD] = call_dir.0;
+        input[genome::IN_CALL_RIGHT] = call_dir.1;
+        input[genome::IN_CALL_LEVEL] = softsign(call_total / 2.0);
         if let Some((_, dx, dy, d2)) = senses.similar {
             let d = d2.sqrt().max(1e-3);
             let (f, r) = to_local(dx / d, dy / d);
@@ -821,14 +904,18 @@ impl World {
             }
             None => (0.0, 0.0),
         };
-        let food = if self.kind[i] == HERBIVORE {
-            (input[genome::IN_GRAD_FWD], input[genome::IN_GRAD_RIGHT])
-        } else {
-            unit(senses.prey)
-        };
         let normalize = |(f, r): (f32, f32)| {
             let len = (f * f + r * r).sqrt();
             if len < 1e-6 { (0.0, 0.0) } else { (f / len, r / len) }
+        };
+        // 食べ物の方向: 草食は自分の食べられる草の多い方へ。肉食は獲物へ。
+        // 肉食は獲物が見えなくても、獲物を追っている仲間がいればその向きへ（群れの目）
+        let food = if self.kind[i] == HERBIVORE {
+            (input[genome::IN_GRAD_FWD], input[genome::IN_GRAD_RIGHT])
+        } else if senses.prey.is_some() {
+            unit(senses.prey)
+        } else {
+            normalize(to_local(senses.alarm_hx, senses.alarm_hy))
         };
         // 逃げる方向: 天敵が見えていればその反対。見えていなくても、逃げている仲間がいればその向き（警戒の合図）
         let flee = match senses.predator {
@@ -840,7 +927,9 @@ impl World {
         };
         // 仲間に寄る方向: 見えている仲間の中心へ
         let kin = normalize(to_local(senses.kin_dx, senses.kin_dy));
-        let drives = [food, unit(senses.mate), flee, kin, (0.0, 0.0)];
+        // 繁殖相手へ向かう方向: 見えていればその相手へ。見えなければ、呼び声の大きい方へ
+        let mate_dir = if senses.mate.is_some() { unit(senses.mate) } else { call_dir };
+        let drives = [food, mate_dir, flee, kin, (0.0, 0.0)];
         if self.kind[i] == HERBIVORE {
             self.vigilance[i] = genome::vigilance(&out);
         }
@@ -1187,7 +1276,9 @@ impl World {
         let basal = metabolism * t.size_pow075 * (p.rest_metabolism + (1.0 - p.rest_metabolism) * activity);
         // 繁殖シグナルを出す費用
         let signal = p.signal_cost * self.signal[i] * t.size_pow075;
-        let cost = (basal + upkeep + thermal + signal + p.vision_cost * t.vision + p.move_cost * t.size * speed * speed)
+        // 目の維持費は見える面積（視野角 / 2 × 視野²）に比例。視野角 300°・視野 30px で vision_cost × 30 になるよう換算する
+        let eye = p.vision_cost * EYE_REF_RANGE * (0.5 * t.fov * t.vision * t.vision) / EYE_REF_AREA;
+        let cost = (basal + upkeep + thermal + signal + eye + p.move_cost * t.size * speed * speed)
             .min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
@@ -1629,6 +1720,7 @@ mod tests {
         w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &g);
         let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
         w.spawn(130.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        face(&mut w, 0, 1.0, 0.0);
         w.params.cover_strength = 0.6;
 
         w.cover = vec![0.0, 0.0];
@@ -1685,6 +1777,13 @@ mod tests {
         w.energy[0] = 15.0;
         w.step();
         assert!(w.count() > 2, "相手がいるのに繁殖しなかった");
+    }
+
+    /// 個体 i を (dx, dy) の向きにする
+    fn face(w: &mut World, i: usize, dx: f32, dy: f32) {
+        let len = (dx * dx + dy * dy).sqrt();
+        w.hx[i] = dx / len;
+        w.hy[i] = dy / len;
     }
 
     fn empty_world() -> World {
@@ -1792,6 +1891,7 @@ mod tests {
         let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
         w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &g);
         w.spawn(103.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        face(&mut w, 0, 1.0, 0.0); // 相手が視野の中に入るように
         w.step();
         assert_eq!(w.count(), 3, "親が繁殖する");
         let child = (0..w.count()).find(|&i| w.generation[i] == 1).unwrap();
@@ -1820,6 +1920,7 @@ mod tests {
         }
         w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &a);
         w.spawn(103.0, 100.0, HERBIVORE, 5.0, 0, &b);
+        face(&mut w, 0, 1.0, 0.0);
         assert!(w.mating_chance(0, 1) < 1e-6, "相性はほぼ 0 のはず");
         w.step();
         assert_eq!(w.count(), 2, "遠い相手と繁殖した");
@@ -1836,6 +1937,7 @@ mod tests {
         // 相手は繁殖できる距離（12px）の外、視野（30px）の内側
         w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &g);
         w.spawn(125.0, 100.0, HERBIVORE, 2.0, 0, &g);
+        face(&mut w, 0, 1.0, 0.0);
         let (a, b) = (w.id[0], w.id[1]);
         let dist = |w: &World| {
             let (i, j) = (w.index_of(a).unwrap(), w.index_of(b).unwrap());
@@ -1877,16 +1979,21 @@ mod tests {
 
     #[test]
     fn 近づきすぎた個体どうしは離れる() {
-        let mut w = empty_world();
-        w.plants.biomass.fill(0.0);
-        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
-        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
-        w.spawn(101.5, 100.0, HERBIVORE, 5.0, 0, &g);
-        for _ in 0..40 {
-            w.step();
-        }
-        let d = (torus_delta(w.xs[1] - w.xs[0], w.width).powi(2) + torus_delta(w.ys[1] - w.ys[0], w.height).powi(2)).sqrt();
-        assert!(d > 3.0, "離れていない: {d}");
+        // 離れる力がある場合とない場合で、同じ条件から動かした後の距離を比べる（ほかの欲求の影響を打ち消す）
+        let distance = |weight: f32| {
+            let mut w = empty_world();
+            w.params.separation_weight = weight;
+            w.plants.biomass.fill(0.0);
+            let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+            w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+            w.spawn(101.5, 100.0, HERBIVORE, 5.0, 0, &g);
+            for _ in 0..20 {
+                w.step();
+            }
+            (torus_delta(w.xs[1] - w.xs[0], w.width).powi(2) + torus_delta(w.ys[1] - w.ys[0], w.height).powi(2)).sqrt()
+        };
+        let (with, without) = (distance(1.5), distance(0.0));
+        assert!(with > without + 1.0, "離れる力あり {with} / なし {without}");
     }
 
     #[test]
@@ -1946,6 +2053,7 @@ mod tests {
         // 近くに小さすぎる獲物（比 0.27）、少し遠くに好みの大きさの獲物（比 0.53）
         w.spawn(105.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.4, 1.0, 30.0, 0.0));
         w.spawn(120.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.8, 1.0, 30.0, 0.0));
+        face(&mut w, 0, 1.0, 0.0);
         w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
         let prey = w.sense(0).prey.map(|(j, ..)| j);
         assert_eq!(prey, Some(2), "小さすぎる獲物は無視して、好みの大きさの獲物を狙う");
@@ -2006,6 +2114,7 @@ mod tests {
         w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &g);
         let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
         w.spawn(130.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        face(&mut w, 0, 1.0, 0.0);
         w.params.cover_strength = 0.6;
         w.params.signal_exposure = 1.0;
         w.cover = vec![0.0, 1.0];
@@ -2024,6 +2133,7 @@ mod tests {
         w.spawn(115.0, 100.0, HERBIVORE, 5.0, 0, &g);
         w.spawn(100.0, 115.0, HERBIVORE, 5.0, 0, &g);
         w.signal = vec![0.0, 0.8, 0.4];
+        face(&mut w, 0, 1.0, 1.0);
         w.build_grid();
         let s = w.sense(0);
         assert_eq!(s.kin_count, 2);
@@ -2088,6 +2198,85 @@ mod tests {
         assert!(summer > winter * 1.5, "夏 {summer} 冬 {winter}");
         // 植生の種類（草食が覚えるもの）は季節で変わらない
         assert_eq!(w.plants.vegetation, w.terrain.soil);
+    }
+
+    #[test]
+    fn 視野角の外にいる相手は見えない() {
+        let mut w = empty_world();
+        let carn = genome::initial(false, 1.0, 1.0, 40.0, 0.0); // 視野角 120°
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
+        w.spawn(120.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 1.0, 1.0, 30.0, 0.0));
+        w.cover = vec![0.0; 2];
+        w.build_grid();
+        face(&mut w, 0, 1.0, 0.0);
+        assert!(w.sense(0).prey.is_some(), "正面の獲物は見える");
+        face(&mut w, 0, 0.0, 1.0);
+        assert!(w.sense(0).prey.is_none(), "真横（90°）は視野角 120° の外");
+        face(&mut w, 0, 1.0, 1.0);
+        assert!(w.sense(0).prey.is_some(), "斜め前（45°）は見える");
+        // 草食の視野角 300° なら、真後ろ以外は見える
+        let mut w = empty_world();
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 1.0, 1.0, 30.0, 0.0));
+        w.spawn(120.0, 100.0, CARNIVORE, 5.0, 0, &carn);
+        w.vigilance[0] = 1.0;
+        w.cover = vec![0.0; 2];
+        w.build_grid();
+        face(&mut w, 0, 0.0, 1.0);
+        assert!(w.sense(0).predator.is_some(), "真横の天敵は見える");
+        face(&mut w, 0, -1.0, 0.0);
+        assert!(w.sense(0).predator.is_none(), "真後ろの天敵は見えない");
+    }
+
+    #[test]
+    fn 視野は広く遠いほど目の維持費がかかる() {
+        let cost = |fov_deg: f32, vision: f32| {
+            let mut w = empty_world();
+            w.params.move_cost = 0.0;
+            let mut g = genome::initial(true, 1.0, 1.0, vision, 0.0);
+            g[genome::G_FOV] = fov_deg.to_radians();
+            w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+            w.live(0, 0.0, false, Mate::Missing);
+            5.0 - w.energy[0]
+        };
+        assert!(cost(300.0, 30.0) > cost(120.0, 30.0), "広いほど高い");
+        assert!(cost(120.0, 48.0) > cost(120.0, 30.0), "遠いほど高い");
+    }
+
+    #[test]
+    fn 視野の外の呼び声が聞こえる() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        let cell = w.params.call_cell;
+        w.spawn(cell * 1.5, cell * 1.5, HERBIVORE, 5.0, 0, &g);
+        // 右隣のマスで、視野（30px）より遠い個体が呼んでいる
+        w.spawn(cell * 2.5, cell * 1.5, HERBIVORE, 5.0, 0, &g);
+        w.signal = vec![0.0, 1.0];
+        w.build_calls();
+        let (dx, dy, total) = w.hear_calls(0);
+        assert!(dx > 0.0 && dy.abs() < 1e-6 && total > 0.9, "右から聞こえる: {dx} {dy} {total}");
+        // 自分の声は聞こえない
+        let (_, _, own) = w.hear_calls(1);
+        assert!(own < 1e-6, "自分の声 {own}");
+    }
+
+    #[test]
+    fn 背後を見ている仲間を数える() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0); // 視野角 300°
+        let mut narrow = g.clone();
+        narrow[genome::G_FOV] = 90f32.to_radians();
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        w.spawn(110.0, 100.0, HERBIVORE, 5.0, 0, &narrow);
+        w.spawn(100.0, 110.0, HERBIVORE, 5.0, 0, &narrow);
+        w.cover = vec![0.0; 3];
+        face(&mut w, 0, 1.0, 1.0);
+        // 仲間 1 は自分と反対（後ろ）を向き、仲間 2 は同じ向き
+        face(&mut w, 1, -1.0, -1.0);
+        face(&mut w, 2, 1.0, 1.0);
+        w.build_grid();
+        let s = w.sense(0);
+        assert_eq!(s.kin_count, 2);
+        assert_eq!(s.rear_watchers, 1, "後ろを向いた仲間だけが背後を見ている");
     }
 
     #[test]

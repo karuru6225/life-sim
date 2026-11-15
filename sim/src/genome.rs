@@ -20,7 +20,9 @@ pub const G_PREY_MAX: usize = 6;
 /// 好みの気温（度）。今いる場所の気温との差に応じて、体温を保つ代謝が増える。
 /// 0 や負にもなるので、他の形質のような「何倍」ではなく「± 何度」で変異させる
 pub const G_TEMP_PREF: usize = 7;
-pub const N_TRAITS: usize = 8;
+/// 視野角（ラジアン）。正面を中心にこの角度の扇形の中だけが見える。2π なら全方位
+pub const G_FOV: usize = 8;
+pub const N_TRAITS: usize = 9;
 
 /// 形質が取りうる範囲（変異でこの外に出たら切り詰める）
 pub const SIZE_RANGE: (f32, f32) = (0.4, 3.0);
@@ -30,6 +32,7 @@ pub const INVEST_RANGE: (f32, f32) = (0.1, 0.9);
 pub const PREY_MIN_RANGE: (f32, f32) = (0.05, 2.0);
 pub const PREY_MAX_RANGE: (f32, f32) = (0.2, 4.0);
 pub const TEMP_PREF_RANGE: (f32, f32) = (-30.0, 50.0);
+pub const FOV_RANGE: (f32, f32) = (0.5, std::f32::consts::TAU);
 /// 視野の上限。近傍探索のグリッドのセルはこれ以上の大きさにする
 pub const VISION_MAX: f32 = 64.0;
 
@@ -82,7 +85,15 @@ pub const IN_TEMP_DIFF: usize = 26;
 pub const IN_SEASON: usize = 27;
 /// 見えている仲間が出している繁殖シグナルの平均（0〜1）
 pub const IN_KIN_SIGNAL: usize = 28;
-pub const N_IN: usize = 29;
+/// 同じ種類の繁殖シグナル（呼び声）が大きく聞こえる方向（自分基準の前方・右方成分）。視野の外まで届く
+pub const IN_CALL_FWD: usize = 29;
+pub const IN_CALL_RIGHT: usize = 30;
+/// 周りの呼び声の大きさ（0〜1）
+pub const IN_CALL_LEVEL: usize = 31;
+/// 死角の見張り度: 見えている仲間のうち、自分の真後ろを視野に収めている個体の割合（0〜1）。
+/// 仲間が背後を見てくれていれば、自分は警戒を緩めて食べることに集中できる（多くの目の効果）
+pub const IN_REAR_WATCH: usize = 32;
+pub const N_IN: usize = 33;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -213,6 +224,9 @@ pub struct Traits {
     pub thermal_scale: f32,
     /// 0〜1（色相）
     pub hue: f32,
+    /// 視野角（ラジアン）と、その半分の cos（見えるかの判定用）
+    pub fov: f32,
+    pub fov_cos: f32,
 }
 
 impl Traits {
@@ -245,7 +259,11 @@ pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
         temp_pref: genome[G_TEMP_PREF].clamp(TEMP_PREF_RANGE.0, TEMP_PREF_RANGE.1),
         thermal_scale: 0.0,
         hue: genome[G_HUE].rem_euclid(1.0),
+        fov: 0.0,
+        fov_cos: 0.0,
     };
+    t.fov = genome[G_FOV].clamp(FOV_RANGE.0, FOV_RANGE.1);
+    t.fov_cos = (t.fov * 0.5).cos();
     t.grow_to(1.0, max_turn);
     t
 }
@@ -282,6 +300,8 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     g[G_PREY_MAX] = 1.3;
     // 好みの気温は、初期個体を置くときにその場所の気温で上書きする
     g[G_TEMP_PREF] = 15.0;
+    // 視野角: 草食は目が横に付いて広く（死角は真後ろだけ）、肉食は目が前に付いて狭い
+    g[G_FOV] = if herbivore { 300f32.to_radians() } else { 120f32.to_radians() };
 
     // 自由な移動は、ゆるく前へ
     out_bias(&mut g, OUT_DIR_FWD, 0.3);
@@ -359,6 +379,7 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         IN_SIM_FWD,
         IN_SIM_RIGHT,
         IN_SIM_RATIO,
+        IN_REAR_WATCH,
     ];
     for h in [6, 7] {
         for &k in &kin_inputs {
