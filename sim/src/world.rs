@@ -61,6 +61,11 @@ const CLIMATE_EVERY: u64 = 30;
 /// 近傍探索のグリッドのセルの大きさ。細かいほど、視野の小さい個体が調べる範囲を絞れる
 const GRID_CELL: f32 = 16.0;
 
+/// 系統の統計（World::lineage_stats）の要素数と並び:
+/// 0 個体数, 1 幼体の割合, 2 大人の大きさ, 3 最高速度, 4 視野, 5 視野角（度）, 6 好みの気温, 7 子への投資,
+/// 8 繁殖シグナル, 9 世代, 10・11 重心の x・y, 12 重心からの距離の平均, 13 エネルギー ÷ 繁殖に必要な量, 14 寒い半分にいる割合
+pub const LINEAGE_STATS: usize = 15;
+
 /// 描画用バッファの 1 個体あたりの要素数: [x, y, 種類, 大きさ, 標識色, 向き]
 pub const RENDER_STRIDE: usize = 6;
 
@@ -1589,6 +1594,62 @@ impl World {
         (0..self.count()).filter(|&i| self.kind[i] == kind).map(|i| self.traits[i].size as f64).sum()
     }
 
+    /// 系統（種類 kind のうち、標識色が hue_from から幅 hue_width の範囲にある個体）の統計。
+    /// 色相は 1 周でつながるので、範囲は 1 をまたいでもよい。幅 1 以上なら種類全体。並びは LINEAGE_STATS のとおり
+    pub fn lineage_stats(&self, kind: u8, hue_from: f32, hue_width: f32) -> [f64; LINEAGE_STATS] {
+        let mut out = [0.0f64; LINEAGE_STATS];
+        let all = hue_width >= 1.0;
+        let (tw, th) = (std::f64::consts::TAU / self.width as f64, std::f64::consts::TAU / self.height as f64);
+        // 位置の平均はトーラスなので、座標を角度にして cos と sin の平均から求める
+        let (mut cx, mut sx, mut cy, mut sy) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let members: Vec<usize> = (0..self.count())
+            .filter(|&i| self.kind[i] == kind && (all || (self.traits[i].hue - hue_from).rem_euclid(1.0) < hue_width))
+            .collect();
+        let n = members.len() as f64;
+        out[0] = n;
+        if members.is_empty() {
+            return out;
+        }
+        for &i in &members {
+            let t = &self.traits[i];
+            out[1] += (self.growth[i] < 1.0) as u8 as f64;
+            out[2] += t.adult_size as f64;
+            out[3] += t.max_speed as f64;
+            out[4] += t.vision as f64;
+            out[5] += t.fov.to_degrees() as f64;
+            out[6] += t.temp_pref as f64;
+            out[7] += t.invest as f64;
+            out[8] += self.signal[i] as f64;
+            out[9] += self.generation[i] as f64;
+            out[13] += (self.energy[i] / self.repro_threshold(i)) as f64;
+            // 寒い半分（緯度が負の側。上下の端に近い）
+            out[14] += ((std::f32::consts::TAU * self.ys[i] / self.height).cos() > 0.0) as u8 as f64;
+            let (ax, ay) = (self.xs[i] as f64 * tw, self.ys[i] as f64 * th);
+            cx += ax.cos();
+            sx += ax.sin();
+            cy += ay.cos();
+            sy += ay.sin();
+        }
+        for k in [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14] {
+            out[k] /= n;
+        }
+        let mx = sx.atan2(cx).rem_euclid(std::f64::consts::TAU) / tw;
+        let my = sy.atan2(cy).rem_euclid(std::f64::consts::TAU) / th;
+        out[10] = mx;
+        out[11] = my;
+        // 広がり: 重心からの距離の平均
+        out[12] = members
+            .iter()
+            .map(|&i| {
+                let dx = torus_delta(self.xs[i] - mx as f32, self.width) as f64;
+                let dy = torus_delta(self.ys[i] - my as f32, self.height) as f64;
+                (dx * dx + dy * dy).sqrt()
+            })
+            .sum::<f64>()
+            / n;
+        out
+    }
+
     /// 種類ごとの形質の平均。[個体数, 大きさ, 最高速度, 視野, 子への投資, 世代]
     pub fn trait_means(&self, kind: u8) -> [f64; 6] {
         let mut sum = [0.0f64; 6];
@@ -2410,6 +2471,22 @@ mod tests {
         assert!(w.carrion[c] < 6.0 && w.carrion[c] > 3.0, "半減期くらいで半分ほどに: {}", w.carrion[c]);
         let err = (w.ledger.expected_total() - w.total_energy()).abs();
         assert!(err < 1e-3, "帳尻の誤差 {err}");
+    }
+
+    #[test]
+    fn 系統の統計は標識色の範囲の個体だけを数える() {
+        let mut w = empty_world();
+        let mut g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        for (x, hue) in [(100.0, 0.02), (200.0, 0.98), (300.0, 0.5)] {
+            g[genome::G_HUE] = hue;
+            w.spawn(x, 100.0, HERBIVORE, 5.0, 0, &g);
+        }
+        // 0.95〜0.05（1 をまたぐ範囲）
+        let s = w.lineage_stats(HERBIVORE, 0.95, 0.1);
+        assert_eq!(s[0], 2.0);
+        assert!((s[10] - 150.0).abs() < 1.0, "重心の x {}", s[10]);
+        assert_eq!(w.lineage_stats(HERBIVORE, 0.0, 1.0)[0], 3.0, "幅 1 なら全体");
+        assert_eq!(w.lineage_stats(CARNIVORE, 0.0, 1.0)[0], 0.0);
     }
 
     #[test]

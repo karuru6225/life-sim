@@ -14,7 +14,7 @@ pub mod world;
 
 use params::Params;
 use std::cell::RefCell;
-use world::{CARNIVORE, HERBIVORE, RENDER_STRIDE, World};
+use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
 const INSPECT_LEN: usize = 44;
@@ -30,6 +30,8 @@ thread_local! {
     /// 選択中の個体の情報。id が f32 の精度を超えうるので f64 で持つ
     static INSPECT: RefCell<[f64; INSPECT_LEN]> = const { RefCell::new([0.0; INSPECT_LEN]) };
     static SUMMARY: RefCell<[f64; SUMMARY_LEN]> = const { RefCell::new([0.0; SUMMARY_LEN]) };
+    /// 系統の統計（選んだ系統と種類全体の 2 組）
+    static LINEAGE: RefCell<[f64; LINEAGE_STATS * 2]> = const { RefCell::new([0.0; LINEAGE_STATS * 2]) };
     /// 地形を JS に渡すための作業領域
     static TERRAIN: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
 }
@@ -261,6 +263,25 @@ pub extern "C" fn summary() -> *const f64 {
         });
         out.as_ptr()
     })
+}
+
+/// 系統の統計を書き込み、その先頭アドレスを返す（f64 × lineage_len()）。
+/// 前半が選んだ系統（種類 kind のうち、標識色が hue_from から幅 hue_width の個体）、後半が種類全体。並びは world::LINEAGE_STATS
+#[unsafe(no_mangle)]
+pub extern "C" fn lineage_stats(kind: u32, hue_from: f32, hue_width: f32) -> *const f64 {
+    LINEAGE.with(|buf| {
+        let mut out = buf.borrow_mut();
+        with_world(|w| {
+            out[..LINEAGE_STATS].copy_from_slice(&w.lineage_stats(kind as u8, hue_from, hue_width));
+            out[LINEAGE_STATS..].copy_from_slice(&w.lineage_stats(kind as u8, 0.0, 1.0));
+        });
+        out.as_ptr()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lineage_len() -> u32 {
+    (LINEAGE_STATS * 2) as u32
 }
 
 #[unsafe(no_mangle)]
