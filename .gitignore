@@ -3,3 +3,6 @@ dist/
 sim/target/
 web/src/wasm/*.wasm
 sim/target-*/
+# 保存した世界（大きいので入れない）
+*.lifesim
+*.lifesim.gz
