@@ -19,6 +19,8 @@
 ## 文書
 
 - [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md): 生態系の仕様（どんな決まりで動いているか）
+- [docs/HANDOVER.md](docs/HANDOVER.md): 引き継ぎ資料（現状、未解決の問題、次の作業、方針）
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): 開発ガイド（コードの構成、変更と検証の手順、落とし穴）
 - [docs/PLAN.md](docs/PLAN.md): 設計と開発の記録、検証結果、今後の計画
 
 ## 技術

@@ -84,18 +84,7 @@ UI からの介入は `{tick, command}` として Worker に送り、tick の境
 
 ## ディレクトリ構成
 
-```
-sim/              # Rust クレート（WASM にビルド）
-  src/lib.rs      # export 関数（JS との境界）
-  src/world.rs    # 世界と個体データ
-  src/rng.rs      # シード付き乱数
-web/              # フロントエンド
-  src/main.ts     # エントリ、描画ループ
-  src/worker.ts   # WASM を読み込んで sim を回す
-  src/render/     # PixiJS 描画
-  src/ui/         # パネル類
-docs/PLAN.md      # この計画書
-```
+最新の構成は [DEVELOPMENT.md](DEVELOPMENT.md) の「構成」を参照。
 
 ## フェーズ
 
