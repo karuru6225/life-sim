@@ -2,3 +2,4 @@ node_modules/
 dist/
 sim/target/
 web/src/wasm/*.wasm
+sim/target-*/
