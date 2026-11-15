@@ -109,8 +109,12 @@ export const LINEAGE = {
   brain1: 15,
   brain2: 16,
   litter: 17,
+  /** 直近 LINEAGE_DEATH_WINDOW tick の死因ごとの死亡数の先頭（死因 1〜6 が 18〜23。死因の番号は DEATH） */
+  deaths: 18,
 } as const;
-export const LINEAGE_LEN = 18;
+export const LINEAGE_LEN = 24;
+/** 系統ごとの死因を数える期間（sim/src/world.rs の DEATH_WINDOW） */
+export const LINEAGE_DEATH_WINDOW = 1200;
 
 /** 種類ごとの集計（形質は平均） */
 export interface TraitMeans {

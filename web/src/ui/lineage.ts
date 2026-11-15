@@ -6,7 +6,7 @@
 // 統計パネル: 選んだ系統の個体数の推移と、形質などの平均を種類全体の平均と並べて表示する。
 
 import { COLORS, HISTORY_LENGTH } from '../config';
-import { CARNIVORE, HERBIVORE, LINEAGE, LINEAGE_LEN, type LineageSelection } from '../protocol';
+import { CARNIVORE, DEATH, HERBIVORE, LINEAGE, LINEAGE_DEATH_WINDOW, LINEAGE_LEN, type LineageSelection } from '../protocol';
 import { HUE_PALETTE, hueIndex } from '../render/palette';
 
 export const BINS = 36;
@@ -116,6 +116,16 @@ const ROWS: [string, number, number, string][] = [
   ['重心からの距離の平均', LINEAGE.spread, 0, 'px'],
 ];
 
+/** 死因の短い名前（DEATH の番号順） */
+const DEATH_SHORT: [number, string][] = [
+  [DEATH.STARVED, '餓死'],
+  [DEATH.OLD_AGE, '寿命'],
+  [DEATH.EATEN, '食べられた'],
+  [DEATH.INJURED, 'けが'],
+  [DEATH.SICK, '病気'],
+  [DEATH.FOUGHT, '争い'],
+];
+
 export class LineagePanel {
   private readonly el: Record<string, HTMLElement> = {};
   private readonly cells: HTMLElement[][] = [];
@@ -139,6 +149,11 @@ export class LineagePanel {
       <table class="trait-table lin-table">
         <thead><tr><th></th><th>系統</th><th>種類全体</th></tr></thead>
         <tbody data-k="rows"></tbody>
+      </table>
+      <table class="trait-table lin-table">
+        <caption>直近 ${LINEAGE_DEATH_WINDOW.toLocaleString('ja-JP')} tick の死因（多い順）</caption>
+        <thead><tr><th></th><th>系統</th><th>種類全体</th></tr></thead>
+        <tbody data-k="deaths"></tbody>
       </table>
       <p class="legend-note">地図では系統の外の個体を薄く描き、重心に十字、重心からの距離の平均を半径とする円を描く</p>
     `;
@@ -185,7 +200,44 @@ export class LineagePanel {
       mine.textContent = n === 0 ? '絶滅' : `${stats[at].toFixed(digits)}${unit}`;
       all.textContent = stats[LINEAGE_LEN + LINEAGE.count] === 0 ? '絶滅' : `${stats[LINEAGE_LEN + at].toFixed(digits)}${unit}`;
     });
+    this.showDeaths(stats);
     this.drawChart();
+  }
+
+  /** 死因を多い順に、系統の内訳と種類全体の内訳を並べて表示する */
+  private showDeaths(stats: number[]): void {
+    const rows = DEATH_SHORT.map(([cause, label]) => ({
+      label,
+      mine: stats[LINEAGE.deaths + cause - 1],
+      all: stats[LINEAGE_LEN + LINEAGE.deaths + cause - 1],
+    }));
+    const sum = (k: 'mine' | 'all') => rows.reduce((a, r) => a + r[k], 0);
+    const [mineTotal, allTotal] = [sum('mine'), sum('all')];
+    const pct = (n: number, total: number) => (total > 0 ? `${Math.round((n / total) * 100)}%` : '–');
+    const tbody = this.el.deaths;
+    tbody.textContent = '';
+    if (mineTotal === 0) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<th colspan="3">死亡なし</th>';
+      tbody.append(tr);
+      return;
+    }
+    rows
+      .filter((r) => r.mine > 0)
+      .sort((a, b) => b.mine - a.mine)
+      .forEach((r, k) => {
+        const tr = document.createElement('tr');
+        const th = document.createElement('th');
+        // 最も多い死因は見出しの文字を本文色にして目立たせる
+        th.textContent = k === 0 ? `${r.label}（最多）` : r.label;
+        if (k === 0) th.classList.add('lin-top');
+        const mine = document.createElement('td');
+        mine.textContent = `${r.mine.toLocaleString('ja-JP')} 体 ${pct(r.mine, mineTotal)}`;
+        const all = document.createElement('td');
+        all.textContent = pct(r.all, allTotal);
+        tr.append(th, mine, all);
+        tbody.append(tr);
+      });
   }
 
   private drawChart(): void {

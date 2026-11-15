@@ -683,3 +683,8 @@ button:disabled {
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+
+/* 系統の死因で最も多いもの（補助の文字色より目立たせる。本文色はパネル上で 4.5:1 以上） */
+.trait-table th.lin-top {
+  color: var(--text);
+}
