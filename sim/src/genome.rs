@@ -78,7 +78,11 @@ pub const IN_PRED_SIZE: usize = 24;
 pub const IN_HABITAT_FIT: usize = 25;
 /// 今いる場所の気温 − 好みの気温（10 度を 1 とする）
 pub const IN_TEMP_DIFF: usize = 26;
-pub const N_IN: usize = 27;
+/// 季節（−1〜1。日射が最も多い時期に 1、最も少ない時期に −1。季節がない設定なら 0）
+pub const IN_SEASON: usize = 27;
+/// 見えている仲間が出している繁殖シグナルの平均（0〜1）
+pub const IN_KIN_SIGNAL: usize = 28;
+pub const N_IN: usize = 29;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -111,7 +115,9 @@ pub const OUT_REPRODUCE: usize = 8;
 pub const OUT_EAT: usize = 9;
 /// 警戒の度合い（草食のみ使う）。高いほど天敵に遠くから気づけるが、一口が小さくなる
 pub const OUT_VIGILANCE: usize = 10;
-pub const N_OUT: usize = 11;
+/// 繁殖シグナルの強さ（0〜1 に変換して使う）。周りの仲間に見え、出すほどエネルギーを使い、草に隠れにくくなる
+pub const OUT_SIGNAL: usize = 11;
+pub const N_OUT: usize = 12;
 
 /// 欲求の数（食べる・繁殖・逃げる・仲間・自由）。最後の「自由」の方向は脳の出力から取る
 pub const N_DRIVES: usize = 5;
@@ -124,6 +130,11 @@ pub fn priorities(out: &[f32; N_OUT]) -> [f32; N_DRIVES] {
 /// 出力から警戒の度合い（0〜1）を取り出す
 pub fn vigilance(out: &[f32; N_OUT]) -> f32 {
     0.5 + 0.5 * softsign(out[OUT_VIGILANCE])
+}
+
+/// 出力から繁殖シグナルの強さ（0〜1）を取り出す
+pub fn signal(out: &[f32; N_OUT]) -> f32 {
+    0.5 + 0.5 * softsign(out[OUT_SIGNAL])
 }
 
 /// 欲求ごとの方向 drives（自分基準の単位ベクトル。対象がいなければ (0, 0)）を、優先度で混ぜた方向。
@@ -277,6 +288,7 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
 
     // 優先度の基本: 普段は食べる、繁殖できる状態なら繁殖、天敵が見えたら逃げるを最優先。
     // 仲間に寄る欲求は弱くしておき、強めるかどうかは進化に任せる
+    // 中間ニューロン 5 は繁殖期の気分（下）、6, 7 は群れの知覚への配線（add_kin_wiring）
     let (h_threat, h_ready, h_plant, h_full, h_alarm) = (0, 1, 2, 3, 4);
     out_bias(&mut g, OUT_PRI_KIN, -4.0);
     // 満腹（蓄えが繁殖に必要な量の 1.5 倍を超えるあたりから）なら、食べるのを控える
@@ -315,6 +327,15 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
         out_bias(&mut g, OUT_THROTTLE, -0.5);
         wire_out(&mut g, OUT_THROTTLE, h_prey, 6.0);
     }
+    // 繁殖期: 日射の多い季節と、周りの仲間が繁殖シグナルを出しているときは、繁殖の欲求が強まる
+    let h_mood = 5;
+    wire_hidden(&mut g, h_mood, IN_SEASON, 2.0);
+    wire_hidden(&mut g, h_mood, IN_KIN_SIGNAL, 3.0);
+    wire_out(&mut g, OUT_PRI_MATE, h_mood, 3.0);
+    // 繁殖シグナルは、繁殖できる状態で、繁殖期の気分が高まっているときに出す
+    out_bias(&mut g, OUT_SIGNAL, -3.0);
+    wire_out(&mut g, OUT_SIGNAL, h_ready, 3.0);
+    wire_out(&mut g, OUT_SIGNAL, h_mood, 2.0);
     // 繁殖できるときは繁殖し、食べられるときは食べる
     out_bias(&mut g, OUT_REPRODUCE, 2.0);
     out_bias(&mut g, OUT_EAT, 2.0);
@@ -517,6 +538,39 @@ mod tests {
             assert!(r > f, "繁殖できる状態では相手（右）を優先するはず: 前 {f} 右 {r}");
             assert!(r > r_not_ready, "繁殖できない状態より相手へ向かうはず");
         }
+    }
+
+    #[test]
+    fn 初期の脳は繁殖期と周りのシグナルで繁殖の欲求が強まる() {
+        for herb in [true, false] {
+            let g = initial(herb, 1.0, 1.3, 30.0, 0.3);
+            let mut i = input();
+            i[IN_ENERGY] = 1.2;
+            i[IN_READY] = 1.0;
+            let mate = |i: &[f32; N_IN]| priorities(&think(&g, i))[1];
+            i[IN_SEASON] = -1.0;
+            let off = mate(&i);
+            i[IN_SEASON] = 1.0;
+            let on = mate(&i);
+            i[IN_KIN_SIGNAL] = 0.8;
+            let crowd = mate(&i);
+            assert!(on > off + 0.1, "繁殖期のほうが強い: 期外 {off} 繁殖期 {on}");
+            assert!(crowd > on, "周りがシグナルを出しているともっと強い: {on} → {crowd}");
+        }
+    }
+
+    #[test]
+    fn 初期の脳は繁殖できる状態の繁殖期にシグナルを出す() {
+        let g = initial(true, 1.0, 1.3, 30.0, 0.3);
+        let mut i = input();
+        i[IN_ENERGY] = 0.5;
+        i[IN_SEASON] = -1.0;
+        let quiet = signal(&think(&g, &i));
+        i[IN_ENERGY] = 1.2;
+        i[IN_READY] = 1.0;
+        i[IN_SEASON] = 1.0;
+        let loud = signal(&think(&g, &i));
+        assert!(quiet < 0.15 && loud > 0.5, "期外 {quiet} 繁殖期 {loud}");
     }
 
     #[test]

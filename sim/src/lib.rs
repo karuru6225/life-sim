@@ -17,9 +17,9 @@ use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 40;
+const INSPECT_LEN: usize = 42;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
-const SUMMARY_LEN: usize = 25;
+const SUMMARY_LEN: usize = 29;
 
 thread_local! {
     static WORLD: RefCell<Option<World>> = const { RefCell::new(None) };
@@ -149,7 +149,7 @@ pub extern "C" fn deselect() {
 /// 16: 視野の半径    17: 大きさ        18: 最高速度       19: 子への投資    20: 標識色（0〜1）
 /// 21: 直前に曲がった角度（ラジアン、正で右）  22: 直前の速さ（最高速度に対する割合）
 /// 23: 繁殖の出力（正なら繁殖したい）          24: 食べるの出力（正なら食べたい）
-/// 25: 隠れ具合（足元の草で、相手の視野が何割縮むか）
+/// 25: 隠れ具合（足元の草で、相手の視野が何割縮むか。繁殖シグナルで目立つ分を引く）
 /// 26: 蓄えられるエネルギーの上限
 /// 27: 繁殖相手が近くにいるか（1 = いる。無性生殖の設定なら常に 1）
 /// 29: 繁殖相手との相性（繁殖が成功する確率。相手がいなければ負）
@@ -157,6 +157,7 @@ pub extern "C" fn deselect() {
 /// 35: 警戒の度合い（0〜1、草食のみ）
 /// 36: 生まれた場所の植生（肥沃度）  37: 今いる場所の草の食べやすさ（0〜1、植生の違いによる）
 /// 38: 今いる場所の平均気温  39: 好みの気温
+/// 40: 繁殖シグナルの強さ（0〜1）  41: 体の調子（飢えと老いで最高速度に掛かる倍率）
 /// 28: 成長度（1 で成熟）。17 の大きさは遺伝子が決める大人の大きさで、いまの大きさは 17 × 28
 /// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
 #[unsafe(no_mangle)]
@@ -205,7 +206,7 @@ pub extern "C" fn inspect() -> *const f64 {
             out[22] = watch.throttle as f64;
             out[23] = watch.output[genome::OUT_REPRODUCE] as f64;
             out[24] = watch.output[genome::OUT_EAT] as f64;
-            out[25] = (p.cover_strength * w.cover[i]) as f64;
+            out[25] = (p.cover_strength * w.cover[i] * (1.0 - p.signal_exposure * w.signal[i])) as f64;
             out[26] = w.energy_cap(i) as f64;
             out[27] = if watch.mate_nearby { 1.0 } else { 0.0 };
             out[28] = w.growth[i] as f64;
@@ -218,6 +219,8 @@ pub extern "C" fn inspect() -> *const f64 {
             out[37] = w.habitat_fit(i, w.terrain.fertility[w.terrain.cell_index(w.xs[i], w.ys[i])]) as f64;
             out[38] = w.terrain.temperature_at(w.xs[i], w.ys[i]) as f64;
             out[39] = t.temp_pref as f64;
+            out[40] = watch.signal as f64;
+            out[41] = watch.vigor as f64;
         });
         out.as_ptr()
     })
@@ -235,6 +238,8 @@ pub extern "C" fn inspect_len() -> u32 {
 /// 13〜17: 草食の群れの度合い（World::herd_stats の 5 つ）
 /// 18〜22: 肉食の同じもの
 /// 23, 24: これまでの交配の回数と、相性で失敗した回数
+/// 25: 季節（−1〜1、日射が最も多い時期に 1）  26: 1 年のうちの位置（0〜1、0.25 で日射が最も多い）
+/// 27, 28: 草食・肉食の繁殖シグナルの平均
 #[unsafe(no_mangle)]
 pub extern "C" fn summary() -> *const f64 {
     SUMMARY.with(|buf| {
@@ -247,6 +252,10 @@ pub extern "C" fn summary() -> *const f64 {
             out[18..23].copy_from_slice(&w.herd_stats(CARNIVORE));
             out[23] = w.matings as f64;
             out[24] = w.failed_matings as f64;
+            out[25] = w.season() as f64;
+            out[26] = w.season_phase() as f64;
+            out[27] = w.mean_signal(HERBIVORE);
+            out[28] = w.mean_signal(CARNIVORE);
         });
         out.as_ptr()
     })

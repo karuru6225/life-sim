@@ -108,6 +108,10 @@ pub struct Watch {
     pub mate_nearby: bool,
     /// 直前の tick の繁殖相手との相性（繁殖が成功する確率）。相手がいなければ負
     pub mate_compat: f32,
+    /// 直前の tick の繁殖シグナルの強さ（0〜1）
+    pub signal: f32,
+    /// 直前の tick の体の調子（飢えと老いで最高速度に掛かる倍率、frail_speed〜1）
+    pub vigor: f32,
     /// 死んだときの (死因, tick)
     pub death: Option<(u8, u64)>,
 }
@@ -167,6 +171,8 @@ struct Senses {
     /// 興奮している（草食なら逃げている）仲間の向きの合計（警戒の合図）
     alarm_hx: f32,
     alarm_hy: f32,
+    /// 見えている仲間の繁殖シグナルの合計
+    kin_signal: f32,
 }
 
 struct Birth {
@@ -217,6 +223,8 @@ pub struct World {
     pub natal: Vec<f32>,
     /// tick の始めに求めた、足元の草の量（上限に対する割合）。隠れの判定に使う
     pub cover: Vec<f32>,
+    /// 直前の tick に出した繁殖シグナルの強さ（0〜1）
+    pub signal: Vec<f32>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
     alive: Vec<bool>,
 
@@ -229,6 +237,8 @@ pub struct World {
     pub render: Vec<f32>,
 
     grid: Grid,
+    /// 相手からの見えにくさ（足元の草から、繁殖シグナルで目立つ分を引いたもの）。グリッドに渡す作業用
+    conceal: Vec<f32>,
     rng: Rng,
     births: Vec<Birth>,
     births_genomes: Vec<f32>,
@@ -290,6 +300,7 @@ impl World {
             vigilance: Vec::new(),
             natal: Vec::new(),
             cover: Vec::new(),
+            signal: Vec::new(),
             alive: Vec::new(),
             terrain,
             plants,
@@ -297,6 +308,7 @@ impl World {
             watch: Watch::default(),
             render: Vec::new(),
             grid,
+            conceal: Vec::new(),
             rng: Rng::new(seed),
             births: Vec::new(),
             births_genomes: Vec::new(),
@@ -377,6 +389,7 @@ impl World {
         self.vigilance.push(0.5);
         self.natal.push(self.terrain.fertility[self.terrain.cell_index(x, y)]);
         self.cover.push(0.0);
+        self.signal.push(0.0);
         self.alive.push(true);
     }
 
@@ -462,17 +475,57 @@ impl World {
         1.0 - t * t * (3.0 - 2.0 * t)
     }
 
+    /// 1 年のうちの位置（0〜1）。0.25 で日射が最も多く、0.75 で最も少ない。季節がない設定なら 0
+    pub fn season_phase(&self) -> f32 {
+        let len = self.params.season_length;
+        if len <= 0.0 {
+            return 0.0;
+        }
+        (self.tick as f64 / len as f64).fract() as f32
+    }
+
+    /// 季節（−1〜1）。日射が最も多い時期に 1、最も少ない時期に −1。季節がない設定なら 0
+    pub fn season(&self) -> f32 {
+        if self.params.season_length <= 0.0 {
+            return 0.0;
+        }
+        (std::f32::consts::TAU * self.season_phase()).sin()
+    }
+
+    /// 体の調子（最高速度に掛かる倍率、frail_speed〜1）。飢えているほど、寿命に近いほど遅くなり、弱いほうの値を使う
+    pub fn vigor(&self, i: usize) -> f32 {
+        let p = &self.params;
+        let low = p.frail_speed;
+        let fed = self.energy[i] / self.repro_threshold(i);
+        let hunger = if fed < p.frail_energy { low + (1.0 - low) * (fed / p.frail_energy).max(0.0) } else { 1.0 };
+        let max_age = if self.kind[i] == HERBIVORE { p.herb_max_age } else { p.carn_max_age } * self.traits[i].adult_sqrt;
+        let aged = self.age[i] as f32 / max_age;
+        let old = if aged > p.frail_age {
+            1.0 - (1.0 - low) * ((aged - p.frail_age) / (1.0 - p.frail_age).max(1e-6)).min(1.0)
+        } else {
+            1.0
+        };
+        hunger.min(old)
+    }
+
+    /// 近傍探索のグリッドを作り直す。相手からの見えにくさは、足元の草から、繁殖シグナルで目立つ分を引いたもの
+    fn build_grid(&mut self) {
+        let exposure = self.params.signal_exposure;
+        self.conceal.clear();
+        self.conceal.extend(self.cover.iter().zip(&self.signal).map(|(&c, &s)| c * (1.0 - exposure * s)));
+        self.grid.build(&self.xs, &self.ys, &self.kind, &self.conceal);
+    }
+
     /// 1 tick 進める
     pub fn step(&mut self) {
-        self.ledger.sunlight_in += self
-            .plants
-            .grow(self.params.sunlight, self.params.plant_capacity);
+        let sunlight = self.params.sunlight * (1.0 + self.params.season_amplitude * self.season());
+        self.ledger.sunlight_in += self.plants.grow(sunlight, self.params.plant_capacity);
 
         let cap = self.params.plant_capacity;
         for i in 0..self.count() {
             self.cover[i] = self.plants.ratio_at(self.xs[i], self.ys[i], cap);
         }
-        self.grid.build(&self.xs, &self.ys, &self.kind, &self.cover);
+        self.build_grid();
 
         // セル順に回す（近くの個体を続けて処理するとキャッシュに乗って速い）
         for k in 0..self.count() {
@@ -504,6 +557,7 @@ impl World {
         let (mut kin_count, mut kin_hx, mut kin_hy, mut kin_alert) = (0u32, 0.0f32, 0.0f32, 0u32);
         let (mut kin_dx, mut kin_dy, mut alarm_hx, mut alarm_hy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
         let (mut sep_dx, mut sep_dy) = (0.0f32, 0.0f32);
+        let mut kin_signal = 0.0f32;
         // 近づきすぎない距離（体がぶつかる距離なので、草で隠れて見えなくても効く）
         let space = self.params.personal_space * self.traits[i].size;
         let space2 = space * space;
@@ -562,6 +616,7 @@ impl World {
                     let s = self.state[j];
                     let alert = s == state::FLEE || s == state::CHASE;
                     kin_alert += alert as u32;
+                    kin_signal += self.signal[j];
                     kin_dx += dx;
                     kin_dy += dy;
                     if alert {
@@ -604,6 +659,7 @@ impl World {
             kin_dy,
             alarm_hx,
             alarm_hy,
+            kin_signal,
         }
     }
 
@@ -663,7 +719,9 @@ impl World {
             input[genome::IN_KIN_HEAD_RIGHT] = r;
             input[genome::IN_KIN_ALERT] = senses.kin_alert as f32 / n;
             input[genome::IN_SIM_RATIO] = senses.similar_count as f32 / n;
+            input[genome::IN_KIN_SIGNAL] = senses.kin_signal / n;
         }
+        input[genome::IN_SEASON] = self.season();
         if let Some((_, dx, dy, d2)) = senses.similar {
             let d = d2.sqrt().max(1e-3);
             let (f, r) = to_local(dx / d, dy / d);
@@ -720,6 +778,7 @@ impl World {
         if self.kind[i] == HERBIVORE {
             self.vigilance[i] = genome::vigilance(&out);
         }
+        self.signal[i] = genome::signal(&out);
         let (mut df, mut dr) = genome::mix_drives(&out, &drives);
         // 近づきすぎた個体からは離れる（欲求の優先度とは別の、固定のルール）
         let (sf, sr) = to_local(senses.sep_dx, senses.sep_dy);
@@ -744,10 +803,13 @@ impl World {
         self.hx[i] = nx / len;
         self.hy[i] = ny / len;
         let throttle = 0.5 + 0.5 * softsign(out[genome::OUT_THROTTLE]);
-        // 幼体は遅い
+        // 幼体は遅い。飢えた個体と老いた個体も遅い
         let jv = self.params.juvenile_speed;
-        let speed = t.max_speed * throttle * (jv + (1.0 - jv) * self.growth[i]);
+        let vigor = self.vigor(i);
+        let speed = t.max_speed * throttle * vigor * (jv + (1.0 - jv) * self.growth[i]);
         if is_watched {
+            self.watch.signal = self.signal[i];
+            self.watch.vigor = vigor;
             self.watch.turn = lr.atan2(lf);
             self.watch.throttle = throttle;
         }
@@ -1026,7 +1088,10 @@ impl World {
         // 基本の代謝は動いている度合いに応じて変わる（止まっていれば rest_metabolism 倍。待ち伏せや休息で消費を抑えられる）
         let activity = (speed / t.max_speed).clamp(0.0, 1.0);
         let basal = metabolism * t.size_pow075 * (p.rest_metabolism + (1.0 - p.rest_metabolism) * activity);
-        let cost = (basal + upkeep + thermal + p.vision_cost * t.vision + p.move_cost * t.size * speed * speed).min(self.energy[i]);
+        // 繁殖シグナルを出す費用
+        let signal = p.signal_cost * self.signal[i] * t.size_pow075;
+        let cost = (basal + upkeep + thermal + signal + p.vision_cost * t.vision + p.move_cost * t.size * speed * speed)
+            .min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
         self.age[i] += 1;
@@ -1187,6 +1252,7 @@ impl World {
             self.vigilance.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
+            self.signal.swap_remove(i);
             self.alive.swap_remove(i);
             let last = self.genomes.len() - GENOME_LEN;
             if i * GENOME_LEN != last {
@@ -1208,6 +1274,18 @@ impl World {
             // 向き（ラジアン）。描画で回すのは肉食（三角形）だけなので、計算も肉食だけ
             self.render[o + 5] = if self.kind[i] == CARNIVORE { self.hy[i].atan2(self.hx[i]) } else { 0.0 };
         }
+    }
+
+    /// 種類ごとの繁殖シグナルの平均（いなければ 0）
+    pub fn mean_signal(&self, kind: u8) -> f64 {
+        let (mut sum, mut n) = (0.0f64, 0u32);
+        for i in 0..self.count() {
+            if self.kind[i] == kind {
+                sum += self.signal[i] as f64;
+                n += 1;
+            }
+        }
+        if n == 0 { 0.0 } else { sum / n as f64 }
     }
 
     /// 種類ごとの量（いまの体の大きさの合計）
@@ -1699,7 +1777,7 @@ mod tests {
         let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
         w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
         w.spawn(101.5, 100.0, HERBIVORE, 5.0, 0, &g);
-        for _ in 0..10 {
+        for _ in 0..20 {
             w.step();
         }
         let d = (torus_delta(w.xs[1] - w.xs[0], w.width).powi(2) + torus_delta(w.ys[1] - w.ys[0], w.height).powi(2)).sqrt();
@@ -1780,6 +1858,70 @@ mod tests {
         w.live(0, 0.0, false, Mate::Missing);
         w.live(1, 0.0, false, Mate::Missing);
         assert!(w.energy[0] > w.energy[1], "好みの気温と合わない個体のほうが消費が多い");
+    }
+
+    #[test]
+    fn 飢えた個体と老いた個体は遅くなる() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.3, 30.0, 0.0);
+        let need = w.params.herb_repro_threshold;
+        w.spawn(100.0, 100.0, HERBIVORE, need, 0, &g);
+        assert_eq!(w.vigor(0), 1.0, "元気な大人は全速が出る");
+        w.energy[0] = 0.0;
+        assert!((w.vigor(0) - w.params.frail_speed).abs() < 1e-6, "飢えきると最も遅い");
+        w.energy[0] = need * w.params.frail_energy * 0.5;
+        let half_starved = w.vigor(0);
+        assert!(half_starved > w.params.frail_speed && half_starved < 1.0);
+        w.energy[0] = need;
+        w.age[0] = (w.params.herb_max_age * 0.95) as u32;
+        assert!(w.vigor(0) < 0.7, "寿命の近い個体は遅い: {}", w.vigor(0));
+    }
+
+    #[test]
+    fn 日射は季節で増減する() {
+        let grown = |tick: u64| {
+            let mut p = small_params();
+            p.herb_initial = 0.0;
+            p.carn_initial = 0.0;
+            let mut w = World::new(1, p);
+            w.tick = tick;
+            w.step();
+            w.ledger.sunlight_in
+        };
+        let len = Params::default().season_length as u64;
+        let (summer, winter) = (grown(len / 4), grown(len * 3 / 4));
+        assert!(summer > winter * 2.0, "夏 {summer} 冬 {winter}");
+    }
+
+    #[test]
+    fn 繁殖シグナルを出すと草に隠れにくい() {
+        let mut w = empty_world();
+        let g = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &g);
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(130.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        w.params.cover_strength = 0.6;
+        w.params.signal_exposure = 1.0;
+        w.cover = vec![0.0, 1.0];
+        w.build_grid();
+        assert!(w.sense(0).prey.is_none(), "シグナルを出していなければ草むらに隠れる");
+        w.signal[1] = 1.0;
+        w.build_grid();
+        assert!(w.sense(0).prey.is_some(), "シグナルを出すと見つかる");
+    }
+
+    #[test]
+    fn 仲間の繁殖シグナルが見える() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        w.spawn(115.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        w.spawn(100.0, 115.0, HERBIVORE, 5.0, 0, &g);
+        w.signal = vec![0.0, 0.8, 0.4];
+        w.build_grid();
+        let s = w.sense(0);
+        assert_eq!(s.kin_count, 2);
+        assert!((s.kin_signal - 1.2).abs() < 1e-5);
     }
 
     #[test]

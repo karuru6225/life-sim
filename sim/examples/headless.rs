@@ -17,6 +17,8 @@
 //!   肉食の集まり・そろい・同系: 肉食の群れの度合い（草食と同じ指標）
 //!   寒/暖: 草食を今いる場所の気温で寒い半分・暖かい半分に分けたときの、大人の大きさの平均（ベルクマンの法則の確認用）
 //!   適温: 草食の好みの気温の平均
+//!   期内: 区間内の交配のうち、日射の多い半年（季節 > 0）に行われた割合。0.5 なら季節と無関係
+//!   信号: 繁殖シグナルの平均（草食/肉食）
 
 use sim::params::Params;
 use sim::world::{CARNIVORE, HERBIVORE, World};
@@ -43,14 +45,23 @@ fn main() {
 
     let mut w = World::new(seed, params);
     println!(
-        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} {:>5} {:>5} {:>5} | {:>5} | {:>9} {:>5} | {:>6}",
-        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "集まり", "そろい", "同系", "失敗", "寒/暖", "適温", "ms/tick"
+        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} {:>5} {:>5} {:>5} | {:>5} | {:>9} {:>5} | {:>5} {:>9} | {:>6}",
+        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "集まり", "そろい", "同系", "失敗", "寒/暖", "適温", "期内", "信号", "ms/tick"
     );
     let mut t = Instant::now();
     let mut last = w.ledger.clone();
     let (mut last_matings, mut last_failed) = (0u64, 0u64);
+    // 交配が日射の多い半年に行われた回数と、全体の回数（区間内）
+    let (mut in_season, mut all_season, mut prev_matings) = (0u64, 0u64, 0u64);
     for tick in 1..=ticks {
+        let summer = w.season() > 0.0;
         w.step();
+        let d = w.matings - prev_matings;
+        prev_matings = w.matings;
+        all_season += d;
+        if summer {
+            in_season += d;
+        }
         if tick % report_every == 0 {
             let ms = t.elapsed().as_secs_f64() * 1000.0 / report_every as f64;
             let h = w.trait_means(HERBIVORE);
@@ -80,10 +91,17 @@ fn main() {
             let mean = |s: &[(f32, f32, f32)]| s.iter().map(|v| v.1).sum::<f32>() / s.len().max(1) as f32;
             let (cold, warm) = (mean(&herbs[..half]), mean(&herbs[half..]));
             let pref = herbs.iter().map(|v| v.2).sum::<f32>() / herbs.len().max(1) as f32;
+            let season_share = in_season as f64 / all_season.max(1) as f64;
+            (in_season, all_season) = (0, 0);
+            let signal = |kind: u8| {
+                let v: Vec<f32> = (0..w.count()).filter(|&i| w.kind[i] == kind).map(|i| w.signal[i]).collect();
+                v.iter().sum::<f32>() / v.len().max(1) as f32
+            };
             println!(
-                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.3} | {:>4.2}/{:<4.2} {:>5.1} | {ms:>6.2}",
+                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.3} | {:>4.2}/{:<4.2} {:>5.1} | {:>5.2} {:>4.2}/{:<4.2} | {ms:>6.2}",
                 h[0], c[0], w.plants.total(), 1.0 / ratio.max(1e-9), plant_to_herb, herb_to_carn,
-                h[1], h[2], h[3], h[5], vig, hh[0], hh[1], hh[2], hh[3], c[1], c[2], ch[0], ch[1], ch[2], fail, cold, warm, pref
+                h[1], h[2], h[3], h[5], vig, hh[0], hh[1], hh[2], hh[3], c[1], c[2], ch[0], ch[1], ch[2], fail, cold, warm, pref,
+                season_share, signal(HERBIVORE), signal(CARNIVORE)
             );
             if w.count_kind(HERBIVORE) == 0 && w.count_kind(CARNIVORE) == 0 {
                 println!("全滅");
