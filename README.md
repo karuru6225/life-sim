@@ -53,4 +53,10 @@ cargo run --release --features parallel --example headless --manifest-path sim/C
 # ブラウザの「読み込み」で world.lifesim を選ぶ
 ```
 
+書き出したファイルから、画面なしで続きを進めることもできる（`resume`）。
+
+```sh
+cargo run --release --features parallel --example resume --manifest-path sim/Cargo.toml -- world.lifesim 10000 save=続き.lifesim
+```
+
 main に push すると、GitHub Actions がビルドして GitHub Pages に公開する（`.github/workflows/pages.yml`）。
