@@ -1,7 +1,7 @@
 //! 肉食の増減の原因を調べるための、画面なしの実行。区間ごとに肉食の生死と狩りの内訳を表示する。
 //!
 //! 使い方（引数は headless と同じ）:
-//!   cargo run --release --example diagnose --manifest-path sim/Cargo.toml -- 80000 seed=3 every=2000
+//!   cargo run --release --features parallel --example diagnose --manifest-path sim/Cargo.toml -- 80000 seed=3 every=2000
 //!
 //! 列の意味（区間内の値。「/体」は区間の終わりの肉食 1 体あたり）:
 //!   生/餓/寿/傷: 肉食の誕生・餓死・寿命死・反撃による死

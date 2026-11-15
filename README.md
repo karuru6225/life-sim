@@ -39,10 +39,11 @@ npm test         # シミュレーションのテスト（cargo test）
 npm run build    # dist/ に静的ファイルを出力
 ```
 
-画面なしで長期の推移を調べる実行器もある（`sim/examples/`）。
+画面なしで長期の推移を調べる実行器もある（`sim/examples/`）。`--features parallel` を付けると、知覚と脳の判断を
+複数のスレッドで並列に計算する（結果は付けない場合と同じ。16 コアで約 5 倍速い）。
 
 ```sh
-cargo run --release --example headless --manifest-path sim/Cargo.toml -- 30000 seed=3 every=1000
+cargo run --release --features parallel --example headless --manifest-path sim/Cargo.toml -- 30000 seed=3 every=1000
 ```
 
 main に push すると、GitHub Actions がビルドして GitHub Pages に公開する（`.github/workflows/pages.yml`）。

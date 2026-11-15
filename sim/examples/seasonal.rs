@@ -1,6 +1,6 @@
 //! 草食の個体数の季節変動の内訳を調べる。区間ごとに、草食の誕生と、死因ごとの死亡（うち幼体）を表示する。
 //!
-//! 使い方: cargo run --release --example seasonal --manifest-path sim/Cargo.toml -- 12000 seed=1 every=100
+//! 使い方: cargo run --release --features parallel --example seasonal --manifest-path sim/Cargo.toml -- 12000 seed=1 every=100
 //!
 //! 列: 季節（−1〜1）、草食の数、幼体の割合、エネルギー ÷ 繁殖に必要な量 の平均、植物量、
 //!     区間内の誕生、餓死（うち幼体）、食われ（うち幼体）、寿命、

@@ -1,9 +1,9 @@
 //! 画面なしでシミュレーションを回し、個体数・バランス・形質・群れの度合いの推移を表示する。調整用。
 //!
 //! 使い方:
-//!   cargo run --release --example headless --manifest-path sim/Cargo.toml -- [tick数] [名前=値 ...]
+//!   cargo run --release --features parallel --example headless --manifest-path sim/Cargo.toml -- [tick数] [名前=値 ...]
 //! 例:
-//!   cargo run --release --example headless --manifest-path sim/Cargo.toml -- 30000 sunlight=0.1 seed=3 every=1000
+//!   cargo run --release --features parallel --example headless --manifest-path sim/Cargo.toml -- 30000 sunlight=0.1 seed=3 every=1000
 //!
 //! 列の意味:
 //!   量比: 肉食の量 ÷ 草食の量（量 = 体の大きさの合計）。現実の哺乳類では約 1/111
