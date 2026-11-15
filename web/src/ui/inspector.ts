@@ -21,12 +21,12 @@ const INPUT_LABELS = [
   '繁殖できる', '繁殖相手の近さ', '前方が水', '獲物の大きさ比', '天敵の大きさ比', '植生の合い具合',
   '気温の差', '季節', '仲間のシグナル', '呼び声・前', '呼び声・右', '呼び声の大きさ', '死角の見張り',
   '足元の死体', '死体の方向・前', '死体の方向・右', '死体の新しさ',
-  '敵・前', '敵・右', '敵の近さ', '敵の大きさ比', '敵の数', '攻撃された', '一人の時間',
+  '敵・前', '敵・右', '敵の近さ', '敵の大きさ比', '敵の数', '攻撃された', '一人の時間', '食べ物の乏しさ',
 ];
 /** 脳の出力の名前（sim/src/genome.rs の OUT_* の並び） */
 const OUTPUT_LABELS = [
   '優先: 食べる', '優先: 繁殖', '優先: 逃げる', '優先: 仲間', '優先: 自由', '自由な方向・前', '自由な方向・右',
-  '速さ', '繁殖する', '食べる', '警戒', 'シグナル', '優先: 追い払う', '攻撃する',
+  '速さ', '繁殖する', '食べる', '警戒', 'シグナル', '優先: 追い払う', '攻撃する', '仲間を攻撃',
 ];
 
 const fmtInt = new Intl.NumberFormat('ja-JP');
@@ -41,6 +41,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.COURT]: '繁殖相手に向かっている',
     [STATE.WANDER]: '歩き回っている',
     [STATE.FIGHT]: '敵（別の系統）を攻撃した',
+    [STATE.FIGHT_KIN]: '仲間（同じ系統）を攻撃した',
   },
   [CARNIVORE]: {
     [STATE.WANDER]: '獲物が見えない',
@@ -50,6 +51,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.COURT]: '繁殖相手に向かっている',
     [STATE.SCAVENGE]: '死体を食べている',
     [STATE.FIGHT]: '敵（別の系統）を攻撃した',
+    [STATE.FIGHT_KIN]: '仲間（同じ系統）を攻撃した',
   },
 };
 
@@ -60,6 +62,7 @@ const DEATH_LABEL: Record<number, string> = {
   [DEATH.INJURED]: 'けが（獲物の反撃か、死体の奪い合い）',
   [DEATH.SICK]: '腐った死体を食べて病気になった',
   [DEATH.FOUGHT]: '同じ種類の敵との争い',
+  [DEATH.KIN_FOUGHT]: '仲間（同じ系統）との争い',
 };
 
 export class Inspector {

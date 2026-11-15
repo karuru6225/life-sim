@@ -19,7 +19,7 @@ const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
 pub const FORMAT_VERSION: u32 = 1;
 /// 死因の数（Census の配列の長さ）
-const N_CAUSES: usize = 7;
+const N_CAUSES: usize = 8;
 
 struct Writer(Vec<u8>);
 
@@ -144,6 +144,7 @@ impl World {
             }
             w.u64(c.births[k]);
             w.u64(c.fights[k]);
+            w.u64(c.kin_fights[k]);
         }
         w.u64(c.hunts);
         w.u64(c.kills);
@@ -269,6 +270,7 @@ impl World {
             }
             c.births[k] = r.u64()?;
             c.fights[k] = r.u64()?;
+            c.kin_fights[k] = r.u64()?;
         }
         c.hunts = r.u64()?;
         c.kills = r.u64()?;

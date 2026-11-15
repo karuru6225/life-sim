@@ -122,10 +122,10 @@ export const LINEAGE = {
   brain1: 15,
   brain2: 16,
   litter: 17,
-  /** 直近 LINEAGE_DEATH_WINDOW tick の死因ごとの死亡数の先頭（死因 1〜6 が 18〜23。死因の番号は DEATH） */
+  /** 直近 LINEAGE_DEATH_WINDOW tick の死因ごとの死亡数の先頭（死因 1〜7 が 18〜24。死因の番号は DEATH） */
   deaths: 18,
 } as const;
-export const LINEAGE_LEN = 24;
+export const LINEAGE_LEN = 25;
 /** 保存ファイルの見出し（JSON）。ファイルは gzip で、中身は SAVE_MAGIC・見出しの長さ（u32）・見出し・世界のバイト列 */
 export interface SaveHeader {
   /** 世界のバイト列の形式の番号（sim/src/world/save.rs の FORMAT_VERSION） */
@@ -257,7 +257,7 @@ export const HERBIVORE = 0;
 export const CARNIVORE = 1;
 
 /** sim/src/world.rs の state と一致させること */
-export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6, COURT: 7, SCAVENGE: 8, FIGHT: 9 } as const;
+export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6, COURT: 7, SCAVENGE: 8, FIGHT: 9, FIGHT_KIN: 10 } as const;
 
 /** sim/src/world.rs の death と一致させること */
-export const DEATH = { STARVED: 1, OLD_AGE: 2, EATEN: 3, INJURED: 4, SICK: 5, FOUGHT: 6 } as const;
+export const DEATH = { STARVED: 1, OLD_AGE: 2, EATEN: 3, INJURED: 4, SICK: 5, FOUGHT: 6, KIN_FOUGHT: 7 } as const;

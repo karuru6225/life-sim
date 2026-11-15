@@ -123,7 +123,8 @@ const DEATH_SHORT: [number, string][] = [
   [DEATH.EATEN, '食べられた'],
   [DEATH.INJURED, 'けが'],
   [DEATH.SICK, '病気'],
-  [DEATH.FOUGHT, '争い'],
+  [DEATH.FOUGHT, '敵との争い'],
+  [DEATH.KIN_FOUGHT, '仲間との争い'],
 ];
 
 export class LineagePanel {

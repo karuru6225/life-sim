@@ -105,6 +105,8 @@ export const SIM_PARAMS = {
   fight_backlash: 0.25,
   initial_attack_bias: -1,
   initial_attack_spread: 0.6,
+  initial_kin_attack_bias: -1.2,
+  initial_kin_attack_spread: 0.6,
 
   // 系統
   compat_full_distance: 1.2,

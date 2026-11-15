@@ -122,7 +122,11 @@ pub const IN_RIVAL_COUNT: usize = 41;
 pub const IN_ATTACKED: usize = 42;
 /// 仲間（同じ種類）を最後に見てからの時間（softsign(tick 数 ÷ 150)。仲間が見えていれば 0、長く一人でいるほど 1 に近い）
 pub const IN_ALONE: usize = 43;
-pub const N_IN: usize = 44;
+/// 周りの食べ物の乏しさ（0〜1）。見えている仲間の数 ÷ (仲間の数 ＋ 4 × 周りの食べ物)。
+/// 周りの食べ物は、草食は周り 3 × 3 マスの草の量（上限に対する割合の合計）、肉食は見えている獲物の数。
+/// 食べ物が少なく仲間が多いほど 1 に近い
+pub const IN_SCARCITY: usize = 44;
+pub const N_IN: usize = 45;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -166,7 +170,9 @@ pub const OUT_SIGNAL: usize = 11;
 pub const OUT_PRI_FIGHT: usize = 12;
 /// 正なら、届く距離の敵を攻撃する
 pub const OUT_ATTACK: usize = 13;
-pub const N_OUT: usize = 14;
+/// 正なら、届く距離の仲間（同じ種類で系統色の近い個体）を攻撃する
+pub const OUT_ATTACK_KIN: usize = 14;
+pub const N_OUT: usize = 15;
 
 /// 欲求の数（食べる・繁殖・逃げる・仲間・追い払う・自由）。最後の「自由」の方向は脳の出力から取る
 pub const N_DRIVES: usize = 6;
@@ -457,6 +463,7 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     // 敵を追い払う欲求と攻撃は、初めはほとんど使わない（使うかどうかは進化に任せる）
     out_bias(&mut g, OUT_PRI_FIGHT, -4.0);
     out_bias(&mut g, OUT_ATTACK, -2.0);
+    out_bias(&mut g, OUT_ATTACK_KIN, -2.0);
     // 敵に攻撃されて負けたら逃げる（草食は警戒の合図のニューロン、肉食は空いている 4 番を使う）
     wire_hidden(&mut g, h_alarm, IN_ATTACKED, 4.0);
     if !herbivore {
@@ -472,6 +479,11 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
 /// （全員が攻撃しないと、攻撃が得か損かを選択が試せない）
 pub fn set_attack_bias(g: &mut [f32], bias: f32) {
     out_bias(g, OUT_ATTACK, bias);
+}
+
+/// 「仲間を攻撃する」の出力の基準値を設定する（初期個体ごとにばらつかせるため）
+pub fn set_kin_attack_bias(g: &mut [f32], bias: f32) {
+    out_bias(g, OUT_ATTACK_KIN, bias);
 }
 
 /// 群れの知覚につながる配線（中間ニューロン 6, 7）を、小さなランダムな重みで足す。
@@ -498,12 +510,13 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         IN_RIVAL_SIZE,
         IN_RIVAL_COUNT,
         IN_ALONE,
+        IN_SCARCITY,
     ];
     for h in [6, 7] {
         for &k in &kin_inputs {
             wire_hidden(g, h, k, rng.gaussian() * SIGMA_IN);
         }
-        for o in [OUT_DIR_FWD, OUT_DIR_RIGHT, OUT_PRI_FREE, OUT_PRI_KIN, OUT_VIGILANCE, OUT_THROTTLE, OUT_PRI_FIGHT, OUT_ATTACK] {
+        for o in [OUT_DIR_FWD, OUT_DIR_RIGHT, OUT_PRI_FREE, OUT_PRI_KIN, OUT_VIGILANCE, OUT_THROTTLE, OUT_PRI_FIGHT, OUT_ATTACK, OUT_ATTACK_KIN] {
             wire_out(g, o, h, rng.gaussian() * SIGMA_OUT);
         }
     }
