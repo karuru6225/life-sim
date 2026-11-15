@@ -5,6 +5,10 @@
 //! 例:
 //!   cargo run --release --features parallel --example headless --manifest-path sim/Cargo.toml -- 30000 sunlight=0.1 seed=3 every=1000
 //!
+//! save=ファイル名 を付けると、最後にブラウザで読み込める保存ファイル（圧縮なし）を書き出す。
+//! 例: ... -- 50000 seed=3 save=world.lifesim  → ブラウザの「読み込み」で world.lifesim を選ぶと、5 万 tick から続きを見られる。
+//! パラメータは保存ファイルに入るので、ブラウザでも同じ設定で続く
+//!
 //! 列の意味:
 //!   量比: 肉食の量 ÷ 草食の量（量 = 体の大きさの合計）。現実の哺乳類では約 1/111
 //!   植→草, 草→肉: 区間内の栄養段階の受け渡し効率（草食が得た量 ÷ 植物が日射から得た量、
@@ -32,8 +36,13 @@ fn main() {
     let mut report_every: u64 = 1_000;
     let mut params = Params::default();
     let mut seed = 1;
+    let mut save_path: Option<String> = None;
     for arg in std::env::args().skip(1) {
         if let Some((name, value)) = arg.split_once('=') {
+            if name == "save" {
+                save_path = Some(value.to_string());
+                continue;
+            }
             let value: f32 = value.parse().expect("値が数値ではない");
             match name {
                 "seed" => seed = value as u64,
@@ -131,4 +140,40 @@ fn main() {
     }
     let err = w.ledger.expected_total() - w.total_energy();
     println!("エネルギー帳尻の誤差: {err:.4}（帳簿 {:.1}）", w.ledger.expected_total());
+    if let Some(path) = save_path {
+        let data = sim::world::save_file(&w, &commit_hash(), &now_iso());
+        std::fs::write(&path, &data).expect("保存ファイルを書けない");
+        println!("tick {} の世界を {path} に保存した（{:.1} MB）。ブラウザの「読み込み」で開ける", w.tick, data.len() as f64 / 1e6);
+    }
+}
+
+/// 今のコードのコミット（短いハッシュ。未コミットの変更があれば -dirty）。ブラウザのビルドと同じ書き方
+fn commit_hash() -> String {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    match git(&["rev-parse", "--short", "HEAD"]) {
+        Some(hash) if !hash.is_empty() => {
+            let dirty = git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
+            if dirty { format!("{hash}-dirty") } else { hash }
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
+/// 今の日時（UTC、ISO 8601）
+fn now_iso() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // 1970-01-01 からの日数を年月日に直す（Howard Hinnant の civil_from_days）
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + (m <= 2) as i64;
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }

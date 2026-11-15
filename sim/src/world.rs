@@ -23,6 +23,7 @@ use std::collections::VecDeque;
 
 mod save;
 pub use save::FORMAT_VERSION as SAVE_FORMAT_VERSION;
+pub use save::save_file;
 
 pub const HERBIVORE: u8 = 0;
 pub const CARNIVORE: u8 = 1;

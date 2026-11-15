@@ -360,6 +360,26 @@ impl World {
     }
 }
 
+/// ブラウザの保存ファイルと同じ入れ物（圧縮なし）にする: "LIFESIM\n"、見出し（JSON）の長さ（u32）、見出し、世界のバイト列。
+/// ブラウザの「読み込み」は、gzip で圧縮していないこの形も読める。commit は保存したコード、saved_at は保存日時（ISO 8601）
+pub fn save_file(world: &World, commit: &str, saved_at: &str) -> Vec<u8> {
+    let payload = world.save();
+    let header = format!(
+        "{{\"format\":{FORMAT_VERSION},\"commit\":\"{}\",\"savedAt\":\"{}\",\"tick\":{},\"herbivores\":{},\"carnivores\":{}}}",
+        commit.replace(['"', '\\'], ""),
+        saved_at.replace(['"', '\\'], ""),
+        world.tick,
+        world.count_kind(HERBIVORE),
+        world.count_kind(CARNIVORE),
+    );
+    let mut out = Vec::with_capacity(payload.len() + header.len() + 12);
+    out.extend_from_slice(b"LIFESIM\n");
+    out.extend_from_slice(&(header.len() as u32).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&payload);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
