@@ -198,10 +198,17 @@ async function saveWorld(s: SimExports): Promise<void> {
 async function loadWorld(s: SimExports, file: ArrayBuffer): Promise<void> {
   const fail = (message: string) => post({ type: 'loaded', ok: false, message, params: null, tick: 0 });
   let data: Uint8Array;
-  try {
-    data = new Uint8Array(await gunzip(file));
-  } catch {
-    return fail('ファイルを展開できない（gzip でない、または壊れている）');
+  const raw = new Uint8Array(file);
+  if (raw[0] === 0x1f && raw[1] === 0x8b) {
+    // gzip（ブラウザで保存したファイル）
+    try {
+      data = new Uint8Array(await gunzip(file));
+    } catch {
+      return fail('ファイルを展開できない（壊れている）');
+    }
+  } else {
+    // 圧縮していないファイル（画面なしの実行器で書き出したもの）
+    data = raw;
   }
   const magic = encoder.encode(SAVE_MAGIC);
   if (data.length < magic.length + 4 || !magic.every((b, k) => data[k] === b)) return fail('life-sim の保存ファイルではない');

@@ -46,4 +46,11 @@ npm run build    # dist/ に静的ファイルを出力
 cargo run --release --features parallel --example headless --manifest-path sim/Cargo.toml -- 30000 seed=3 every=1000
 ```
 
+`save=ファイル名` を付けると、最後にブラウザで読み込める保存ファイルを書き出す。画面なしで速く進めて、続きをブラウザで見られる。
+
+```sh
+cargo run --release --features parallel --example headless --manifest-path sim/Cargo.toml -- 50000 seed=3 save=world.lifesim
+# ブラウザの「読み込み」で world.lifesim を選ぶ
+```
+
 main に push すると、GitHub Actions がビルドして GitHub Pages に公開する（`.github/workflows/pages.yml`）。

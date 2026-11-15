@@ -147,7 +147,7 @@ export class Hud {
           <button type="button" data-k="reset">リセット</button>
           <button type="button" data-k="save" title="今の世界をファイルに保存する（乱数の状態も含むので、読み込むと同じ歴史が続く）">保存</button>
           <button type="button" data-k="load" title="保存したファイル（.lifesim.gz）から世界を読み込む">読み込み</button>
-          <input type="file" data-k="loadFile" accept=".gz,.lifesim.gz" hidden />
+          <input type="file" data-k="loadFile" accept=".gz,.lifesim.gz,.lifesim" hidden />
         </div>
         <div class="group" data-k="speeds"><span class="group-label">速度</span></div>
         <div class="group" data-k="modes"><span class="group-label">色分け</span></div>
