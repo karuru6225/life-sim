@@ -270,7 +270,7 @@ export class Inspector {
     } else {
       this.el.starve.textContent = '–';
     }
-    this.el.age.textContent = `${fmtInt.format(v[INSPECT.age])} / 寿命 ${fmtInt.format(v[INSPECT.maxAge])} tick`;
+    this.el.age.textContent = `${fmtInt.format(v[INSPECT.age])} / 寿命 ${fmtInt.format(Math.round(v[INSPECT.maxAge]))} tick`;
     this.el.generation.textContent = `第 ${fmtInt.format(v[INSPECT.generation])} 世代`;
     this.el.children.textContent = `${fmtInt.format(v[INSPECT.children])} 体`;
     this.el.speed.textContent = `${v[INSPECT.speed].toFixed(2)} px/tick`;

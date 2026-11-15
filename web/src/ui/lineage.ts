@@ -121,11 +121,14 @@ export class LineagePanel {
   constructor(
     private readonly root: HTMLElement,
     onClose: () => void,
+    /** 系統の中からランダムに 1 体選ぶ */
+    onPick: () => void,
   ) {
     root.innerHTML = `
       <div class="lin-head">
         <i class="swatch" data-k="swatch"></i>
         <span class="lin-title" data-k="title">–</span>
+        <button type="button" data-k="pick" title="この系統の個体を 1 体ランダムに選び、カメラで追う">1 体選ぶ</button>
         <button type="button" class="insp-close" data-k="close" aria-label="系統の選択を解除">×</button>
       </div>
       <div class="lin-count"><span class="value" data-k="count">–</span><span class="unit">体</span></div>
@@ -138,6 +141,7 @@ export class LineagePanel {
     `;
     for (const node of root.querySelectorAll<HTMLElement>('[data-k]')) this.el[node.dataset.k!] = node;
     this.el.close.addEventListener('click', onClose);
+    this.el.pick.addEventListener('click', onPick);
     for (const [label] of ROWS) {
       const tr = document.createElement('tr');
       const th = document.createElement('th');
@@ -158,7 +162,7 @@ export class LineagePanel {
     const center = sel.from + sel.width / 2;
     this.el.swatch.style.background = HUE_PALETTE[hueIndex(((center % 1) + 1) % 1)];
     const deg = (v: number) => Math.round((((v % 1) + 1) % 1) * 360);
-    this.el.title.textContent = `${sel.kind === HERBIVORE ? '草食' : '肉食'}の系統（色相 ${deg(sel.from)}°〜${deg(sel.from + sel.width)}°）`;
+    this.el.title.textContent = `${sel.kind === HERBIVORE ? '草食' : '肉食'}の系統 ${deg(sel.from)}°〜${deg(sel.from + sel.width)}°`;
     this.el.count.textContent = '–';
     this.cells.forEach((cells) => cells.forEach((c) => (c.textContent = '–')));
     this.drawChart();

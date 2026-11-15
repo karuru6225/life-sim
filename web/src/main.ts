@@ -159,6 +159,10 @@ let reselectScheduledFor = 0;
 let followAfterReselect = false;
 /** 結果待ちの選択が、自動選び直しによるものか */
 let pendingAutoSelect = false;
+/** 結果待ちの選択が、系統からのランダムな選択によるものか（選べたら拡大して追う） */
+let pendingRandomPick = false;
+/** ランダムに選んだ個体を見るときの倍率 */
+const PICK_SCALE = 3;
 
 function cancelReselect(): void {
   if (reselectTimer !== null) {
@@ -306,9 +310,12 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
         marker.hide();
       }
       inspector.setNote('');
-      // 自動選び直しなら、死んだ個体を追従していたときは新しい個体も追う
-      setFollowing(pendingAutoSelect && followAfterReselect && msg.id !== 0);
+      if (pendingRandomPick && msg.id === 0) toast.show('この系統の個体はいません');
+      // 自動選び直しなら、死んだ個体を追従していたときは新しい個体も追う。系統から選んだときは拡大して追う
+      if (pendingRandomPick && msg.id !== 0 && camera.scale < PICK_SCALE) camera.zoomTo(PICK_SCALE);
+      setFollowing(msg.id !== 0 && ((pendingAutoSelect && followAfterReselect) || pendingRandomPick));
       pendingAutoSelect = false;
+      pendingRandomPick = false;
       break;
     case 'frame':
       if (msg.generation !== generation) return returnBuffer(msg); // リセット前の古いフレーム
@@ -401,7 +408,16 @@ function showSelection(v: number[]): void {
 setInterval(() => hud.setFps(app.ticker.FPS), 250);
 
 const lineageHist = new LineageHistogram(...hud.lineageTargets(), (sel) => setLineage(sel));
-const lineagePanel = new LineagePanel(hud.lineagePanelRoot(), () => setLineage(null));
+const lineagePanel = new LineagePanel(
+  hud.lineagePanelRoot(),
+  () => setLineage(null),
+  () => {
+    if (!lineageSel) return;
+    cancelReselect();
+    pendingRandomPick = true;
+    send({ type: 'selectRandomInLineage', lineage: lineageSel });
+  },
+);
 /** 系統色のヒストグラムを描き直す間隔（ms）。毎フレーム描く必要はない */
 const LINEAGE_INTERVAL_MS = 500;
 let lastLineage = 0;

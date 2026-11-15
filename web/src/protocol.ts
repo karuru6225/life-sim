@@ -16,6 +16,8 @@ export type ToWorker =
    */
   | { type: 'select'; x: number; y: number; radius: number; kind?: number }
   | { type: 'deselect' }
+  /** 系統の中からランダムに 1 体を選択する。結果は selected で返る */
+  | { type: 'selectRandomInLineage'; lineage: LineageSelection }
   /** id の個体を選択する（親や子をたどるとき）。結果は selected で返る */
   | { type: 'selectId'; id: number }
   /** 統計を取る系統を選ぶ（null で解除） */

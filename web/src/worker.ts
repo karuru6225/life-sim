@@ -20,6 +20,7 @@ interface SimExports {
   plant_ptr(): number;
   carrion_ptr(): number;
   select_id(id: number): number;
+  select_random_in_lineage(kind: number, from: number, width: number, nonce: number): number;
   brain_ptr(): number;
   brain_inputs(): number;
   brain_outputs(): number;
@@ -180,6 +181,15 @@ function handle(s: SimExports, msg: ToWorker): void {
           : s.select_near_kind(msg.x, msg.y, msg.radius, msg.kind);
       watching = id !== 0;
       dirty = true; // 一時停止中でも選択結果をすぐ描けるようにする
+      post({ type: 'selected', id });
+      break;
+    }
+    case 'selectRandomInLineage': {
+      if (!sim) break;
+      const l = msg.lineage;
+      const id = s.select_random_in_lineage(l.kind, l.from, l.width, Math.floor(Math.random() * 2 ** 31));
+      watching = id !== 0;
+      dirty = true;
       post({ type: 'selected', id });
       break;
     }

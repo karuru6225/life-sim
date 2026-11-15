@@ -75,6 +75,16 @@ export class Camera {
     this.target.position.set(this.canvas.clientWidth / 2 - x * this.scale, this.canvas.clientHeight / 2 - y * this.scale);
   }
 
+  /** 画面の中央を保ったまま、倍率を scale にする */
+  zoomTo(scale: number): void {
+    const cx = this.canvas.clientWidth / 2;
+    const cy = this.canvas.clientHeight / 2;
+    const { x, y } = this.toWorld(cx, cy);
+    const next = Math.min(MAX_SCALE, scale);
+    this.target.scale.set(next);
+    this.target.position.set(cx - x * next, cy - y * next);
+  }
+
   /** 世界全体が画面に収まる倍率 */
   private fitScale(): number {
     return Math.min(this.canvas.clientWidth / this.worldWidth, this.canvas.clientHeight / this.worldHeight) * 0.96;
