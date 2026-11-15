@@ -668,7 +668,7 @@ impl World {
         (std::f32::consts::TAU * self.season_phase()).sin()
     }
 
-    /// 寿命（tick）。大人の大きさの平方根に比例し、個体ごとに 0.75〜1.25 倍にばらつく。
+    /// 寿命（tick）。大人の大きさの 0.25 乗に比例し、個体ごとに 0.75〜1.25 倍にばらつく。
     /// 全員が同じ寿命だと、同じ時期に生まれた世代がそろって死に、個体数の波が強まる。
     /// ばらつきは id から決める（乱数の流れを変えず、個体ごとの記録も増やさない）
     pub fn lifespan(&self, i: usize) -> f32 {
@@ -680,7 +680,7 @@ impl World {
         h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
         h ^= h >> 29;
         let u = (h >> 40) as f32 / (1u64 << 24) as f32;
-        base * self.traits[i].adult_sqrt * (0.75 + 0.5 * u)
+        base * self.traits[i].adult_pow025 * (0.75 + 0.5 * u)
     }
 
     /// 体の調子（最高速度に掛かる倍率、frail_speed〜1）。飢えているほど、寿命に近いほど遅くなり、弱いほうの値を使う
@@ -845,10 +845,16 @@ impl World {
     }
 
     /// 近傍探索のグリッドを作り直す。相手からの見えにくさは、足元の草から、繁殖シグナルで目立つ分を引いたもの
+    /// 見えにくさ = 隠れの強さ × 足元の草 × (1 − シグナルで目立つ分) × 1 / √いまの大きさ（小さいほど隠れやすい）。
+    /// 相手の見える距離は 視野 × (1 − 見えにくさ) になる。どれだけ隠れても視野の 5% までは見える
     fn build_grid(&mut self) {
-        let exposure = self.params.signal_exposure;
+        let (exposure, hide) = (self.params.signal_exposure, self.params.cover_strength);
         self.conceal.clear();
-        self.conceal.extend(self.cover.iter().zip(&self.signal).map(|(&c, &s)| c * (1.0 - exposure * s)));
+        for i in 0..self.count() {
+            let by_size = 1.0 / self.traits[i].size.max(0.05).sqrt();
+            let c = hide * self.cover[i] * (1.0 - exposure * self.signal[i]) * by_size;
+            self.conceal.push(c.min(0.95));
+        }
         self.grid.build(&self.xs, &self.ys, &self.kind, &self.conceal);
     }
 
@@ -940,7 +946,6 @@ impl World {
         let (x, y) = (self.xs[i], self.ys[i]);
         let (w, h) = (self.width, self.height);
         let vision = self.traits[i].vision;
-        let hide = self.params.cover_strength;
         let my_kind = self.kind[i];
         // [天敵, 獲物, 仲間]
         let mut best: [Seen; 3] = [None, None, None];
@@ -987,7 +992,8 @@ impl World {
                 sep_dx -= dx / d * push;
                 sep_dy -= dy / d * push;
             }
-            let mut r = vision * (1.0 - hide * cover_j);
+            // 相手の見えにくさ（隠れの強さ・足元の草・シグナル・大きさを build_grid で掛け合わせたもの）
+            let mut r = vision * (1.0 - cover_j);
             if my_kind == HERBIVORE && kind_j != my_kind {
                 r *= threat_range / vision;
             }
@@ -1640,7 +1646,9 @@ impl World {
         self.cooldown[i] = self.cooldown[i].saturating_sub(1);
         self.rest[i] = self.rest[i].saturating_sub(1);
         self.attacked[i] = self.attacked[i].saturating_sub(1);
-        self.grow(i, if herb { p.herb_maturity } else { p.carn_maturity });
+        // 成熟までの時間は大人の大きさの 0.25 乗に比例（小さい体ほど早く大人になる）
+        let maturity = if herb { p.herb_maturity } else { p.carn_maturity } * t.adult_pow025;
+        self.grow(i, maturity);
         if self.id[i] == self.watch.id {
             self.watch.speed = speed;
             self.watch.cost = cost;
@@ -1751,6 +1759,7 @@ impl World {
 
         let m = Mutation {
             rate: self.params.mutation_rate,
+            trait_rate: self.params.mutation_trait_rate,
             trait_sigma: self.params.mutation_trait_sigma,
             weight_sigma: self.params.mutation_weight_sigma,
             hue_sigma: self.params.mutation_hue_sigma,
@@ -2204,11 +2213,11 @@ mod tests {
         w.params.cover_strength = 0.6;
 
         w.cover = vec![0.0, 0.0];
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         assert!(w.sense(0).prey.is_some(), "草がなければ 30px 先の獲物が見える");
         // 草が満杯なら視野 40 × (1 - 0.6) = 16px までしか見えない
         w.cover = vec![0.0, 1.0];
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         assert!(w.sense(0).prey.is_none(), "草むらの獲物は見えない");
     }
 
@@ -2284,7 +2293,7 @@ mod tests {
             // 獲物同士が守り合わないよう、離して置く
             w.spawn(300.0 + 80.0 * k as f32, 300.0, HERBIVORE, 5.0, 0, &g);
         }
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         let chances: Vec<f32> = (1..=4).map(|j| w.hunt_chance(0, j)).collect();
         assert_eq!(chances[0], w.params.hunt_success, "十分小さい獲物は最大の成功率");
         assert!(chances[1] < chances[0] && chances[2] < chances[1], "大きいほど下がる: {chances:?}");
@@ -2304,24 +2313,24 @@ mod tests {
     #[test]
     fn 仲間がいれば1体では狩れない大きな獲物も狩れる() {
         let mut w = hunting_world(1.6);
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         assert_eq!(w.hunt_chance(0, 1), 0.0, "1 体では狩れない大きさ");
         let ally = genome::initial(false, 1.0, 1.0, 40.0, 0.5);
         w.spawn(100.0, 106.0, CARNIVORE, 5.0, 0, &ally);
         w.spawn(100.0, 94.0, CARNIVORE, 5.0, 0, &ally);
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         assert!(w.hunt_chance(0, 1) > 0.0, "仲間 2 体がいれば狩れる");
     }
 
     #[test]
     fn 邪魔をするのは系統の違う肉食だけ() {
         let mut w = hunting_world(0.5);
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         let alone = w.hunt_chance(0, 1);
         // 系統の違う（標識色が遠い）肉食
         let rival = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
         w.spawn(100.0, 106.0, CARNIVORE, 5.0, 0, &rival);
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         assert!(w.hunt_chance(0, 1) < alone, "系統の違う肉食は邪魔をする");
         // 同じ系統の肉食に入れ替える
         w.genomes[2 * GENOME_LEN + genome::G_HUE] = 0.5;
@@ -2334,7 +2343,7 @@ mod tests {
         let mut w = hunting_world(0.5);
         let ally = genome::initial(false, 1.0, 1.0, 40.0, 0.5);
         w.spawn(100.0, 106.0, CARNIVORE, 5.0, 0, &ally);
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         w.params.hunt_success = 1.0;
         let before = w.energy[2];
         // 確実に成功させるため、成功率 1 で大きさの不利もない状態で何度か試す
@@ -2355,12 +2364,12 @@ mod tests {
         let herb = genome::initial(true, 0.5, 1.0, 30.0, 0.0);
         w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
         w.spawn(105.0, 100.0, HERBIVORE, 5.0, 0, &herb);
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         let alone = w.hunt_chance(0, 1);
         for k in 0..4 {
             w.spawn(105.0 + (k as f32 - 1.5) * 4.0, 104.0, HERBIVORE, 5.0, 0, &herb);
         }
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         let guarded = w.hunt_chance(0, 1);
         assert!(guarded < alone * 0.7, "囲まれていると下がる: 単独 {alone} / 囲まれ {guarded}");
     }
@@ -2480,7 +2489,7 @@ mod tests {
     fn 大きな獲物を襲って失敗すると反撃を受ける() {
         let mut w = hunting_world(2.0);
         w.params.hunt_success = 0.0; // 必ず失敗させる
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         let id = w.id[0];
         assert!(matches!(w.try_hunt(0, 1, 16.0), Hunt::Failed));
         // けが 8 × (2.0 − 1.2) = 6.4 は、手持ち 5 − 襲う費用 0.3 を超えるので死ぬ
@@ -2493,7 +2502,7 @@ mod tests {
     fn 小さな獲物なら失敗しても反撃を受けない() {
         let mut w = hunting_world(1.0);
         w.params.hunt_success = 0.0;
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         w.try_hunt(0, 1, 16.0);
         assert!((w.energy[0] - (5.0 - w.params.attack_cost)).abs() < 1e-5, "襲う費用だけ失う");
     }
@@ -2534,7 +2543,7 @@ mod tests {
         w.spawn(105.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.4, 1.0, 30.0, 0.0));
         w.spawn(120.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.8, 1.0, 30.0, 0.0));
         face(&mut w, 0, 1.0, 0.0);
-        w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+        w.build_grid();
         let prey = w.sense(0).prey.map(|(j, ..)| j);
         assert_eq!(prey, Some(2), "小さすぎる獲物は無視して、好みの大きさの獲物を狙う");
     }
@@ -2842,7 +2851,7 @@ mod tests {
             w.drop_carrion(100.0, 100.0, 20.0);
             let c = w.plants.cell_index(100.0, 100.0);
             w.carrion_age[c] = age;
-            w.grid.build(&w.xs, &w.ys, &w.kind, &w.cover);
+            w.build_grid();
             let before = w.energy[0];
             w.scavenge(0);
             w.energy[0] - before
@@ -3037,6 +3046,42 @@ mod tests {
             w.step();
         }
         assert_eq!(w.lineage_stats(HERBIVORE, 0.0, 1.0)[17 + death::STARVED as usize], 0.0);
+    }
+
+    #[test]
+    fn 小さい個体ほど草に隠れやすい() {
+        // 仲間の見え方で比べる（獲物は好みの大きさの範囲で絞られるので使わない）
+        let seen = |size: f32| {
+            let mut w = empty_world();
+            let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+            w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+            let g = genome::initial(true, size, 1.0, 30.0, 0.0);
+            w.spawn(115.0, 100.0, HERBIVORE, 5.0, 0, &g);
+            face(&mut w, 0, 1.0, 0.0);
+            w.params.cover_strength = 0.6;
+            w.cover = vec![0.0, 1.0];
+            w.build_grid();
+            w.sense(0).kin.is_some()
+        };
+        // 15px 先。大きさ 1 なら 30 × (1 − 0.6) = 12px、大きさ 2 なら 30 × (1 − 0.42) = 17px まで見える
+        assert!(!seen(1.0), "大きさ 1 は草むらに隠れる");
+        assert!(seen(2.0), "大きい個体は草むらでも見つかる");
+    }
+
+    #[test]
+    fn 小さい体ほど早く大人になり寿命も短い() {
+        let mut w = empty_world();
+        let small = genome::initial(true, 0.5, 1.0, 30.0, 0.0);
+        let big = genome::initial(true, 2.0, 1.0, 30.0, 0.0);
+        let (ts, tb) = (genome::traits(&small, w.params.max_turn), genome::traits(&big, w.params.max_turn));
+        w.spawn_grown(100.0, 100.0, HERBIVORE, 50.0, 1, &small, ts, 0.5);
+        w.spawn_grown(200.0, 100.0, HERBIVORE, 50.0, 1, &big, tb, 0.5);
+        for _ in 0..10 {
+            w.live(0, 0.0, false, Mate::Missing);
+            w.live(1, 0.0, false, Mate::Missing);
+        }
+        assert!(w.growth[0] > w.growth[1], "小さいほうが速く育つ");
+        assert!(w.lifespan(0) < w.lifespan(1) * 1.6, "寿命の比は大きさの比の 0.25 乗程度");
     }
 
     #[test]

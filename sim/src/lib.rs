@@ -274,7 +274,8 @@ pub extern "C" fn inspect() -> *const f64 {
             out[22] = watch.throttle as f64;
             out[23] = watch.output[genome::OUT_REPRODUCE] as f64;
             out[24] = watch.output[genome::OUT_EAT] as f64;
-            out[25] = (p.cover_strength * w.cover[i] * (1.0 - p.signal_exposure * w.signal[i])) as f64;
+            // build_grid と同じ計算（小さいほど隠れやすい）
+            out[25] = (p.cover_strength * w.cover[i] * (1.0 - p.signal_exposure * w.signal[i]) / t.size.max(0.05).sqrt()).min(0.95) as f64;
             out[26] = w.energy_cap(i) as f64;
             out[27] = if watch.mate_nearby { 1.0 } else { 0.0 };
             out[28] = w.growth[i] as f64;

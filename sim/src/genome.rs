@@ -279,8 +279,8 @@ pub fn think(genome: &[f32], input: &[f32; N_IN]) -> [f32; N_OUT] {
 pub struct Traits {
     /// 遺伝子が決める大人の大きさ
     pub adult_size: f32,
-    /// adult_size の平方根（寿命の計算用）
-    pub adult_sqrt: f32,
+    /// adult_size の 0.25 乗（寿命と成熟までの時間の計算用。現実の哺乳類では、どちらも体重のおよそ 0.25 乗に比例する）
+    pub adult_pow025: f32,
     /// いまの大きさ（大人の大きさ × 成長度）。代謝・移動・一口の量・狩りに使う
     pub size: f32,
     /// いまの大きさの 0.75 乗（代謝の計算用。毎 tick 計算すると重いので先に求めておく）
@@ -327,7 +327,7 @@ pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
     let adult_size = genome[G_SIZE].clamp(SIZE_RANGE.0, SIZE_RANGE.1);
     let mut t = Traits {
         adult_size,
-        adult_sqrt: adult_size.sqrt(),
+        adult_pow025: adult_size.powf(0.25),
         size: adult_size,
         size_pow075: 0.0,
         turn_cos: 0.0,
@@ -601,8 +601,10 @@ pub fn crossover(a: &[f32], b: &[f32], rng: &mut Rng, out: &mut Vec<f32>) {
 
 /// 変異の設定
 pub struct Mutation {
-    /// 遺伝子 1 個あたりの変異確率（脳の重みは、使っているニューロンのものだけが変異する）
+    /// 脳の重み 1 個あたりの変異確率（使っているニューロンのものだけが変異する）
     pub rate: f32,
+    /// 体の形質 1 個あたりの変異確率（標識色は除く。標識色は毎回必ず漂う）
+    pub trait_rate: f32,
     /// 形質の変異の大きさ（現在値に対する割合）
     pub trait_sigma: f32,
     /// 脳の重みの変異の大きさ
@@ -622,7 +624,7 @@ pub fn mutate(g: &mut [f32], m: &Mutation, rng: &mut Rng) {
             g[k] += rng.gaussian() * m.hue_sigma;
             continue;
         }
-        if rng.f32() >= m.rate {
+        if rng.f32() >= m.trait_rate {
             continue;
         }
         if k == G_TEMP_PREF {
@@ -828,7 +830,7 @@ mod tests {
 
     #[test]
     fn 遺伝的距離は同じなら0で変異を重ねるほど大きい() {
-        let m = Mutation { rate: 0.02, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0 };
+        let m = Mutation { rate: 0.02, trait_rate: 0.1, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0 };
         let base = initial(true, 1.0, 1.3, 30.0, 0.3);
         assert_eq!(genetic_distance(&base, &base, 0.05, 0.1, 0.5), 0.0);
         let mut rng = Rng::new(1);
@@ -880,7 +882,7 @@ mod tests {
 
     #[test]
     fn 使っていないニューロンの重みは変異しない() {
-        let m = Mutation { rate: 1.0, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0 };
+        let m = Mutation { rate: 1.0, trait_rate: 1.0, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0 };
         let mut g = initial(true, 1.0, 1.3, 30.0, 0.3);
         mutate(&mut g, &m, &mut Rng::new(3));
         let unused = INITIAL_H1 + 2;
@@ -914,7 +916,7 @@ mod tests {
 
     #[test]
     fn 変異は同じ乱数なら同じ結果になる() {
-        let m = Mutation { rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02, temp_sigma: 0.5, neuron_flip: 0.1 };
+        let m = Mutation { rate: 0.5, trait_rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02, temp_sigma: 0.5, neuron_flip: 0.1 };
         let mut a = initial(true, 1.0, 1.3, 30.0, 0.3);
         let mut b = a.clone();
         mutate(&mut a, &m, &mut Rng::new(5));
