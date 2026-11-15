@@ -40,6 +40,8 @@ pub mod state {
     pub const COURT: u8 = 7;
     /// 死体を食べた
     pub const SCAVENGE: u8 = 8;
+    /// 同じ種類の敵を攻撃した
+    pub const FIGHT: u8 = 9;
 }
 
 /// 死因（観察用）
@@ -51,11 +53,16 @@ pub mod death {
     pub const INJURED: u8 = 4;
     /// 腐った死体を食べて病気になって死んだ
     pub const SICK: u8 = 5;
+    /// 同じ種類の敵との争いで死んだ
+    pub const FOUGHT: u8 = 6;
 }
 
 /// 目の維持費の換算の基準（視野角 300°・視野 30px）。この目の維持費が vision_cost × 30 になる
 const EYE_REF_RANGE: f32 = 30.0;
 const EYE_REF_AREA: f32 = 0.5 * (300.0 * std::f32::consts::PI / 180.0) * EYE_REF_RANGE * EYE_REF_RANGE;
+
+/// 敵に攻撃されて負けたあと、「攻撃された」状態が続く tick 数
+const ATTACKED_TICKS: u8 = 30;
 
 /// これより少なくなった死体は消す
 const CARRION_MIN: f32 = 0.1;
@@ -147,9 +154,11 @@ pub struct Watch {
 #[derive(Default, Clone, Debug)]
 pub struct Census {
     /// 死因ごとの死亡数 [種類][死因]
-    pub deaths: [[u64; 6]; 2],
+    pub deaths: [[u64; 7]; 2],
     /// そのうち、成熟する前に死んだ数 [種類][死因]
-    pub juvenile_deaths: [[u64; 6]; 2],
+    pub juvenile_deaths: [[u64; 7]; 2],
+    /// 同じ種類の敵への攻撃の回数 [種類]
+    pub fights: [u64; 2],
     /// 生まれた数 [種類]
     pub births: [u64; 2],
     /// 襲いかかった回数と、仕留めた回数
@@ -227,6 +236,9 @@ struct Senses {
     kin_signal: f32,
     /// 見えている仲間のうち、自分の真後ろを視野に収めている個体の数
     rear_watchers: u32,
+    /// 同じ種類の敵（系統色が離れている個体）のうち最寄り、とその数
+    rival: Seen,
+    rival_count: u32,
 }
 
 /// 個体の生涯の記録（観察用）
@@ -294,6 +306,10 @@ pub struct World {
     pub cooldown: Vec<u16>,
     /// 次に繁殖できるようになるまでの残り tick 数（妊娠と子育てにあたる）
     pub rest: Vec<u16>,
+    /// 敵に攻撃されて負けてからの残り tick 数（ATTACKED_TICKS から減る。0 なら最近は攻撃されていない）
+    pub attacked: Vec<u8>,
+    /// 仲間（同じ種類）を最後に見てからの tick 数
+    pub alone: Vec<u16>,
     /// 直前の tick に脳が決めた警戒の度合い（0〜1、草食のみ使う）。天敵に気づける距離と一口の大きさに効く
     pub vigilance: Vec<f32>,
     /// 生まれた場所の植生（肥沃度）。草食はこれと大きく違う植生の場所では食べられない
@@ -390,6 +406,8 @@ impl World {
             growth: Vec::new(),
             cooldown: Vec::new(),
             rest: Vec::new(),
+            attacked: Vec::new(),
+            alone: Vec::new(),
             vigilance: Vec::new(),
             natal: Vec::new(),
             cover: Vec::new(),
@@ -493,6 +511,8 @@ impl World {
         self.growth.push(growth);
         self.cooldown.push(0);
         self.rest.push(0);
+        self.attacked.push(0);
+        self.alone.push(0);
         self.vigilance.push(0.5);
         self.natal.push(self.terrain.soil_at(x, y));
         self.cover.push(0.0);
@@ -749,6 +769,51 @@ impl World {
         true
     }
 
+    /// 個体 i の近く（coop_radius 以内）にいる、同じ種類で系統色の近い（同じ系統の）生きている個体の数
+    fn allies_of(&self, i: usize) -> u32 {
+        let p = &self.params;
+        let (x, y, kind, hue) = (self.xs[i], self.ys[i], self.kind[i], self.traits[i].hue);
+        let r2 = p.coop_radius * p.coop_radius;
+        let mut n = 0;
+        self.grid.for_each_within(x, y, p.coop_radius, |k, xk, yk, kind_k, _| {
+            if k == i || kind_k != kind || !self.alive[k] {
+                return;
+            }
+            let dx = torus_delta(xk - x, self.width);
+            let dy = torus_delta(yk - y, self.height);
+            if dx * dx + dy * dy < r2 && genome::hue_distance(hue, self.traits[k].hue) <= p.hue_similar {
+                n += 1;
+            }
+        });
+        n
+    }
+
+    /// 争いでの強さ: いまの大きさ × (1 + 協力の強さ × 近くの同じ系統の仲間の数（上限あり）)
+    fn fight_strength(&self, i: usize) -> f32 {
+        let p = &self.params;
+        let allies = (self.allies_of(i) as f32).min(p.coop_max_allies);
+        self.traits[i].size * (1.0 + p.coop_strength * allies)
+    }
+
+    /// 個体 i が同じ種類の敵 j を攻撃する。勝つ確率は強さの 2 乗の比。
+    /// 負けた側は勝った側の大きさに応じたけがをし、しばらく「攻撃された」状態になる。勝った側も小さなけがをする
+    fn fight(&mut self, i: usize, j: usize) {
+        let cost = self.params.fight_cost.min(self.energy[i]);
+        self.energy[i] -= cost;
+        self.ledger.lost_metabolism += cost as f64;
+        self.cooldown[i] = self.params.attack_cooldown as u16;
+        self.census.fights[self.kind[i] as usize] += 1;
+        let (si, sj) = (self.fight_strength(i), self.fight_strength(j));
+        let win = self.rng.f32() < si * si / (si * si + sj * sj).max(1e-6);
+        let (winner, loser) = if win { (i, j) } else { (j, i) };
+        let (p_damage, p_backlash) = (self.params.fight_damage, self.params.fight_backlash);
+        let damage = p_damage * self.traits[winner].size;
+        let backlash = p_damage * self.traits[loser].size * p_backlash;
+        self.attacked[loser] = ATTACKED_TICKS;
+        self.hurt(loser, damage, death::FOUGHT);
+        self.hurt(winner, backlash, death::FOUGHT);
+    }
+
     /// 個体 i がけがや病気でエネルギー damage を失う。手持ちを超えたら死因 cause で死ぬ（手持ちを使い切って死ぬので、死体は残らない）
     fn hurt(&mut self, i: usize, damage: f32, cause: u8) {
         let lost = damage.min(self.energy[i]);
@@ -862,6 +927,7 @@ impl World {
         let (mut sep_dx, mut sep_dy) = (0.0f32, 0.0f32);
         let mut kin_signal = 0.0f32;
         let mut rear_watchers = 0u32;
+        let (mut rival, mut rival_d2, mut rival_count): (Seen, f32, u32) = (None, f32::MAX, 0);
         // 近づきすぎない距離（体がぶつかる距離なので、草で隠れて見えなくても効く）
         let space = self.params.personal_space * self.traits[i].size;
         let space2 = space * space;
@@ -944,6 +1010,12 @@ impl World {
                             similar_d2 = d2;
                             similar = Some((j, dx, dy, d2));
                         }
+                    } else {
+                        rival_count += 1;
+                        if d2 < rival_d2 {
+                            rival_d2 = d2;
+                            rival = Some((j, dx, dy, d2));
+                        }
                     }
                     if self.growth[j] >= 1.0 {
                         for (k, ok) in [is_similar, true].into_iter().enumerate() {
@@ -975,6 +1047,8 @@ impl World {
             alarm_hy,
             kin_signal,
             rear_watchers,
+            rival,
+            rival_count,
         }
     }
 
@@ -1038,6 +1112,19 @@ impl World {
             input[genome::IN_REAR_WATCH] = senses.rear_watchers as f32 / n;
         }
         input[genome::IN_SEASON] = self.season();
+        if let Some((j, dx, dy, d2)) = senses.rival {
+            let d = d2.sqrt().max(1e-3);
+            let (f, r) = to_local(dx / d, dy / d);
+            input[genome::IN_RIVAL_FWD] = f;
+            input[genome::IN_RIVAL_RIGHT] = r;
+            input[genome::IN_RIVAL_NEAR] = 1.0 - 0.5 * (d / t.vision).min(1.0);
+            input[genome::IN_RIVAL_SIZE] = self.traits[j].size / t.size;
+        }
+        input[genome::IN_RIVAL_COUNT] = softsign(senses.rival_count as f32 / 4.0);
+        input[genome::IN_ATTACKED] = self.attacked[i] as f32 / ATTACKED_TICKS as f32;
+        // 仲間が見えていなければ一人の時間が延びる
+        self.alone[i] = if senses.kin_count > 0 { 0 } else { self.alone[i].saturating_add(1) };
+        input[genome::IN_ALONE] = softsign(self.alone[i] as f32 / 150.0);
         if self.kind[i] == CARNIVORE {
             let c = self.plants.cell_index(x, y);
             input[genome::IN_CARRION_HERE] = softsign(self.carrion[c] / 2.0);
@@ -1110,18 +1197,25 @@ impl World {
             normalize(to_local(senses.alarm_hx, senses.alarm_hy))
         };
         // 逃げる方向: 天敵が見えていればその反対。見えていなくても、逃げている仲間がいればその向き（警戒の合図）
-        let flee = match senses.predator {
-            Some(_) => {
+        // 逃げる方向: 天敵が見えていればその反対。敵に攻撃されて負けた直後なら、最寄りの敵の反対。
+        // どちらでもなく、逃げている仲間がいればその向き（警戒の合図）
+        let flee = match (senses.predator, senses.rival) {
+            (Some(_), _) => {
                 let (pf, pr) = unit(senses.predator);
                 (-pf, -pr)
             }
-            None => normalize(to_local(senses.alarm_hx, senses.alarm_hy)),
+            (None, Some(_)) if self.attacked[i] > 0 => {
+                let (rf, rr) = unit(senses.rival);
+                (-rf, -rr)
+            }
+            _ => normalize(to_local(senses.alarm_hx, senses.alarm_hy)),
         };
         // 仲間に寄る方向: 見えている仲間の中心へ
         let kin = normalize(to_local(senses.kin_dx, senses.kin_dy));
         // 繁殖相手へ向かう方向: 見えていればその相手へ。見えなければ、呼び声の大きい方へ
         let mate_dir = if senses.mate.is_some() { unit(senses.mate) } else { call_dir };
-        let drives = [food, mate_dir, flee, kin, (0.0, 0.0)];
+        // 追い払う方向: 最寄りの敵へ
+        let drives = [food, mate_dir, flee, kin, unit(senses.rival), (0.0, 0.0)];
         if self.kind[i] == HERBIVORE {
             self.vigilance[i] = genome::vigilance(&out);
         }
@@ -1178,6 +1272,19 @@ impl World {
                 Mate::Asexual => 1.0,
                 Mate::Missing => -1.0,
             };
+        }
+
+        // 届く距離の敵を攻撃する（攻撃した tick は、食べたり狩ったりしない）
+        if out[genome::OUT_ATTACK] > 0.0
+            && self.cooldown[i] == 0
+            && let Some((j, _, _, d2)) = senses.rival
+        {
+            let reach = self.params.fight_range * t.size;
+            if d2 < reach * reach {
+                self.fight(i, j);
+                self.state[i] = state::FIGHT;
+                return (speed, wants_child, mate);
+            }
         }
 
         if self.kind[i] == HERBIVORE {
@@ -1508,6 +1615,7 @@ impl World {
         self.age[i] += 1;
         self.cooldown[i] = self.cooldown[i].saturating_sub(1);
         self.rest[i] = self.rest[i].saturating_sub(1);
+        self.attacked[i] = self.attacked[i].saturating_sub(1);
         self.grow(i, if herb { p.herb_maturity } else { p.carn_maturity });
         if self.id[i] == self.watch.id {
             self.watch.speed = speed;
@@ -1702,6 +1810,8 @@ impl World {
             self.growth.swap_remove(i);
             self.cooldown.swap_remove(i);
             self.rest.swap_remove(i);
+            self.attacked.swap_remove(i);
+            self.alone.swap_remove(i);
             self.vigilance.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
@@ -2758,6 +2868,92 @@ mod tests {
         let before = w.growth[0];
         w.grow(0, 600.0);
         assert_eq!(w.growth[0], before);
+    }
+
+    #[test]
+    fn 系統色の離れた同じ種類の個体を敵として見る() {
+        let mut w = empty_world();
+        let mut g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        g[genome::G_HUE] = 0.02;
+        w.spawn(110.0, 100.0, HERBIVORE, 5.0, 0, &g); // 同じ系統
+        g[genome::G_HUE] = 0.5;
+        w.spawn(120.0, 100.0, HERBIVORE, 5.0, 0, &g); // 敵
+        face(&mut w, 0, 1.0, 0.0);
+        w.cover = vec![0.0; 3];
+        w.build_grid();
+        let s = w.sense(0);
+        assert_eq!(s.rival_count, 1);
+        assert_eq!(s.rival.map(|r| r.0), Some(2));
+    }
+
+    #[test]
+    fn 争いは大きいほうが勝ちやすく負けた側はけがをする() {
+        let mut wins = 0;
+        for seed in 0..200 {
+            let mut p = small_params();
+            p.herb_initial = 0.0;
+            p.carn_initial = 0.0;
+            p.sunlight = 0.0;
+            let mut w = World::new(seed, p);
+            let mut big = genome::initial(true, 2.0, 1.0, 30.0, 0.0);
+            big[genome::G_HUE] = 0.0;
+            let mut small = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+            small[genome::G_HUE] = 0.5;
+            w.spawn(100.0, 100.0, HERBIVORE, 20.0, 0, &big);
+            w.spawn(104.0, 100.0, HERBIVORE, 20.0, 0, &small);
+            w.cover = vec![0.0; 2];
+            w.build_grid();
+            w.fight(0, 1);
+            if w.attacked[1] > 0 {
+                wins += 1;
+                assert!(w.energy[1] < 20.0 - w.params.fight_damage * 1.9, "負けた側は大きなけが");
+            }
+        }
+        // 強さ 2 対 1 なら 2 乗の比で 8 割
+        assert!((140..=180).contains(&wins), "大きいほうの勝ち数 {wins}/200");
+    }
+
+    #[test]
+    fn 争いで死んだ個体は死体になる() {
+        let mut w = empty_world();
+        let mut a = genome::initial(false, 2.0, 1.0, 40.0, 0.0);
+        a[genome::G_HUE] = 0.0;
+        let mut b = genome::initial(false, 0.5, 1.0, 40.0, 0.0);
+        b[genome::G_HUE] = 0.5;
+        w.spawn(100.0, 100.0, CARNIVORE, 20.0, 0, &a);
+        w.spawn(103.0, 100.0, CARNIVORE, 0.5, 0, &b);
+        w.cover = vec![0.0; 2];
+        w.build_grid();
+        // 大きいほうが勝つまで繰り返す（負けた小さいほうは手持ちが少なく死ぬ）
+        for _ in 0..50 {
+            if !w.alive[1] {
+                break;
+            }
+            w.cooldown[0] = 0;
+            w.fight(0, 1);
+        }
+        assert!(!w.alive[1], "小さいほうが死ぬ");
+        let c = w.plants.cell_index(103.0, 100.0);
+        assert!(w.carrion[c] > 0.0, "体が死体になる");
+        assert!(w.census.deaths[CARNIVORE as usize][death::FOUGHT as usize] >= 1);
+    }
+
+    #[test]
+    fn 仲間が見えない時間を数える() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 9.0, 0, &g);
+        for _ in 0..5 {
+            w.step();
+        }
+        assert_eq!(w.alone[0], 5, "一人なら毎 tick 増える");
+        // 目の前に仲間を置くと 0 に戻る
+        let (x, y, hx, hy) = (w.xs[0], w.ys[0], w.hx[0], w.hy[0]);
+        w.spawn(x + hx * 10.0, y + hy * 10.0, HERBIVORE, 9.0, 0, &g);
+        w.step();
+        let i = w.index_of(1).unwrap();
+        assert_eq!(w.alone[i], 0, "仲間が見えたら 0");
     }
 
     #[test]

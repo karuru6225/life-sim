@@ -103,7 +103,21 @@ pub const IN_CARRION_FWD: usize = 34;
 pub const IN_CARRION_RIGHT: usize = 35;
 /// 足元の死体の新しさ（1 で死んだばかり、古いほど 0 に近づく。死体がなければ 0）。古い死体は栄養が少なく、病気になりやすい
 pub const IN_CARRION_FRESH: usize = 36;
-pub const N_IN: usize = 37;
+// 同じ種類の敵（系統色が自分と離れている個体）
+/// 最寄りの敵の方向（自分基準の前方・右方成分）
+pub const IN_RIVAL_FWD: usize = 37;
+pub const IN_RIVAL_RIGHT: usize = 38;
+/// 最寄りの敵が見えていれば 0.5〜1（近いほど大きい）、見えていなければ 0
+pub const IN_RIVAL_NEAR: usize = 39;
+/// 最寄りの敵の大きさ ÷ 自分の大きさ（見えていなければ 0）
+pub const IN_RIVAL_SIZE: usize = 40;
+/// 見えている敵の数（softsign(数 / 4) で 0〜1 に縮める）
+pub const IN_RIVAL_COUNT: usize = 41;
+/// 最近、敵に攻撃されて負けたか（負けた直後に 1、ATTACKED_TICKS かけて 0 に戻る）
+pub const IN_ATTACKED: usize = 42;
+/// 仲間（同じ種類）を最後に見てからの時間（softsign(tick 数 ÷ 150)。仲間が見えていれば 0、長く一人でいるほど 1 に近い）
+pub const IN_ALONE: usize = 43;
+pub const N_IN: usize = 44;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -143,14 +157,18 @@ pub const OUT_EAT: usize = 9;
 pub const OUT_VIGILANCE: usize = 10;
 /// 繁殖シグナルの強さ（0〜1 に変換して使う）。周りの仲間に見え、出すほどエネルギーを使い、草に隠れにくくなる
 pub const OUT_SIGNAL: usize = 11;
-pub const N_OUT: usize = 12;
+/// 敵を追い払う欲求の優先度（最寄りの敵へ）
+pub const OUT_PRI_FIGHT: usize = 12;
+/// 正なら、届く距離の敵を攻撃する
+pub const OUT_ATTACK: usize = 13;
+pub const N_OUT: usize = 14;
 
-/// 欲求の数（食べる・繁殖・逃げる・仲間・自由）。最後の「自由」の方向は脳の出力から取る
-pub const N_DRIVES: usize = 5;
+/// 欲求の数（食べる・繁殖・逃げる・仲間・追い払う・自由）。最後の「自由」の方向は脳の出力から取る
+pub const N_DRIVES: usize = 6;
 
 /// 出力から欲求ごとの優先度（0〜1）を取り出す
 pub fn priorities(out: &[f32; N_OUT]) -> [f32; N_DRIVES] {
-    [OUT_PRI_FOOD, OUT_PRI_MATE, OUT_PRI_FLEE, OUT_PRI_KIN, OUT_PRI_FREE].map(|k| 0.5 + 0.5 * softsign(out[k]))
+    [OUT_PRI_FOOD, OUT_PRI_MATE, OUT_PRI_FLEE, OUT_PRI_KIN, OUT_PRI_FIGHT, OUT_PRI_FREE].map(|k| 0.5 + 0.5 * softsign(out[k]))
 }
 
 /// 出力から警戒の度合い（0〜1）を取り出す
@@ -421,6 +439,14 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     out_bias(&mut g, OUT_SIGNAL, -3.0);
     wire_out(&mut g, OUT_SIGNAL, h_ready, 3.0);
     wire_out(&mut g, OUT_SIGNAL, h_mood, 2.0);
+    // 敵を追い払う欲求と攻撃は、初めはほとんど使わない（使うかどうかは進化に任せる）
+    out_bias(&mut g, OUT_PRI_FIGHT, -4.0);
+    out_bias(&mut g, OUT_ATTACK, -2.0);
+    // 敵に攻撃されて負けたら逃げる（草食は警戒の合図のニューロン、肉食は空いている 4 番を使う）
+    wire_hidden(&mut g, h_alarm, IN_ATTACKED, 4.0);
+    if !herbivore {
+        wire_out(&mut g, OUT_PRI_FLEE, h_alarm, 8.0);
+    }
     // 繁殖できるときは繁殖し、食べられるときは食べる
     out_bias(&mut g, OUT_REPRODUCE, 2.0);
     out_bias(&mut g, OUT_EAT, 2.0);
@@ -445,12 +471,18 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         IN_SIM_RIGHT,
         IN_SIM_RATIO,
         IN_REAR_WATCH,
+        IN_RIVAL_FWD,
+        IN_RIVAL_RIGHT,
+        IN_RIVAL_NEAR,
+        IN_RIVAL_SIZE,
+        IN_RIVAL_COUNT,
+        IN_ALONE,
     ];
     for h in [6, 7] {
         for &k in &kin_inputs {
             wire_hidden(g, h, k, rng.gaussian() * SIGMA_IN);
         }
-        for o in [OUT_DIR_FWD, OUT_DIR_RIGHT, OUT_PRI_FREE, OUT_PRI_KIN, OUT_VIGILANCE, OUT_THROTTLE] {
+        for o in [OUT_DIR_FWD, OUT_DIR_RIGHT, OUT_PRI_FREE, OUT_PRI_KIN, OUT_VIGILANCE, OUT_THROTTLE, OUT_PRI_FIGHT, OUT_ATTACK] {
             wire_out(g, o, h, rng.gaussian() * SIGMA_OUT);
         }
     }
@@ -637,9 +669,9 @@ mod tests {
         [0.0; N_IN]
     }
 
-    /// 欲求ごとの方向 [食べる, 繁殖, 逃げる, 仲間, (自由)]
+    /// 欲求ごとの方向 [食べる, 繁殖, 逃げる, 仲間, 追い払う, (自由)]
     fn drives(food: (f32, f32), mate: (f32, f32), flee: (f32, f32)) -> [(f32, f32); N_DRIVES] {
-        [food, mate, flee, (0.0, 0.0), (0.0, 0.0)]
+        [food, mate, flee, (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
     }
 
     #[test]
