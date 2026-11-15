@@ -144,6 +144,9 @@ export class Hud {
         <span class="group-label">植物量</span>
         <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.background}, ${COLORS.plant})"></div>
         <div class="swatch-scale"><span>なし</span><span>上限</span></div>
+        <div class="terrain-legend">
+          <span><i class="swatch" style="background:${COLORS.carrion}"></i>死体（肉食が食べられる。少しずつ腐って減る）</span>
+        </div>
         <p class="legend-note">草食は丸、肉食は進行方向を指す三角。大きさは個体のいまの大きさに比例（肉食は見やすさのため 1.5 倍で表示）</p>
         <p class="legend-note">集まり具合: 最寄りの仲間までの距離 ÷ ランダムに散らばった場合の期待値（1 でランダム、小さいほど集まっている）。向きのそろい: 近くの仲間との向きの一致度（0 でばらばら、1 で同じ向き）。同じ系統どうしだけ高ければ、系統ごとの群れができている</p>
       </div>

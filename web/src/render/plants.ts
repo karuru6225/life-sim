@@ -1,5 +1,6 @@
-// 植物の描画。マス目 1 つを 1 ピクセルにした画像を作り、世界の大きさに引き伸ばして敷く。
+// 植物（と死体）の描画。マス目 1 つを 1 ピクセルにした画像を作り、世界の大きさに引き伸ばして敷く。
 // 引き伸ばすときに補間されるので、マス目の境界がぼけて地面の濃淡のように見える。
+// 量を不透明度で表す。同じ仕組みで、色と基準の量を変えて死体の層にも使う。
 
 import { Color, Sprite, Texture } from 'pixi.js';
 import { COLORS } from '../config';
@@ -10,13 +11,18 @@ export class PlantLayer {
   private ctx = this.canvas.getContext('2d')!;
   private image: ImageData | null = null;
   private texture: Texture | null = null;
-  private readonly rgb = new Color(COLORS.plant).toUint8RgbArray();
+  private readonly rgb: Uint8ClampedArray | number[];
 
   constructor(
     private readonly cellSize: number,
+    /** この量で不透明度が最大になる */
     private readonly capacity: number,
+    color: string = COLORS.plant,
+    /** 量が少しでもあるときの最低の不透明度（0〜1）。少量でも見落とさないようにする */
+    private readonly minAlpha = 0,
   ) {
     this.sprite = new Sprite();
+    this.rgb = new Color(color).toUint8RgbArray();
   }
 
   /** biomass: cols × rows（行優先） */
@@ -39,8 +45,9 @@ export class PlantLayer {
       px[o] = r;
       px[o + 1] = g;
       px[o + 2] = b;
-      // 植物量に比例した不透明度。満杯で COLORS.plant そのものになる
-      px[o + 3] = Math.min(1, biomass[i] / this.capacity) * 255;
+      // 量に比例した不透明度。capacity で色そのものになる
+      const a = Math.min(1, biomass[i] / this.capacity);
+      px[o + 3] = (biomass[i] > 0.05 ? this.minAlpha + (1 - this.minAlpha) * a : a) * 255;
     }
     this.ctx.putImageData(this.image, 0, 0);
     this.texture!.source.update();

@@ -25,6 +25,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.EAT]: '獲物を食べた',
     [STATE.MISSED]: '襲ったが逃げられた',
     [STATE.COURT]: '繁殖相手に向かっている',
+    [STATE.SCAVENGE]: '死体を食べている',
   },
 };
 

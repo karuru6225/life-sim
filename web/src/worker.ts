@@ -18,6 +18,7 @@ interface SimExports {
   render_buffer_ptr(): number;
   render_stride(): number;
   plant_ptr(): number;
+  carrion_ptr(): number;
   plant_cols(): number;
   plant_rows(): number;
   terrain_ptr(): number;
@@ -229,7 +230,7 @@ function publish(s: SimExports, now: number): void {
   const plantRows = s.plant_rows();
   const agentFloats = agentCount * stride;
   const plantFloats = plantCols * plantRows;
-  const bytes = (agentFloats + plantFloats) * 4;
+  const bytes = (agentFloats + plantFloats * 2) * 4;
   if (buffer.byteLength < bytes) {
     buffer = new ArrayBuffer(Math.ceil((bytes * BUFFER_HEADROOM) / 4) * 4);
   }
@@ -240,6 +241,7 @@ function publish(s: SimExports, now: number): void {
   out.set(new Float32Array(s.memory.buffer, agentsPtr, agentFloats), 0);
   const plantsPtr = s.plant_ptr();
   out.set(new Float32Array(s.memory.buffer, plantsPtr, plantFloats), agentFloats);
+  out.set(new Float32Array(s.memory.buffer, s.carrion_ptr(), plantFloats), agentFloats + plantFloats);
 
   const inspect = watching ? Array.from(new Float64Array(s.memory.buffer, s.inspect(), s.inspect_len())) : null;
 

@@ -76,6 +76,8 @@ export const SIM_PARAMS = {
   guard_strength: 0.15,
   counter_start_ratio: 1.2,
   counter_damage: 8,
+  carrion_decay: 0.002,
+  carn_scavenge_bite: 0.5,
   attack_cost: 0.3,
   attack_cooldown: 10,
 
@@ -188,6 +190,8 @@ export const HISTORY_LENGTH = 240;
 export const COLORS = {
   background: '#06090b',
   plant: '#2a6b42',
+  /** 死体。植物の上に重ねるので、植物の色に対しても 3:1 を確保（3.07:1、地の色に対して 9.6:1） */
+  carrion: '#d9a0e0',
   herbivore: '#9fd8c4',
   carnivore: '#ffa878',
   /** 選択中の個体の目印 */

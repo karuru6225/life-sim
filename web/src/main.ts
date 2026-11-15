@@ -31,7 +31,9 @@ app.stage.addChild(world);
 
 const terrain = new TerrainLayer(params.plant_cell);
 const plants = new PlantLayer(params.plant_cell, params.plant_capacity);
-world.addChild(terrain.sprite, plants.sprite);
+// 死体は 8 で最も濃く、少しでもあれば 4 割の濃さで見えるようにする
+const carrion = new PlantLayer(params.plant_cell, 8, COLORS.carrion, 0.4);
+world.addChild(terrain.sprite, plants.sprite, carrion.sprite);
 
 // 世界の外枠。トーラスなので端はつながっているが、どこまでが世界かは見せておく
 world.addChild(
@@ -291,7 +293,9 @@ app.ticker.add(() => {
   // 枠線は表示中のときだけ更新する（計算の節約）
   if (herbOutline.container.visible) herbOutline.apply(agents, f.agentCount, f.stride, HERBIVORE, 'kind', herbMin);
   if (carnOutline.container.visible) carnOutline.apply(agents, f.agentCount, f.stride, CARNIVORE, 'kind', carnMin);
-  plants.apply(new Float32Array(f.buffer, agentFloats * 4, f.plantCols * f.plantRows), f.plantCols, f.plantRows);
+  const cells = f.plantCols * f.plantRows;
+  plants.apply(new Float32Array(f.buffer, agentFloats * 4, cells), f.plantCols, f.plantRows);
+  carrion.apply(new Float32Array(f.buffer, (agentFloats + cells) * 4, cells), f.plantCols, f.plantRows);
   const now = performance.now();
   if (now - lastLineage > LINEAGE_INTERVAL_MS) {
     lineage.update(agents, f.agentCount, f.stride);
