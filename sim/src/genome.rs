@@ -25,7 +25,9 @@ pub const G_PREY_MAX: usize = 6;
 pub const G_TEMP_PREF: usize = 7;
 /// 視野角（ラジアン）。正面を中心にこの角度の扇形の中だけが見える。2π なら全方位
 pub const G_FOV: usize = 8;
-/// 一度に産む子の数（四捨五入して 1〜6）。子に渡すエネルギーを等分するので、多く産むほど 1 体は小さい
+/// 一度に産む子の数の平均（1〜6）。端数は確率で、1.3 なら 70% で 1 体、30% で 2 体。
+/// 子に渡すエネルギーを等分するので、多く産むほど 1 体は小さい。
+/// 四捨五入にすると、途中の値（1.1〜1.4 など）が何も変えず、選択が後押しできないので確率にしている
 pub const G_LITTER: usize = 9;
 pub const N_TRAITS: usize = 10;
 
@@ -306,8 +308,8 @@ pub struct Traits {
     pub fov_cos: f32,
     /// 使っている中間ニューロンの数（1 層目, 2 層目）。脳の維持費に使う
     pub brain: (u32, u32),
-    /// 一度に産む子の数
-    pub litter: u32,
+    /// 一度に産む子の数の平均（端数は確率）
+    pub litter: f32,
 }
 
 impl Traits {
@@ -348,7 +350,7 @@ pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
         fov: 0.0,
         fov_cos: 0.0,
         brain: active_neurons(genome),
-        litter: genome[G_LITTER].clamp(LITTER_RANGE.0, LITTER_RANGE.1).round() as u32,
+        litter: genome[G_LITTER].clamp(LITTER_RANGE.0, LITTER_RANGE.1),
     };
     t.fov = genome[G_FOV].clamp(FOV_RANGE.0, FOV_RANGE.1);
     t.fov_cos = (t.fov * 0.5).cos();

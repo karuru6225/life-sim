@@ -1763,7 +1763,9 @@ impl World {
         let parent = available - given;
         self.energy[i] = parent;
         self.ledger.lost_birth += (before - parent - given) as f64;
-        let litter = self.traits[i].litter.max(1);
+        // 一度に産む数: 整数部分は必ず、端数は確率で 1 体増やす
+        let mean = self.traits[i].litter;
+        let litter = mean.floor() as u32 + (self.rng.f32() < mean.fract()) as u32;
         self.children[i] += litter;
         // 休み = 基本の休み × 渡した量 ÷ (繁殖に必要な量の半分)。0.1〜3 倍に収める
         let base_rest = if self.kind[i] == HERBIVORE { self.params.herb_repro_rest } else { self.params.carn_repro_rest };
@@ -1950,7 +1952,7 @@ impl World {
             out[14] += ((std::f32::consts::TAU * self.ys[i] / self.height).cos() > 0.0) as u8 as f64;
             out[15] += t.brain.0 as f64;
             out[16] += t.brain.1 as f64;
-            out[17] += t.litter as f64;
+            out[17] += t.litter as f64; // 平均（端数込み）
             let (ax, ay) = (self.xs[i] as f64 * tw, self.ys[i] as f64 * th);
             cx += ax.cos();
             sx += ax.sin();
@@ -3019,8 +3021,12 @@ mod tests {
 
     #[test]
     fn 一度に複数産むと子は小さく_休みは渡した量に比例する() {
-        let born = |litter: f32, invest: f32| {
-            let mut w = empty_world();
+        let born_seed = |litter: f32, invest: f32, seed: u64| {
+            let mut p = small_params();
+            p.herb_initial = 0.0;
+            p.carn_initial = 0.0;
+            p.sunlight = 0.0;
+            let mut w = World::new(seed, p);
             let mut g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
             g[genome::G_LITTER] = litter;
             g[genome::G_INVEST] = invest;
@@ -3032,8 +3038,12 @@ mod tests {
             let kids: Vec<usize> = (2..w.count()).collect();
             (kids.len(), kids.iter().map(|&k| w.growth[k]).fold(0.0f32, f32::max), rest)
         };
+        let born = |litter: f32, invest: f32| born_seed(litter, invest, 1);
         let (one, one_size, one_rest) = born(1.0, 0.5);
         let (three, three_size, three_rest) = born(3.0, 0.5);
+        // 端数は確率: 1.5 なら 1 体か 2 体
+        let twins = (0..40).filter(|&seed| born_seed(1.5, 0.5, seed).0 == 2).count();
+        assert!((8..=32).contains(&twins), "1.5 なら半分くらいが双子: {twins}/40");
         assert_eq!((one, three), (1, 3));
         assert!(three_size < one_size * 0.5, "3 体なら 1 体あたり小さい: {one_size} → {three_size}");
         assert_eq!(one_rest, three_rest, "渡した合計が同じなら休みも同じ");

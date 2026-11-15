@@ -103,8 +103,8 @@ fn main() {
                 (v.iter().map(|x| (x - m) * (x - m)).sum::<f32>() / n).sqrt()
             };
             let litter = |kind: u8| {
-                let v: Vec<u32> = (0..w.count()).filter(|&i| w.kind[i] == kind).map(|i| w.traits[i].litter).collect();
-                v.iter().sum::<u32>() as f32 / v.len().max(1) as f32
+                let v: Vec<f32> = (0..w.count()).filter(|&i| w.kind[i] == kind).map(|i| w.traits[i].litter).collect();
+                v.iter().sum::<f32>() / v.len().max(1) as f32
             };
             let brain = |kind: u8| {
                 let v: Vec<u32> = (0..w.count()).filter(|&i| w.kind[i] == kind).map(|i| w.traits[i].brain.0 + w.traits[i].brain.1).collect();
