@@ -34,6 +34,10 @@ thread_local! {
     static LINEAGE: RefCell<[f64; LINEAGE_STATS * 2]> = const { RefCell::new([0.0; LINEAGE_STATS * 2]) };
     /// 選択中の個体の脳の入力と出力を JS に渡すための作業領域
     static BRAIN: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+    /// 保存した世界のバイト列（save_world で作り、読み込みでは JS がここに書き込む）
+    static SAVE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// 読み込みに失敗したときの理由
+    static LOAD_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
     /// 地形を JS に渡すための作業領域
     static TERRAIN: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
 }
@@ -74,6 +78,78 @@ pub extern "C" fn init(seed: u32) {
     let params = PARAMS.with(|p| p.borrow().clone());
     let world = World::new(seed as u64, params);
     WORLD.with(|w| *w.borrow_mut() = Some(world));
+}
+
+/// 世界の状態をすべてバイト列にし、その先頭アドレスを返す（長さは save_len()）
+#[unsafe(no_mangle)]
+pub extern "C" fn save_world() -> *const u8 {
+    let data = with_world(|w| w.save());
+    SAVE.with(|buf| {
+        *buf.borrow_mut() = data;
+        buf.borrow().as_ptr()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn save_len() -> u32 {
+    SAVE.with(|buf| buf.borrow().len() as u32)
+}
+
+/// 保存形式の番号（JS がファイルの見出しに書く）
+#[unsafe(no_mangle)]
+pub extern "C" fn save_format_version() -> u32 {
+    world::SAVE_FORMAT_VERSION
+}
+
+/// 読み込むバイト列を書き込む場所を len バイト用意し、その先頭アドレスを返す
+#[unsafe(no_mangle)]
+pub extern "C" fn load_buffer(len: u32) -> *mut u8 {
+    SAVE.with(|buf| {
+        let mut b = buf.borrow_mut();
+        b.clear();
+        b.resize(len as usize, 0);
+        b.as_mut_ptr()
+    })
+}
+
+/// load_buffer に書き込んだバイト列から世界を作り直す。成功なら 1、失敗なら 0（理由は load_error_ptr / load_error_len）。
+/// 成功したときは、読み込んだパラメータを次の init() でも使う
+#[unsafe(no_mangle)]
+pub extern "C" fn load_world() -> u32 {
+    let result = SAVE.with(|buf| World::load(&buf.borrow()));
+    match result {
+        Ok((world, unknown)) => {
+            PARAMS.with(|p| *p.borrow_mut() = world.params.clone());
+            WORLD.with(|w| *w.borrow_mut() = Some(world));
+            LOAD_ERROR.with(|e| {
+                *e.borrow_mut() = if unknown.is_empty() { String::new() } else { format!("知らないパラメータを無視した: {}", unknown.join(", ")) }
+            });
+            SAVE.with(|buf| *buf.borrow_mut() = Vec::new());
+            1
+        }
+        Err(message) => {
+            LOAD_ERROR.with(|e| *e.borrow_mut() = message);
+            0
+        }
+    }
+}
+
+/// 読み込みの失敗の理由（成功したときは、無視したパラメータなどの注意）の UTF-8 文字列
+#[unsafe(no_mangle)]
+pub extern "C" fn load_error_ptr() -> *const u8 {
+    LOAD_ERROR.with(|e| e.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn load_error_len() -> u32 {
+    LOAD_ERROR.with(|e| e.borrow().len() as u32)
+}
+
+/// 今の世界のパラメータの値を名前で読む（読み込んだ世界の設定を画面に反映するため）。知らない名前なら NaN
+#[unsafe(no_mangle)]
+pub extern "C" fn get_param(len: u32) -> f32 {
+    let name = SCRATCH.with(|s| String::from_utf8_lossy(&s.borrow()[..len as usize]).into_owned());
+    with_world(|w| w.params.entries().into_iter().find(|(n, _)| *n == name).map(|(_, v)| v).unwrap_or(f32::NAN))
 }
 
 /// ticks 回だけ進める

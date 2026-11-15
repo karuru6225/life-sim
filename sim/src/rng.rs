@@ -15,6 +15,16 @@ impl Rng {
         rng
     }
 
+    /// 内部の状態（保存用）
+    pub fn state(&self) -> (u64, u64) {
+        (self.state, self.inc)
+    }
+
+    /// 保存した状態から作り直す
+    pub fn from_state(state: u64, inc: u64) -> Self {
+        Rng { state, inc }
+    }
+
     pub fn next_u32(&mut self) -> u32 {
         let old = self.state;
         self.state = old

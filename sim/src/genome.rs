@@ -313,7 +313,12 @@ pub struct Traits {
 impl Traits {
     /// 成長度 growth（0〜1）に合わせて、いまの大きさと、それから決まる値を計算し直す
     pub fn grow_to(&mut self, growth: f32, max_turn: f32) {
-        self.size = self.adult_size * growth;
+        self.set_size(self.adult_size * growth, max_turn);
+    }
+
+    /// いまの大きさを size にして、それから決まる値を計算し直す（保存した世界の読み込みで、保存時の値をそのまま戻すのに使う）
+    pub fn set_size(&mut self, size: f32, max_turn: f32) {
+        self.size = size;
         self.size_pow075 = self.size.powf(0.75);
         self.thermal_scale = self.size.powf(0.75 - 1.0 / 3.0);
         let (turn_sin, turn_cos) = (max_turn / self.size.sqrt()).min(std::f32::consts::PI).sin_cos();

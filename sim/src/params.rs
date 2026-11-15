@@ -19,6 +19,11 @@ macro_rules! params {
         }
 
         impl Params {
+            /// すべてのパラメータの (名前, 値)（保存用）
+            pub fn entries(&self) -> Vec<(&'static str, f32)> {
+                vec![ $( (stringify!($name), self.$name), )* ]
+            }
+
             /// 名前で値を設定する。知らない名前なら false
             pub fn set(&mut self, name: &str, value: f32) -> bool {
                 match name {

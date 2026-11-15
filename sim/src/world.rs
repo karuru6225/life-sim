@@ -18,6 +18,9 @@ use crate::rng::Rng;
 use crate::terrain::{Terrain, TerrainSpec};
 use std::collections::VecDeque;
 
+mod save;
+pub use save::FORMAT_VERSION as SAVE_FORMAT_VERSION;
+
 pub const HERBIVORE: u8 = 0;
 pub const CARNIVORE: u8 = 1;
 
@@ -358,6 +361,8 @@ pub struct World {
     pub census: Census,
     /// 直近 DEATH_WINDOW tick の死亡の記録（古い順）。系統ごとの死因の内訳に使う
     recent_deaths: VecDeque<DeathRecord>,
+    /// 世界を作ったときの乱数の種（保存した世界を読み込むときに地形を作り直すのに使う）
+    pub seed: u64,
 }
 
 /// 死亡の記録（系統ごとの死因の内訳用）
@@ -371,6 +376,35 @@ struct DeathRecord {
 
 impl World {
     pub fn new(seed: u64, params: Params) -> Self {
+        let mut world = World::empty(seed, params);
+        let p = world.params.clone();
+        for (kind, count, size, speed, vision, fov, energy) in [
+            (HERBIVORE, p.herb_initial, p.herb_initial_size, p.herb_initial_speed, p.herb_initial_vision, p.herb_initial_fov, p.herb_initial_energy),
+            (CARNIVORE, p.carn_initial, p.carn_initial_size, p.carn_initial_speed, p.carn_initial_vision, p.carn_initial_fov, p.carn_initial_energy),
+        ] {
+            // 仲間の入力へのランダムな配線は、種類ごとに 1 回だけ引いて全員で共有する。
+            // 個体ごとに引くと初期個体どうしの遺伝的距離が大きすぎて、最初から互いに繁殖できなくなる
+            let mut g = genome::initial(kind == HERBIVORE, size, speed, vision, 0.0);
+            g[genome::G_FOV] = fov.to_radians();
+            genome::add_kin_wiring(&mut g, &mut world.rng);
+            for _ in 0..count as usize {
+                let (x, y) = world.random_position();
+                // 初期個体は 1 体ずつ違う標識色にする。系統の広がりが色で見える
+                g[genome::G_HUE] = world.rng.f32();
+                // 初期個体は、置かれた場所の気候に適応している
+                g[genome::G_TEMP_PREF] = world.terrain.temperature_at(x, y);
+                // 攻撃する傾向は初期個体ごとにばらつかせる（攻撃する個体がいないと、争いが得か損かを選択が試せない）
+                let bias = p.initial_attack_bias + world.rng.gaussian() * p.initial_attack_spread;
+                genome::set_attack_bias(&mut g, bias);
+                world.spawn(x, y, kind, energy, 0, &g);
+            }
+        }
+        world.ledger.initial = world.total_energy();
+        world
+    }
+
+    /// 個体のいない世界（地形・植物・死体の場・呼び声の場）を作る。乱数の流れは seed から始まる
+    fn empty(seed: u64, params: Params) -> Self {
         let width = params.world_width;
         let height = params.world_height;
         // 地形は個体とは別の乱数の流れで作る（地形の作り方を変えても、個体の歴史の乱数がずれないように）
@@ -450,35 +484,14 @@ impl World {
             failed_matings: 0,
             census: Census::default(),
             recent_deaths: VecDeque::new(),
+            seed,
             params,
         };
-        let p = world.params.clone();
-        for (kind, count, size, speed, vision, fov, energy) in [
-            (HERBIVORE, p.herb_initial, p.herb_initial_size, p.herb_initial_speed, p.herb_initial_vision, p.herb_initial_fov, p.herb_initial_energy),
-            (CARNIVORE, p.carn_initial, p.carn_initial_size, p.carn_initial_speed, p.carn_initial_vision, p.carn_initial_fov, p.carn_initial_energy),
-        ] {
-            // 仲間の入力へのランダムな配線は、種類ごとに 1 回だけ引いて全員で共有する。
-            // 個体ごとに引くと初期個体どうしの遺伝的距離が大きすぎて、最初から互いに繁殖できなくなる
-            let mut g = genome::initial(kind == HERBIVORE, size, speed, vision, 0.0);
-            g[genome::G_FOV] = fov.to_radians();
-            genome::add_kin_wiring(&mut g, &mut world.rng);
-            for _ in 0..count as usize {
-                let (x, y) = world.random_position();
-                // 初期個体は 1 体ずつ違う標識色にする。系統の広がりが色で見える
-                g[genome::G_HUE] = world.rng.f32();
-                // 初期個体は、置かれた場所の気候に適応している
-                g[genome::G_TEMP_PREF] = world.terrain.temperature_at(x, y);
-                // 攻撃する傾向は初期個体ごとにばらつかせる（攻撃する個体がいないと、争いが得か損かを選択が試せない）
-                let bias = p.initial_attack_bias + world.rng.gaussian() * p.initial_attack_spread;
-                genome::set_attack_bias(&mut g, bias);
-                world.spawn(x, y, kind, energy, 0, &g);
-            }
-        }
         world.call_cols = ((width / world.params.call_cell).ceil() as usize).max(1);
         world.call_rows = ((height / world.params.call_cell).ceil() as usize).max(1);
         world.calls = [vec![0.0; world.call_cols * world.call_rows], vec![0.0; world.call_cols * world.call_rows]];
+        // 季節の始め（季節 0）の気温と植物の育ちやすさ。平均気温と同じなので、初期個体の好みの気温はこれに合わせてよい
         world.update_climate();
-        world.ledger.initial = world.total_energy();
         world
     }
 
