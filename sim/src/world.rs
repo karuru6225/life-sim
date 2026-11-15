@@ -1079,15 +1079,20 @@ impl World {
                 } else {
                     1
                 };
-                // 肉食は、好みの大きさの範囲から外れた獲物ほど、獲物として気づく距離が縮む（目の前なら狙う）
-                let wanted = rel != 1 || {
+                // 肉食は、好みの大きさの範囲から外れた獲物ほど、獲物として気づく距離が縮む（目の前なら狙う）。
+                // どの獲物を狙うかも、好みで割り引いた距離（距離 ÷ 好み）が最も近いものにする
+                // （好みの大きさの獲物が少し遠くにいれば、目の前の小さすぎる獲物より優先する）
+                let (wanted, rank) = if rel == 1 {
                     let ratio = self.traits[j].size / my_size;
-                    let reach = r * prey_preference(ratio, prey_min, prey_max, pref_softness);
-                    d2 < reach * reach
+                    let pref = prey_preference(ratio, prey_min, prey_max, pref_softness);
+                    let reach = r * pref;
+                    (d2 < reach * reach, d2 / (pref * pref).max(1e-6))
+                } else {
+                    (true, d2)
                 };
                 prey_count += (rel == 1 && wanted) as u32;
-                if wanted && d2 < best_d2[rel] {
-                    best_d2[rel] = d2;
+                if wanted && rank < best_d2[rel] {
+                    best_d2[rel] = rank;
                     best[rel] = Some((j, dx, dy, d2));
                 }
                 if rel == 2 {
@@ -2689,8 +2694,9 @@ mod tests {
         w.build_grid();
         let prey = w.sense(0).prey.map(|(j, ..)| j);
         assert_eq!(prey, Some(2), "少し離れた小さすぎる獲物は気にせず、好みの大きさの獲物を狙う");
-        // 小さすぎる獲物でも、目の前なら狙う
+        // 好みの獲物がいなければ、目の前の小さすぎる獲物も狙う
         w.xs[1] = 105.0;
+        w.xs[2] = 300.0;
         w.build_grid();
         let prey = w.sense(0).prey.map(|(j, ..)| j);
         assert_eq!(prey, Some(1), "目の前の小さな獲物は狙う");
