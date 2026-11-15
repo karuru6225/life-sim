@@ -518,6 +518,7 @@ impl World {
         self.plants.total()
             + self.carrion.iter().map(|&c| c as f64).sum::<f64>()
             + self.energy.iter().map(|&e| e as f64).sum::<f64>()
+            + (0..self.count()).map(|i| self.body_energy(i) as f64).sum::<f64>()
     }
 
     /// id の個体の配列上の位置。いなければ None
@@ -574,6 +575,11 @@ impl World {
     /// 繁殖に必要なエネルギー（大人の大きさに比例）
     pub fn repro_threshold(&self, i: usize) -> f32 {
         self.base_repro_threshold(self.kind[i]) * self.traits[i].adult_size
+    }
+
+    /// 体そのものが持つエネルギー（body_energy × 大人の大きさ × 成長度）
+    pub fn body_energy(&self, i: usize) -> f32 {
+        self.params.body_energy * self.traits[i].adult_size * self.growth[i]
     }
 
     /// 繁殖できる状態か（成熟していて、エネルギーが足りていて、前の繁殖から十分たっている）
@@ -827,6 +833,9 @@ impl World {
                 continue; // この tick ですでに食べられた
             }
             let (speed, wants_child, mate) = self.act(i);
+            if !self.alive[i] {
+                continue; // 行動の途中で死んだ（反撃や病気）
+            }
             self.move_agent(i, speed);
             self.live(i, speed, wants_child, mate);
         }
@@ -1308,7 +1317,8 @@ impl World {
         }
         // 仕留めた獲物は、自分と近くの仲間（同じ系統の肉食）で等分する。
         // 各自の蓄えの上限を超える分と、吸収できない分は熱として失われる
-        let prey = self.energy[j];
+        // 獲物の価値は、蓄えと体の両方
+        let prey = self.energy[j] + self.body_energy(j);
         let (_, mut eaters) = self.carnivore_neighbors(i);
         eaters.push(i);
         self.census.kills += 1;
@@ -1443,7 +1453,17 @@ impl World {
 
     /// 個体 i を死亡扱いにする。エネルギーは呼び出し側で 0 にしておくこと
     fn die(&mut self, i: usize, cause: u8) {
+        // 同じ tick の中で、すでに死んだ個体がもう一度死ぬことがある（反撃で死んだ後の代謝など）。
+        // 体を二重に死体にしないよう、二度目は何もしない
+        if !self.alive[i] {
+            return;
+        }
         self.alive[i] = false;
+        // 体は死体になる（食べられた場合は、狩った側が体ごと食べ、残りは try_hunt が死体にする）
+        if cause != death::EATEN {
+            let body = self.body_energy(i);
+            self.drop_carrion(self.xs[i], self.ys[i], body);
+        }
         self.census.deaths[self.kind[i] as usize][cause as usize] += 1;
         if self.growth[i] < 1.0 {
             self.census.juvenile_deaths[self.kind[i] as usize][cause as usize] += 1;
@@ -1559,7 +1579,17 @@ impl World {
         if self.growth[i] >= 1.0 {
             return;
         }
-        self.growth[i] = (self.growth[i] + 1.0 / maturity).min(1.0);
+        // 育った分の体のエネルギーを蓄えから払う。払えなければこの tick は育たない
+        let step = (1.0 / maturity).min(1.0 - self.growth[i]);
+        let cost = self.params.body_energy * self.traits[i].adult_size * step;
+        if self.energy[i] < cost {
+            return;
+        }
+        self.energy[i] -= cost;
+        self.growth[i] += step;
+        if self.growth[i] > 1.0 - 1e-6 {
+            self.growth[i] = 1.0;
+        }
         // いまの大きさから決まる値（0.75 乗など）の計算は重いので、8 tick ごとと成熟したときだけ行う
         if self.age[i] % 8 == 0 || self.growth[i] >= 1.0 {
             let g = self.growth[i];
@@ -1623,12 +1653,19 @@ impl World {
             // 生まれたときの成長度は、受け取ったエネルギーが大人の繁殖に必要な量の何割か。
             // 子への投資が多いほど大きく生まれる
             let adult_need = self.base_repro_threshold(b.kind) * traits.adult_size;
-            let growth = (b.energy / adult_need).clamp(self.params.min_birth_growth, 1.0);
+            let mut growth = (b.energy / adult_need).clamp(self.params.min_birth_growth, 1.0);
+            // 受け取ったエネルギーで体を作り、残りが蓄えになる。体に使えるのは受け取った量の 8 割まで（足りなければ小さく生まれる）
+            let body_full = self.params.body_energy * traits.adult_size;
+            if body_full * growth > 0.8 * b.energy {
+                growth = (0.8 * b.energy / body_full.max(1e-6)).max(0.02);
+            }
+            let body = body_full * growth;
+            let reserve = b.energy - body;
             let (mut x, mut y) = (wrap(b.x, self.width), wrap(b.y, self.height));
             if self.terrain.is_water(x, y) {
                 (x, y) = (b.parent_x, b.parent_y);
             }
-            self.spawn_grown(x, y, b.kind, b.energy, b.generation, g, traits, growth);
+            self.spawn_grown(x, y, b.kind, reserve, b.generation, g, traits, growth);
             *self.parents.last_mut().unwrap() = b.parents;
         }
         self.births = births;
@@ -2685,6 +2722,36 @@ mod tests {
         let picked: std::collections::HashSet<u32> = (0..50).map(|n| w.random_in_lineage(HERBIVORE, 0.05, 0.1, n)).collect();
         assert_eq!(picked, [w.id[0], w.id[1]].into_iter().collect(), "範囲内の 2 体だけが、どちらも選ばれる");
         assert_eq!(w.random_in_lineage(CARNIVORE, 0.0, 1.0, 0), 0);
+    }
+
+    #[test]
+    fn 餓死した個体も体が死体になる() {
+        let mut w = empty_world();
+        let g = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 0.001, 0, &g);
+        let body = w.body_energy(0);
+        assert!((body - w.params.body_energy).abs() < 1e-5, "大人の大きさ 1 の体は body_energy");
+        w.live(0, 1.0, false, Mate::Missing);
+        assert!(!w.alive[0], "餓死する");
+        let c = w.plants.cell_index(100.0, 100.0);
+        assert!((w.carrion[c] - body).abs() < 1e-4, "体が死体になる: {}", w.carrion[c]);
+    }
+
+    #[test]
+    fn 育つには蓄えから体のエネルギーを払う() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        let traits = genome::traits(&g, w.params.max_turn);
+        w.spawn_grown(100.0, 100.0, HERBIVORE, 5.0, 1, &g, traits, 0.5);
+        let total = w.energy[0] + w.body_energy(0);
+        w.grow(0, 600.0);
+        assert!(w.growth[0] > 0.5, "育つ");
+        assert!((w.energy[0] + w.body_energy(0) - total).abs() < 1e-5, "蓄え + 体 は変わらない（蓄えが体に移る）");
+        // 蓄えがなければ育たない
+        w.energy[0] = 0.0;
+        let before = w.growth[0];
+        w.grow(0, 600.0);
+        assert_eq!(w.growth[0], before);
     }
 
     #[test]
