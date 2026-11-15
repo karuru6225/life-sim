@@ -235,6 +235,8 @@ pub struct Life {
     pub eaten: f32,
     /// 仕留めた獲物の数（肉食）
     pub kills: u32,
+    /// 襲いかかった回数（肉食）
+    pub hunts: u32,
     /// 動いた距離の合計（px）
     pub distance: f32,
     /// 交配を試みた回数と、そのうち相性で失敗した回数
@@ -1292,6 +1294,7 @@ impl World {
         self.ledger.lost_metabolism += cost as f64;
         self.cooldown[i] = self.params.attack_cooldown as u16;
         let odds = self.hunt_odds(i, j);
+        self.life[i].hunts += 1;
         let c = &mut self.census;
         c.hunts += 1;
         c.hunt_ratio += odds.size_ratio as f64;

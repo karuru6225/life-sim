@@ -17,9 +17,9 @@ use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 54;
+const INSPECT_LEN: usize = 55;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
-const SUMMARY_LEN: usize = 29;
+const SUMMARY_LEN: usize = 31;
 
 thread_local! {
     static WORLD: RefCell<Option<World>> = const { RefCell::new(None) };
@@ -224,7 +224,7 @@ pub extern "C" fn deselect() {
 /// 42: 視野角（ラジアン）  43: 次に繁殖できるまでの残り tick 数
 /// 44〜48: 生涯の記録 [食べて身についたエネルギー, 仕留めた数, 動いた距離, 交配の回数, 相性で失敗した回数]
 /// 49, 50: 親の id（繁殖を決めた側, 相手。初期個体と無性生殖の相手は 0）  51: 生きている子の数
-/// 52, 53: 好みの獲物の大きさの比の下限と上限（肉食のみ使う）
+/// 52, 53: 好みの獲物の大きさの比の下限と上限（肉食のみ使う）  54: 襲いかかった回数
 /// 28: 成長度（1 で成熟）。17 の大きさは遺伝子が決める大人の大きさで、いまの大きさは 17 × 28
 /// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
 #[unsafe(no_mangle)]
@@ -300,6 +300,7 @@ pub extern "C" fn inspect() -> *const f64 {
             out[51] = w.living_children(w.id[i]) as f64;
             out[52] = t.prey_min as f64;
             out[53] = t.prey_max as f64;
+            out[54] = life.hunts as f64;
         });
         out.as_ptr()
     })
@@ -319,6 +320,7 @@ pub extern "C" fn inspect_len() -> u32 {
 /// 23, 24: これまでの交配の回数と、相性で失敗した回数
 /// 25: 季節（−1〜1、日射が最も多い時期に 1）  26: 1 年のうちの位置（0〜1、0.25 で日射が最も多い）
 /// 27, 28: 草食・肉食の繁殖シグナルの平均
+/// 29, 30: これまでに肉食が襲いかかった回数と、仕留めた回数
 #[unsafe(no_mangle)]
 pub extern "C" fn summary() -> *const f64 {
     SUMMARY.with(|buf| {
@@ -335,6 +337,8 @@ pub extern "C" fn summary() -> *const f64 {
             out[26] = w.season_phase() as f64;
             out[27] = w.mean_signal(HERBIVORE);
             out[28] = w.mean_signal(CARNIVORE);
+            out[29] = w.census.hunts as f64;
+            out[30] = w.census.kills as f64;
         });
         out.as_ptr()
     })
