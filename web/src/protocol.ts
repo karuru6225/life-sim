@@ -60,6 +60,9 @@ export type FromWorker =
       sunlightFactor: number;
       /** 直前の集計区間で、交配が相性で失敗した割合（交配がなければ NaN） */
       matingFailRate: number;
+      /** 季節（−1〜1、日射が最も多い時期に 1）と、1 年のうちの位置（0〜1、0.25 で日射が最も多い） */
+      season: number;
+      seasonPhase: number;
       herbivore: TraitMeans;
       carnivore: TraitMeans;
     };
@@ -81,6 +84,8 @@ export interface TraitMeans {
   alignOther: number;
   /** 近くの仲間のうち、同じ系統の割合 */
   sameShare: number;
+  /** 繁殖シグナルの平均（0〜1） */
+  signal: number;
 }
 
 /** inspect 配列の各要素の位置。sim/src/lib.rs の inspect() と一致させること */
@@ -139,6 +144,10 @@ export const INSPECT = {
   /** 今いる場所の平均気温と、好みの気温（度） */
   temperature: 38,
   tempPref: 39,
+  /** 繁殖シグナルの強さ（0〜1） */
+  signal: 40,
+  /** 体の調子（飢えと老いで最高速度に掛かる倍率） */
+  vigor: 41,
 } as const;
 
 export const HERBIVORE = 0;

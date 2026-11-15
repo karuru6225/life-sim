@@ -272,7 +272,7 @@ function reportStats(s: SimExports, now: number): void {
   if (statTicks > 0) adjustSunlight(s, statStepMs / statTicks, statTicks);
   // 並びは sim/src/lib.rs の summary() を参照
   const v = new Float64Array(s.memory.buffer, s.summary(), s.summary_len());
-  const means = (o: number, herd: number) => ({
+  const means = (o: number, herd: number, signal: number) => ({
     count: v[o],
     size: v[o + 1],
     speed: v[o + 2],
@@ -284,6 +284,7 @@ function reportStats(s: SimExports, now: number): void {
     alignSame: v[herd + 2],
     alignOther: v[herd + 3],
     sameShare: v[herd + 4],
+    signal: v[signal],
   });
   // 交配の回数は累計なので、前回からの差で失敗率を出す
   const matings = v[23] - lastMatings;
@@ -298,8 +299,10 @@ function reportStats(s: SimExports, now: number): void {
     sunlight: baseSunlight * sunlightFactor,
     sunlightFactor,
     matingFailRate: matings > 0 ? failed / matings : NaN,
-    herbivore: means(1, 13),
-    carnivore: means(7, 18),
+    season: v[25],
+    seasonPhase: v[26],
+    herbivore: means(1, 13, 27),
+    carnivore: means(7, 18, 28),
   });
   statStart = now;
   statTicks = 0;

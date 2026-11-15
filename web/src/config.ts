@@ -30,6 +30,10 @@ export const SIM_PARAMS = {
   thermo_cost: 0.0004,
   mutation_temp_sigma: 0.5,
 
+  // 季節
+  season_length: 1200,
+  season_amplitude: 0.4,
+
   // 植物
   sunlight: 0.08,
   plant_capacity: 10,
@@ -46,6 +50,15 @@ export const SIM_PARAMS = {
   rest_metabolism: 0.5,
   personal_space: 5,
   separation_weight: 1.5,
+
+  // 弱り
+  frail_energy: 0.3,
+  frail_age: 0.7,
+  frail_speed: 0.5,
+
+  // 繁殖シグナル
+  signal_cost: 0.001,
+  signal_exposure: 0.5,
 
   // 成長
   min_birth_growth: 0.2,

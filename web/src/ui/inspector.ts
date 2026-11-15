@@ -166,6 +166,7 @@ export class Inspector {
       ['自由', v[INSPECT.priFree]],
     ];
     if (herb) pri.push(['警戒', v[INSPECT.vigilance]]);
+    pri.push(['シグナル', v[INSPECT.signal]]);
     this.el.priorities.innerHTML = pri
       .map(
         ([label, p]) =>
@@ -187,7 +188,11 @@ export class Inspector {
     this.el.growth.textContent =
       growth >= 1 ? '成体' : `幼体 ${Math.round(growth * 100)}%（大きさ ${(v[INSPECT.size] * growth).toFixed(2)}）`;
     this.el.size.textContent = `${v[INSPECT.size].toFixed(2)}（成体時）`;
-    this.el.maxSpeed.textContent = `${v[INSPECT.maxSpeed].toFixed(2)} px/tick`;
+    const vigor = v[INSPECT.vigor];
+    this.el.maxSpeed.textContent =
+      vigor < 1
+        ? `${v[INSPECT.maxSpeed].toFixed(2)} px/tick（弱って ${Math.round(vigor * 100)}% しか出ない）`
+        : `${v[INSPECT.maxSpeed].toFixed(2)} px/tick`;
     this.el.vision.textContent = `${v[INSPECT.vision].toFixed(1)} px`;
     this.el.invest.textContent = `${Math.round(v[INSPECT.invest] * 100)}%`;
     this.el.hue.style.background = HUE_PALETTE[hueIndex(v[INSPECT.hue])];
