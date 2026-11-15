@@ -117,6 +117,7 @@ export const SIM_PARAMS = {
   // 変異
   mutation_rate: 0.02,
   mutation_trait_rate: 0.1,
+  mutation_carn_size_sigma: 0.12,
   mutation_trait_sigma: 0.05,
   mutation_weight_sigma: 0.1,
   mutation_neuron: 0.003,
