@@ -16,6 +16,8 @@ export type ToWorker =
    */
   | { type: 'select'; x: number; y: number; radius: number; kind?: number }
   | { type: 'deselect' }
+  /** 統計を取る系統を選ぶ（null で解除） */
+  | { type: 'setLineage'; lineage: LineageSelection | null }
   /** 描画し終えたバッファを Worker に返して再利用させる */
   | { type: 'returnBuffer'; buffer: ArrayBuffer };
 
@@ -66,7 +68,36 @@ export type FromWorker =
       seasonPhase: number;
       herbivore: TraitMeans;
       carnivore: TraitMeans;
+      /** 選んだ系統の統計（LINEAGE の並びで、前半が系統、後半が種類全体）。選んでいなければ null */
+      lineage: number[] | null;
     };
+
+/** 系統: 種類 kind のうち、標識色（色相 0〜1）が from から幅 width の範囲にある個体（1 をまたいでもよい） */
+export interface LineageSelection {
+  kind: number;
+  from: number;
+  width: number;
+}
+
+/** 系統の統計の並び。sim/src/world.rs の LINEAGE_STATS と一致させること。種類全体の値は +LINEAGE_LEN の位置 */
+export const LINEAGE = {
+  count: 0,
+  juvenile: 1,
+  size: 2,
+  speed: 3,
+  vision: 4,
+  fovDeg: 5,
+  tempPref: 6,
+  invest: 7,
+  signal: 8,
+  generation: 9,
+  centerX: 10,
+  centerY: 11,
+  spread: 12,
+  fed: 13,
+  coldShare: 14,
+} as const;
+export const LINEAGE_LEN = 15;
 
 /** 種類ごとの集計（形質は平均） */
 export interface TraitMeans {

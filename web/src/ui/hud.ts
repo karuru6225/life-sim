@@ -86,6 +86,8 @@ export class Hud {
         <canvas class="lineage-chart" data-k="linHerb" aria-label="草食の系統色ごとの個体数"></canvas>
         <div class="lineage-head"><span class="group-label">系統色の分布（肉食）</span><span class="lineage-max" data-k="linCarnMax">–</span></div>
         <canvas class="lineage-chart" data-k="linCarn" aria-label="肉食の系統色ごとの個体数"></canvas>
+        <p class="legend-note">棒をクリックすると、その系統の統計を見られる</p>
+        <div class="lineage-panel" data-k="linPanel"></div>
       </div>
       <table class="trait-table">
         <caption>形質の平均と群れの度合い</caption>
@@ -228,6 +230,11 @@ export class Hud {
   }
 
   /** 系統色のヒストグラムを描く場所（[草食, 肉食] のキャンバスと、最大値の表示） */
+  /** 系統の統計パネルを置く場所 */
+  lineagePanelRoot(): HTMLElement {
+    return this.el.linPanel;
+  }
+
   lineageTargets(): [[HTMLCanvasElement, HTMLCanvasElement], [HTMLElement, HTMLElement]] {
     return [
       [this.el.linHerb as HTMLCanvasElement, this.el.linCarn as HTMLCanvasElement],

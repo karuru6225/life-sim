@@ -1,6 +1,6 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import { AUTO_RESELECT, BODY_RADIUS, COLORS, DIMMED_ALPHA, HIGHLIGHT_MIN_RADIUS_PX, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
-import { CARNIVORE, HERBIVORE, INSPECT, type FromWorker, type ToWorker } from './protocol';
+import { CARNIVORE, HERBIVORE, INSPECT, LINEAGE, type FromWorker, type LineageSelection, type ToWorker } from './protocol';
 import { AgentLayer, type ColorMode } from './render/agents';
 import { Camera } from './render/camera';
 import { PlantLayer } from './render/plants';
@@ -8,7 +8,7 @@ import { TerrainLayer, type MapMode } from './render/terrain';
 import { SelectionMarker } from './render/selection';
 import { Hud, type Highlight, type HighlightStyle } from './ui/hud';
 import { Inspector, Toast } from './ui/inspector';
-import { LineageHistogram } from './ui/lineage';
+import { LineageHistogram, LineagePanel } from './ui/lineage';
 import './style.css';
 
 type Frame = Extract<FromWorker, { type: 'frame' }>;
@@ -102,7 +102,16 @@ const carnOutline = new AgentLayer(
   params.world_height,
 );
 const marker = new SelectionMarker();
-world.addChild(herbivores.container, carnivores.container, herbOutline.container, carnOutline.container, marker.graphics);
+/** 選んだ系統の重心（十字）と広がり（円） */
+const lineageMark = new Graphics();
+world.addChild(
+  herbivores.container,
+  carnivores.container,
+  herbOutline.container,
+  carnOutline.container,
+  lineageMark,
+  marker.graphics,
+);
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 const send = (msg: ToWorker, transfer: Transferable[] = []) => worker.postMessage(msg, transfer);
@@ -114,14 +123,21 @@ let paused = false;
 let colorMode: ColorMode = 'kind';
 let highlight: Highlight = 'none';
 let highlightStyle: HighlightStyle = 'dim';
+/** 統計を見ている系統（null なら選んでいない）。選んでいる間は、系統の外の個体と、もう一方の種類を薄く描く */
+let lineageSel: LineageSelection | null = null;
+/** 選び直す前の系統の統計が届くことがあるので、選んだ時刻より前の集計は使わない */
+let lineageSince = 0;
 
 /** 指定した種類を強調する（個体の選択とは独立）。方法は、もう一方を薄くするか、枠線を付けるか */
 function setHighlight(target: Highlight, style: HighlightStyle): void {
   highlight = target;
   highlightStyle = style;
   const dim = style === 'dim';
-  herbivores.container.alpha = dim && target === 'carnivore' ? DIMMED_ALPHA : 1;
-  carnivores.container.alpha = dim && target === 'herbivore' ? DIMMED_ALPHA : 1;
+  // 系統を選んでいる間は、系統の種類でないほうを薄くする（系統の外の個体は AgentLayer が薄く描く）
+  const dimHerb = lineageSel ? lineageSel.kind !== HERBIVORE : dim && target === 'carnivore';
+  const dimCarn = lineageSel ? lineageSel.kind !== CARNIVORE : dim && target === 'herbivore';
+  herbivores.container.alpha = dimHerb ? DIMMED_ALPHA : 1;
+  carnivores.container.alpha = dimCarn ? DIMMED_ALPHA : 1;
   herbOutline.container.visible = !dim && target === 'herbivore';
   carnOutline.container.visible = !dim && target === 'carnivore';
   hud.setHighlight(target, style);
@@ -166,10 +182,32 @@ function scheduleReselect(deadId: number, x: number, y: number, kind: number): v
   }, AUTO_RESELECT.delayMs);
 }
 
+/** 系統を選ぶ（null で解除） */
+function setLineage(sel: LineageSelection | null): void {
+  lineageSel = sel;
+  lineageSince = performance.now();
+  send({ type: 'setLineage', lineage: sel });
+  lineageHist.setSelected(sel);
+  if (sel) lineagePanel.show(sel);
+  else lineagePanel.hide();
+  lineageMark.clear();
+  setHighlight(highlight, highlightStyle);
+}
+
+/** 最後に表示した、選択中の個体の情報（「この系統を見る」で使う） */
+let lastInspect: number[] | null = null;
+
 const toast = new Toast(document.getElementById('toast')!);
 const inspector = new Inspector(document.getElementById('inspector')!, {
   onClose: () => deselect(),
   onToggleFollow: () => setFollowing(!following),
+  onShowLineage: () => {
+    if (!lastInspect) return;
+    // 標識色が近い（hue_similar 以内）個体を同じ系統とみなす。群れの指標と同じ定義
+    const hue = lastInspect[INSPECT.hue];
+    const w = SIM_PARAMS.hue_similar;
+    setLineage({ kind: lastInspect[INSPECT.kind], from: (((hue - w) % 1) + 1) % 1, width: 2 * w });
+  },
 });
 
 const camera = new Camera(world, app.canvas, params.world_width, params.world_height, {
@@ -235,6 +273,7 @@ function setPaused(p: boolean): void {
 
 function start(): void {
   cancelReselect();
+  setLineage(null);
   selectedId = 0;
   hud.clearHistory();
   inspector.hide();
@@ -275,6 +314,7 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       break;
     case 'stats':
       hud.setStats(msg, speed, paused);
+      if (msg.lineage && lineageSel && performance.now() - lineageSince > 100) showLineage(msg.lineage);
       break;
   }
 };
@@ -288,8 +328,8 @@ app.ticker.add(() => {
   const minScale = HIGHLIGHT_MIN_RADIUS_PX / camera.scale / BODY_RADIUS.herbivore;
   const herbMin = highlight === 'herbivore' ? minScale : 0;
   const carnMin = highlight === 'carnivore' ? minScale : 0;
-  herbivores.apply(agents, f.agentCount, f.stride, HERBIVORE, colorMode, herbMin);
-  carnivores.apply(agents, f.agentCount, f.stride, CARNIVORE, colorMode, carnMin);
+  herbivores.apply(agents, f.agentCount, f.stride, HERBIVORE, colorMode, herbMin, lineageSel);
+  carnivores.apply(agents, f.agentCount, f.stride, CARNIVORE, colorMode, carnMin, lineageSel);
   // 枠線は表示中のときだけ更新する（計算の節約）
   if (herbOutline.container.visible) herbOutline.apply(agents, f.agentCount, f.stride, HERBIVORE, 'kind', herbMin);
   if (carnOutline.container.visible) carnOutline.apply(agents, f.agentCount, f.stride, CARNIVORE, 'kind', carnMin);
@@ -298,7 +338,7 @@ app.ticker.add(() => {
   carrion.apply(new Float32Array(f.buffer, (agentFloats + cells) * 4, cells), f.plantCols, f.plantRows);
   const now = performance.now();
   if (now - lastLineage > LINEAGE_INTERVAL_MS) {
-    lineage.update(agents, f.agentCount, f.stride);
+    lineageHist.update(agents, f.agentCount, f.stride);
     lastLineage = now;
   }
   hud.setTick(f.tick);
@@ -307,10 +347,31 @@ app.ticker.add(() => {
   latest = null;
 });
 
+/** 系統の統計を表示し、地図に重心と広がりを描く */
+function showLineage(stats: number[]): void {
+  lineagePanel.update(stats);
+  lineageMark.clear();
+  if (stats[LINEAGE.count] === 0) return;
+  const x = stats[LINEAGE.centerX];
+  const y = stats[LINEAGE.centerY];
+  // 線の太さは画面上で一定にする
+  const width = 2 / camera.scale;
+  const arm = 12 / camera.scale;
+  lineageMark
+    .circle(x, y, stats[LINEAGE.spread])
+    .stroke({ width, color: COLORS.marker, alpha: 0.8 })
+    .moveTo(x - arm, y)
+    .lineTo(x + arm, y)
+    .moveTo(x, y - arm)
+    .lineTo(x, y + arm)
+    .stroke({ width, color: COLORS.marker });
+}
+
 function showSelection(v: number[]): void {
   const status = v[INSPECT.status];
   if (status === 0) return; // 選択直後で、まだ結果が来ていない
   if (v[INSPECT.id] !== selectedId) return; // 選び直す前の個体の情報（古いフレーム）
+  if (status === 1) lastInspect = v;
   inspector.update(v);
   if (status === 2) {
     marker.hide(); // 死んだ個体はもういない
@@ -330,7 +391,8 @@ function showSelection(v: number[]): void {
 
 setInterval(() => hud.setFps(app.ticker.FPS), 250);
 
-const lineage = new LineageHistogram(...hud.lineageTargets());
+const lineageHist = new LineageHistogram(...hud.lineageTargets(), (sel) => setLineage(sel));
+const lineagePanel = new LineagePanel(hud.lineagePanelRoot(), () => setLineage(null));
 /** 系統色のヒストグラムを描き直す間隔（ms）。毎フレーム描く必要はない */
 const LINEAGE_INTERVAL_MS = 500;
 let lastLineage = 0;

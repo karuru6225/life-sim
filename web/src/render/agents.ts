@@ -3,6 +3,8 @@
 // 個体ごとに位置・大きさ・色（系統色のとき）が違うので、それらを毎フレーム更新する。
 
 import { Particle, ParticleContainer, Rectangle, type Texture } from 'pixi.js';
+import { DIMMED_ALPHA } from '../config';
+import type { LineageSelection } from '../protocol';
 import { HUE_PALETTE, hueIndex } from './palette';
 
 /** 色分けの方法 */
@@ -14,6 +16,9 @@ export class AgentLayer {
   /** Particle.color に入れる値（tint 経由だと毎回色変換が走って遅いので、先に変換しておく） */
   private readonly kindColor: number;
   private readonly huePalette: number[];
+  /** 系統を選んでいるときに、系統の外の個体に使う薄い色 */
+  private readonly kindColorDim: number;
+  private readonly huePaletteDim: number[];
 
   constructor(
     private readonly texture: Texture,
@@ -33,14 +38,28 @@ export class AgentLayer {
     this.container.boundsArea = new Rectangle(0, 0, worldWidth, worldHeight);
     this.kindColor = new Particle({ texture, tint }).color;
     this.huePalette = HUE_PALETTE.map((c) => new Particle({ texture, tint: c }).color);
+    this.kindColorDim = new Particle({ texture, tint, alpha: DIMMED_ALPHA }).color;
+    this.huePaletteDim = HUE_PALETTE.map((c) => new Particle({ texture, tint: c, alpha: DIMMED_ALPHA }).color);
   }
 
   /**
    * data: [x, y, 種類, 大きさ, 標識色, 向き] × count のうち、種類が kind の個体だけを描く。
    * 個体数は毎 tick 変わるので、表示数を合わせてから書き込む
    */
-  /** minScale: 描画倍率の下限（引いた表示でも小さくなりすぎないように。0 なら下限なし） */
-  apply(data: Float32Array, count: number, stride: number, kind: number, mode: ColorMode, minScale = 0): void {
+  /**
+   * minScale: 描画倍率の下限（引いた表示でも小さくなりすぎないように。0 なら下限なし）。
+   * lineage: 選んだ系統。この種類の系統なら、系統の外の個体を薄く描く
+   */
+  apply(
+    data: Float32Array,
+    count: number,
+    stride: number,
+    kind: number,
+    mode: ColorMode,
+    minScale = 0,
+    lineage: LineageSelection | null = null,
+  ): void {
+    const filter = lineage && lineage.kind === kind ? lineage : null;
     let n = 0;
     for (let i = 0; i < count; i++) {
       const o = i * stride;
@@ -51,7 +70,13 @@ export class AgentLayer {
       const s = Math.max(minScale, data[o + 3] * this.baseScale);
       p.scaleX = s;
       p.scaleY = s;
-      p.color = mode === 'kind' ? this.kindColor : this.huePalette[hueIndex(data[o + 4])];
+      const hue = data[o + 4];
+      const outside = filter !== null && (((hue - filter.from) % 1) + 1) % 1 >= filter.width;
+      if (outside) {
+        p.color = mode === 'kind' ? this.kindColorDim : this.huePaletteDim[hueIndex(hue)];
+      } else {
+        p.color = mode === 'kind' ? this.kindColor : this.huePalette[hueIndex(hue)];
+      }
       if (this.rotate) p.rotation = data[o + 5];
     }
     const children = this.container.particleChildren;

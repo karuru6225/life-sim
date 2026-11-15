@@ -3,7 +3,7 @@
 
 import wasmUrl from './wasm/sim.wasm?url';
 import { AUTO_SUNLIGHT, TICK_HZ } from './config';
-import type { FromWorker, ToWorker } from './protocol';
+import type { FromWorker, LineageSelection, ToWorker } from './protocol';
 
 interface SimExports {
   memory: WebAssembly.Memory;
@@ -19,6 +19,8 @@ interface SimExports {
   render_stride(): number;
   plant_ptr(): number;
   carrion_ptr(): number;
+  lineage_stats(kind: number, from: number, width: number): number;
+  lineage_len(): number;
   plant_cols(): number;
   plant_rows(): number;
   terrain_ptr(): number;
@@ -74,6 +76,8 @@ let accumulator = 0;
 let lastTime = performance.now();
 
 /** 前回の集計時点での、交配の累計回数と失敗の累計回数 */
+/** 統計を取る系統（null なら取らない） */
+let lineageSel: LineageSelection | null = null;
 let lastMatings = 0;
 let lastFailed = 0;
 
@@ -178,6 +182,9 @@ function handle(s: SimExports, msg: ToWorker): void {
       s.deselect();
       watching = false;
       dirty = true;
+      break;
+    case 'setLineage':
+      lineageSel = msg.lineage;
       break;
     case 'returnBuffer':
       if (pool.length < MAX_BUFFERS) pool.push(msg.buffer);
@@ -305,6 +312,15 @@ function reportStats(s: SimExports, now: number): void {
     seasonPhase: v[26],
     herbivore: means(1, 13, 27),
     carnivore: means(7, 18, 28),
+    lineage: lineageSel
+      ? Array.from(
+          new Float64Array(
+            s.memory.buffer,
+            s.lineage_stats(lineageSel.kind, lineageSel.from, lineageSel.width),
+            s.lineage_len(),
+          ),
+        )
+      : null,
   });
   statStart = now;
   statTicks = 0;

@@ -7,6 +7,8 @@ import { HUE_PALETTE, hueIndex } from '../render/palette';
 export interface InspectorHandlers {
   onClose(): void;
   onToggleFollow(): void;
+  /** 選択中の個体の系統（標識色の近い個体）の統計を見る */
+  onShowLineage(): void;
 }
 
 const fmtInt = new Intl.NumberFormat('ja-JP');
@@ -87,7 +89,7 @@ export class Inspector {
           <dt>最高速度</dt><dd data-k="maxSpeed">–</dd>
           <dt>視野</dt><dd data-k="vision">–</dd>
           <dt title="繁殖のとき、手持ちのエネルギーのうち子に渡す割合">子への投資</dt><dd data-k="invest">–</dd>
-          <dt title="生存に影響しない遺伝子。系統の見分けに使う">標識色</dt><dd><i class="dot" data-k="hue"></i></dd>
+          <dt title="生存に影響しない遺伝子。系統の見分けに使う">標識色</dt><dd><i class="dot" data-k="hue"></i> <button type="button" class="link-button" data-k="lineage">この系統を見る</button></dd>
         </dl>
       </div>
     `;
@@ -96,6 +98,7 @@ export class Inspector {
     }
     this.el.close.addEventListener('click', handlers.onClose);
     this.el.follow.addEventListener('click', handlers.onToggleFollow);
+    this.el.lineage.addEventListener('click', handlers.onShowLineage);
     this.hide();
   }
 
