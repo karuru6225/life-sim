@@ -121,6 +121,8 @@ pub struct Watch {
 pub struct Census {
     /// 死因ごとの死亡数 [種類][死因]
     pub deaths: [[u64; 5]; 2],
+    /// そのうち、成熟する前に死んだ数 [種類][死因]
+    pub juvenile_deaths: [[u64; 5]; 2],
     /// 生まれた数 [種類]
     pub births: [u64; 2],
     /// 襲いかかった回数と、仕留めた回数
@@ -1115,6 +1117,9 @@ impl World {
     fn die(&mut self, i: usize, cause: u8) {
         self.alive[i] = false;
         self.census.deaths[self.kind[i] as usize][cause as usize] += 1;
+        if self.growth[i] < 1.0 {
+            self.census.juvenile_deaths[self.kind[i] as usize][cause as usize] += 1;
+        }
         if self.id[i] == self.watch.id {
             self.watch.death = Some((cause, self.tick));
         }
