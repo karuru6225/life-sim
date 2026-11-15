@@ -38,6 +38,8 @@ pub mod state {
     pub const MISSED: u8 = 6;
     /// 繁殖相手へ向かっている
     pub const COURT: u8 = 7;
+    /// 死体を食べた
+    pub const SCAVENGE: u8 = 8;
 }
 
 /// 死因（観察用）
@@ -81,6 +83,8 @@ pub struct Ledger {
     pub herb_gain: f64,
     /// 肉食が獲物から得た量（吸収できた分）
     pub carn_gain: f64,
+    /// 死体が腐って失われた量
+    pub lost_decay: f64,
 }
 
 impl Ledger {
@@ -91,6 +95,7 @@ impl Ledger {
             - self.lost_digestion
             - self.lost_birth
             - self.lost_death
+            - self.lost_decay
     }
 }
 
@@ -266,6 +271,8 @@ pub struct World {
 
     pub terrain: Terrain,
     pub plants: PlantField,
+    /// マスごとの死体の量（植物と同じマス目）。死んだ個体の残したエネルギーで、少しずつ腐って減る。肉食の食べ物になる
+    pub carrion: Vec<f32>,
     pub ledger: Ledger,
     pub watch: Watch,
 
@@ -347,6 +354,7 @@ impl World {
             signal: Vec::new(),
             alive: Vec::new(),
             terrain,
+            carrion: vec![0.0; plants.biomass.len()],
             plants,
             ledger: Ledger::default(),
             watch: Watch::default(),
@@ -461,7 +469,9 @@ impl World {
 
     /// 世界にあるエネルギーの実際の合計（植物 + 個体）
     pub fn total_energy(&self) -> f64 {
-        self.plants.total() + self.energy.iter().map(|&e| e as f64).sum::<f64>()
+        self.plants.total()
+            + self.carrion.iter().map(|&c| c as f64).sum::<f64>()
+            + self.energy.iter().map(|&e| e as f64).sum::<f64>()
     }
 
     /// id の個体の配列上の位置。いなければ None
@@ -588,6 +598,70 @@ impl World {
         hunger.min(old)
     }
 
+    /// (x, y) のマスに死体を amount だけ置く
+    fn drop_carrion(&mut self, x: f32, y: f32, amount: f32) {
+        if amount > 0.0 {
+            let c = self.plants.cell_index(x, y);
+            self.carrion[c] += amount;
+        }
+    }
+
+    /// 死体を腐らせる。腐った分は帳簿の lost_decay に入る。ごく少なくなった死体は消す
+    fn decay_carrion(&mut self) {
+        let rate = self.params.carrion_decay;
+        let mut lost = 0.0f64;
+        for c in &mut self.carrion {
+            if *c <= 0.0 {
+                continue;
+            }
+            let d = if *c < 0.01 { *c } else { *c * rate };
+            *c -= d;
+            lost += d as f64;
+        }
+        self.ledger.lost_decay += lost;
+    }
+
+    /// 周り 8 マスのうち、いまいるマスより死体が多いマスの方向（世界の向き、単位ベクトルでない）
+    fn carrion_direction(&self, x: f32, y: f32) -> Option<(f32, f32)> {
+        let (cols, rows) = (self.plants.cols, self.plants.rows);
+        let c = ((x / self.plants.cell_size) as usize).min(cols - 1);
+        let r = ((y / self.plants.cell_size) as usize).min(rows - 1);
+        let mut best = self.carrion[r * cols + c] + 0.05;
+        let mut dir = None;
+        for dr in -1i32..=1 {
+            for dc in -1i32..=1 {
+                if dr == 0 && dc == 0 {
+                    continue;
+                }
+                let rr = (r as i32 + dr).rem_euclid(rows as i32) as usize;
+                let cc = (c as i32 + dc).rem_euclid(cols as i32) as usize;
+                let v = self.carrion[rr * cols + cc];
+                if v > best {
+                    best = v;
+                    dir = Some((dc as f32, dr as f32));
+                }
+            }
+        }
+        dir
+    }
+
+    /// 肉食 i が足元の死体を食べる。食べたら true
+    fn scavenge(&mut self, i: usize) -> bool {
+        let room = self.energy_cap(i) - self.energy[i];
+        let c = self.plants.cell_index(self.xs[i], self.ys[i]);
+        if room <= 0.0 || self.carrion[c] <= 0.0 {
+            return false;
+        }
+        let eff = self.params.carn_efficiency;
+        let take = (self.params.carn_scavenge_bite * self.traits[i].size).min(self.carrion[c]).min(room / eff);
+        self.carrion[c] -= take;
+        let gain = take * eff;
+        self.energy[i] += gain;
+        self.ledger.carn_gain += gain as f64;
+        self.ledger.lost_digestion += (take - gain) as f64;
+        true
+    }
+
     /// 近傍探索のグリッドを作り直す。相手からの見えにくさは、足元の草から、繁殖シグナルで目立つ分を引いたもの
     fn build_grid(&mut self) {
         let exposure = self.params.signal_exposure;
@@ -647,6 +721,7 @@ impl World {
         let sunlight = self.params.sunlight * (1.0 + self.params.season_amplitude * self.season());
         self.ledger.sunlight_in += self.plants.grow(sunlight, self.params.plant_capacity);
 
+        self.decay_carrion();
         let cap = self.params.plant_capacity;
         for i in 0..self.count() {
             self.cover[i] = self.plants.ratio_at(self.xs[i], self.ys[i], cap);
@@ -862,6 +937,15 @@ impl World {
             input[genome::IN_REAR_WATCH] = senses.rear_watchers as f32 / n;
         }
         input[genome::IN_SEASON] = self.season();
+        if self.kind[i] == CARNIVORE {
+            input[genome::IN_CARRION_HERE] = softsign(self.carrion[self.plants.cell_index(x, y)] / 2.0);
+            if let Some((dc, dr)) = self.carrion_direction(x, y) {
+                let len = (dc * dc + dr * dr).sqrt();
+                let (f, r) = to_local(dc / len, dr / len);
+                input[genome::IN_CARRION_FWD] = f;
+                input[genome::IN_CARRION_RIGHT] = r;
+            }
+        }
         let (call_dx, call_dy, call_total) = self.hear_calls(i);
         let call_dir = {
             let (f, r) = to_local(call_dx, call_dy);
@@ -914,6 +998,9 @@ impl World {
             (input[genome::IN_GRAD_FWD], input[genome::IN_GRAD_RIGHT])
         } else if senses.prey.is_some() {
             unit(senses.prey)
+        } else if input[genome::IN_CARRION_FWD] != 0.0 || input[genome::IN_CARRION_RIGHT] != 0.0 {
+            // 獲物が見えなければ、近くの死体へ
+            (input[genome::IN_CARRION_FWD], input[genome::IN_CARRION_RIGHT])
         } else {
             normalize(to_local(senses.alarm_hx, senses.alarm_hy))
         };
@@ -1011,6 +1098,11 @@ impl World {
                     }
                     Hunt::NoAttempt => {}
                 }
+            }
+            // 狩らなかったら、足元の死体を食べる（食べる tick は動かない）
+            if wants_eat && self.scavenge(i) {
+                self.state[i] = state::SCAVENGE;
+                return (0.0, wants_child, mate);
             }
             self.state[i] = if dominant == DRIVE_MATE {
                 state::COURT
@@ -1131,7 +1223,11 @@ impl World {
             gained += gain;
         }
         self.ledger.carn_gain += gained as f64;
-        self.ledger.lost_digestion += (prey - gained) as f64;
+        // 食べきれなかった分（蓄えが満杯で食べられなかった分）は死体として残る。吸収できない分は熱として失われる
+        let eaten = gained / self.params.carn_efficiency;
+        self.ledger.lost_digestion += (eaten - gained) as f64;
+        let (jx, jy) = (self.xs[j], self.ys[j]);
+        self.drop_carrion(jx, jy, (prey - eaten).max(0.0));
         self.energy[j] = 0.0;
         self.die(j, death::EATEN);
         Hunt::Caught
@@ -1182,7 +1278,9 @@ impl World {
         }
         let damage = p.counter_damage * excess * (1.0 + p.guard_strength * odds.guards as f32);
         if damage >= self.energy[i] {
-            self.ledger.lost_metabolism += self.energy[i] as f64;
+            // けがで死ぬ。残っていたエネルギーは死体になる
+            let rest = self.energy[i];
+            self.drop_carrion(self.xs[i], self.ys[i], rest);
             self.energy[i] = 0.0;
             self.die(i, death::INJURED);
         } else {
@@ -1297,7 +1395,9 @@ impl World {
             return;
         }
         if self.age[i] as f32 > self.lifespan(i) {
-            self.ledger.lost_death += self.energy[i] as f64;
+            // 残っていたエネルギーは死体になる
+            let rest = self.energy[i];
+            self.drop_carrion(self.xs[i], self.ys[i], rest);
             self.energy[i] = 0.0;
             self.die(i, death::OLD_AGE);
             return;
@@ -2277,6 +2377,39 @@ mod tests {
         let s = w.sense(0);
         assert_eq!(s.kin_count, 2);
         assert_eq!(s.rear_watchers, 1, "後ろを向いた仲間だけが背後を見ている");
+    }
+
+    #[test]
+    fn 寿命で死んだ個体は死体になり肉食が食べられる() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 6.0, 0, &g);
+        w.age[0] = 100_000;
+        w.live(0, 0.0, false, Mate::Missing);
+        let c = w.plants.cell_index(100.0, 100.0);
+        assert!(w.carrion[c] > 5.0, "残っていたエネルギーが死体になる: {}", w.carrion[c]);
+        w.remove_dead();
+        let carn = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 2.0, 0, &carn);
+        let before = w.carrion[c];
+        assert!(w.scavenge(0));
+        assert!(w.carrion[c] < before && w.energy[0] > 2.0, "肉食が死体を食べる");
+    }
+
+    #[test]
+    fn 死体は腐って減り帳尻は合う() {
+        let mut w = empty_world();
+        let c = w.plants.cell_index(100.0, 100.0);
+        w.ledger.initial = w.total_energy();
+        // 帳簿の外から足すので、開始時の量にも足しておく
+        w.drop_carrion(100.0, 100.0, 10.0);
+        w.ledger.initial += 10.0;
+        for _ in 0..350 {
+            w.step();
+        }
+        assert!(w.carrion[c] < 6.0 && w.carrion[c] > 3.0, "半減期くらいで半分ほどに: {}", w.carrion[c]);
+        let err = (w.ledger.expected_total() - w.total_energy()).abs();
+        assert!(err < 1e-3, "帳尻の誤差 {err}");
     }
 
     #[test]

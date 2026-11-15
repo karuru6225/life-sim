@@ -93,7 +93,12 @@ pub const IN_CALL_LEVEL: usize = 31;
 /// 死角の見張り度: 見えている仲間のうち、自分の真後ろを視野に収めている個体の割合（0〜1）。
 /// 仲間が背後を見てくれていれば、自分は警戒を緩めて食べることに集中できる（多くの目の効果）
 pub const IN_REAR_WATCH: usize = 32;
-pub const N_IN: usize = 33;
+/// 足元の死体の量（softsign で 0〜1 に縮める。草食は常に 0）
+pub const IN_CARRION_HERE: usize = 33;
+/// 周りで死体の多い方向（自分基準の前方・右方成分。草食は常に 0）
+pub const IN_CARRION_FWD: usize = 34;
+pub const IN_CARRION_RIGHT: usize = 35;
+pub const N_IN: usize = 36;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
