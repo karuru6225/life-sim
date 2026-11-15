@@ -85,6 +85,7 @@ export const SIM_PARAMS = {
   carrion_sick_damage: 2,
   carrion_fight: 0.02,
   carrion_fight_damage: 1,
+  prey_pref_softness: 0.5,
   attack_cost: 0.3,
   attack_cooldown: 10,
 
