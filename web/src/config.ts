@@ -49,6 +49,7 @@ export const SIM_PARAMS = {
   turn_noise: 0.15,
   cover_strength: 0.85,
   body_energy: 3,
+  brain_cost: 0.0001,
   energy_cap_ratio: 2,
   birth_spread: 6,
   rest_metabolism: 0.5,
@@ -106,6 +107,7 @@ export const SIM_PARAMS = {
   mutation_rate: 0.02,
   mutation_trait_sigma: 0.05,
   mutation_weight_sigma: 0.1,
+  mutation_neuron: 0.003,
   mutation_hue_sigma: 0.01,
 
   // 草食（形質は初期個体の値。以後は遺伝子として進化する）

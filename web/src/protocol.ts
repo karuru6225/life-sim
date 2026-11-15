@@ -106,8 +106,10 @@ export const LINEAGE = {
   spread: 12,
   fed: 13,
   coldShare: 14,
+  brain1: 15,
+  brain2: 16,
 } as const;
-export const LINEAGE_LEN = 15;
+export const LINEAGE_LEN = 17;
 
 /** 種類ごとの集計（形質は平均） */
 export interface TraitMeans {
@@ -209,6 +211,9 @@ export const INSPECT = {
   preyMax: 53,
   /** 襲いかかった回数（肉食） */
   hunts: 54,
+  /** 使っている中間ニューロンの数（1 層目, 2 層目） */
+  brain1: 55,
+  brain2: 56,
 } as const;
 
 export const HERBIVORE = 0;

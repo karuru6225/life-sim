@@ -113,6 +113,7 @@ export class Inspector {
           <dt>最高速度</dt><dd data-k="maxSpeed">–</dd>
           <dt>視野</dt><dd data-k="vision">–</dd>
           <dt title="繁殖のとき、手持ちのエネルギーのうち子に渡す割合">子への投資</dt><dd data-k="invest">–</dd>
+          <dt title="使っている中間ニューロンの数（1 層目は最大 16、2 層目は最大 16）。多いほど複雑な判断ができるが、維持費がかかる">脳</dt><dd data-k="brain">–</dd>
           <dt title="肉食は、自分の大きさに対してこの範囲の大きさの獲物だけを狙う">好みの獲物</dt><dd data-k="preyRange">–</dd>
           <dt title="生存に影響しない遺伝子。系統の見分けに使う">標識色</dt><dd><i class="dot" data-k="hue"></i> <button type="button" class="link-button" data-k="lineage">この系統を見る</button></dd>
         </dl>
@@ -321,6 +322,7 @@ export class Inspector {
     this.el.vision.textContent = `${v[INSPECT.vision].toFixed(1)} px・視野角 ${Math.round((v[INSPECT.fov] * 180) / Math.PI)}°`;
     this.el.invest.textContent = `${Math.round(v[INSPECT.invest] * 100)}%`;
     this.el.hue.style.background = HUE_PALETTE[hueIndex(v[INSPECT.hue])];
+    this.el.brain.textContent = `1 層目 ${v[INSPECT.brain1]}・2 層目 ${v[INSPECT.brain2]} ニューロン`;
     this.el.preyRange.textContent = herb ? '–' : `自分の ${v[INSPECT.preyMin].toFixed(2)}〜${v[INSPECT.preyMax].toFixed(2)} 倍`;
 
     this.el.eaten.textContent = v[INSPECT.eaten].toFixed(1);

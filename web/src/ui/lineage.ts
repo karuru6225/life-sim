@@ -106,6 +106,8 @@ const ROWS: [string, number, number, string][] = [
   ['好みの気温', LINEAGE.tempPref, 1, '°'],
   ['子への投資', LINEAGE.invest, 2, ''],
   ['繁殖シグナル', LINEAGE.signal, 2, ''],
+  ['脳: 1 層目のニューロン', LINEAGE.brain1, 1, ''],
+  ['脳: 2 層目のニューロン', LINEAGE.brain2, 1, ''],
   ['世代', LINEAGE.generation, 0, ''],
   ['蓄え ÷ 繁殖の必要量', LINEAGE.fed, 2, ''],
   ['幼体の割合', LINEAGE.juvenile, 2, ''],
