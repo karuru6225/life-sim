@@ -333,7 +333,15 @@ export class Inspector {
         : `${v[INSPECT.maxSpeed].toFixed(2)} px/tick`;
     this.el.vision.textContent = `${v[INSPECT.vision].toFixed(1)} px・視野角 ${Math.round((v[INSPECT.fov] * 180) / Math.PI)}°`;
     this.el.invest.textContent = `${Math.round(v[INSPECT.invest] * 100)}%`;
-    this.el.litter.textContent = v[INSPECT.litter] === undefined ? '–' : `${v[INSPECT.litter]} 体`;
+    const litter = v[INSPECT.litter];
+    if (litter === undefined) {
+      this.el.litter.textContent = '–';
+    } else {
+      // 端数は確率（1.3 なら 30% の確率で 2 体）
+      const base = Math.floor(litter);
+      const p = Math.round((litter - base) * 100);
+      this.el.litter.textContent = p === 0 ? `${base} 体` : `${base} 体（${p}% で ${base + 1} 体）`;
+    }
     this.el.hue.style.background = HUE_PALETTE[hueIndex(v[INSPECT.hue])];
     this.el.brain.textContent = `1 層目 ${v[INSPECT.brain1]}・2 層目 ${v[INSPECT.brain2]} ニューロン`;
     this.el.preyRange.textContent = herb ? '–' : `自分の ${v[INSPECT.preyMin].toFixed(2)}〜${v[INSPECT.preyMax].toFixed(2)} 倍`;
