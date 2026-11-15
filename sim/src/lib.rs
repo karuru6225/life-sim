@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 44;
+const INSPECT_LEN: usize = 54;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
 const SUMMARY_LEN: usize = 29;
 
@@ -32,6 +32,8 @@ thread_local! {
     static SUMMARY: RefCell<[f64; SUMMARY_LEN]> = const { RefCell::new([0.0; SUMMARY_LEN]) };
     /// 系統の統計（選んだ系統と種類全体の 2 組）
     static LINEAGE: RefCell<[f64; LINEAGE_STATS * 2]> = const { RefCell::new([0.0; LINEAGE_STATS * 2]) };
+    /// 選択中の個体の脳の入力と出力を JS に渡すための作業領域
+    static BRAIN: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
     /// 地形を JS に渡すための作業領域
     static TERRAIN: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
 }
@@ -134,6 +136,54 @@ pub extern "C" fn select_near_kind(x: f32, y: f32, radius: f32, kind: u32) -> f6
     })
 }
 
+/// id の個体を選択する。生きていれば id を、いなければ 0 を返す（そのときは選択を解除する）
+#[unsafe(no_mangle)]
+pub extern "C" fn select_id(id: f64) -> f64 {
+    with_world(|w| {
+        let id = id as u32;
+        let found = if w.index_of(id).is_some() { id } else { 0 };
+        w.select(found);
+        found as f64
+    })
+}
+
+/// 選択中の個体の脳の入力と出力（f32 × (brain_inputs() + brain_outputs())）の先頭アドレス。直前の tick の値
+#[unsafe(no_mangle)]
+pub extern "C" fn brain_ptr() -> *const f32 {
+    BRAIN.with(|buf| {
+        let mut out = buf.borrow_mut();
+        with_world(|w| {
+            out.clear();
+            out.resize(genome::N_IN + genome::N_OUT, 0.0);
+            let n = w.watch.input.len().min(genome::N_IN);
+            out[..n].copy_from_slice(&w.watch.input[..n]);
+            out[genome::N_IN..].copy_from_slice(&w.watch.output);
+        });
+        out.as_ptr()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn brain_inputs() -> u32 {
+    genome::N_IN as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn brain_outputs() -> u32 {
+    genome::N_OUT as u32
+}
+
+/// 選択中の個体の直近のエネルギー（古い順、f32 × energy_history_len()）の先頭アドレス
+#[unsafe(no_mangle)]
+pub extern "C" fn energy_history_ptr() -> *const f32 {
+    with_world(|w| w.watch.energy_history.as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn energy_history_len() -> u32 {
+    with_world(|w| w.watch.energy_history.len() as u32)
+}
+
 /// 選択を解除する
 #[unsafe(no_mangle)]
 pub extern "C" fn deselect() {
@@ -161,6 +211,9 @@ pub extern "C" fn deselect() {
 /// 38: 今いる場所の平均気温  39: 好みの気温
 /// 40: 繁殖シグナルの強さ（0〜1）  41: 体の調子（飢えと老いで最高速度に掛かる倍率）
 /// 42: 視野角（ラジアン）  43: 次に繁殖できるまでの残り tick 数
+/// 44〜48: 生涯の記録 [食べて身についたエネルギー, 仕留めた数, 動いた距離, 交配の回数, 相性で失敗した回数]
+/// 49, 50: 親の id（繁殖を決めた側, 相手。初期個体と無性生殖の相手は 0）  51: 生きている子の数
+/// 52, 53: 好みの獲物の大きさの比の下限と上限（肉食のみ使う）
 /// 28: 成長度（1 で成熟）。17 の大きさは遺伝子が決める大人の大きさで、いまの大きさは 17 × 28
 /// 死亡時は 0, 1, 14, 15 だけが有効で、他は前回の値のまま残る
 #[unsafe(no_mangle)]
@@ -225,6 +278,17 @@ pub extern "C" fn inspect() -> *const f64 {
             out[41] = watch.vigor as f64;
             out[42] = t.fov as f64;
             out[43] = w.rest[i] as f64;
+            let life = w.life[i];
+            out[44] = life.eaten as f64;
+            out[45] = life.kills as f64;
+            out[46] = life.distance as f64;
+            out[47] = life.matings as f64;
+            out[48] = life.failed as f64;
+            out[49] = w.parents[i][0] as f64;
+            out[50] = w.parents[i][1] as f64;
+            out[51] = w.living_children(w.id[i]) as f64;
+            out[52] = t.prey_min as f64;
+            out[53] = t.prey_max as f64;
         });
         out.as_ptr()
     })

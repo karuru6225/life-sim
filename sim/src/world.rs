@@ -129,6 +129,10 @@ pub struct Watch {
     pub signal: f32,
     /// 直前の tick の体の調子（飢えと老いで最高速度に掛かる倍率、frail_speed〜1）
     pub vigor: f32,
+    /// 直前の tick の脳の入力
+    pub input: Vec<f32>,
+    /// 直近 ENERGY_HISTORY tick のエネルギー（古い順）
+    pub energy_history: Vec<f32>,
     /// 死んだときの (死因, tick)
     pub death: Option<(u8, u64)>,
 }
@@ -219,7 +223,26 @@ struct Senses {
     rear_watchers: u32,
 }
 
+/// 個体の生涯の記録（観察用）
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Life {
+    /// 食べて身についたエネルギーの合計（草・獲物・死体）
+    pub eaten: f32,
+    /// 仕留めた獲物の数（肉食）
+    pub kills: u32,
+    /// 動いた距離の合計（px）
+    pub distance: f32,
+    /// 交配を試みた回数と、そのうち相性で失敗した回数
+    pub matings: u32,
+    pub failed: u32,
+}
+
+/// 選択中の個体のエネルギーの履歴に残す tick 数
+pub const ENERGY_HISTORY: usize = 300;
+
 struct Birth {
+    /// 親の id（繁殖を決めた側, 相手）。無性生殖なら相手は 0
+    parents: [u32; 2],
     x: f32,
     y: f32,
     /// 親の位置（子の位置が水だったときに代わりに使う）
@@ -271,6 +294,10 @@ pub struct World {
     pub cover: Vec<f32>,
     /// 直前の tick に出した繁殖シグナルの強さ（0〜1）
     pub signal: Vec<f32>,
+    /// 親の id（繁殖を決めた側, 相手）。初期個体は 0
+    pub parents: Vec<[u32; 2]>,
+    /// 生涯の記録
+    pub life: Vec<Life>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
     alive: Vec<bool>,
 
@@ -357,6 +384,8 @@ impl World {
             natal: Vec::new(),
             cover: Vec::new(),
             signal: Vec::new(),
+            parents: Vec::new(),
+            life: Vec::new(),
             alive: Vec::new(),
             terrain,
             carrion: vec![0.0; plants.biomass.len()],
@@ -457,6 +486,8 @@ impl World {
         self.natal.push(self.terrain.soil_at(x, y));
         self.cover.push(0.0);
         self.signal.push(0.0);
+        self.parents.push([0, 0]);
+        self.life.push(Life::default());
         self.alive.push(true);
     }
 
@@ -512,6 +543,14 @@ impl World {
     }
 
     /// 個体を選択して観察を始める（0 で選択解除）
+    /// id の個体の、生きている子の数
+    pub fn living_children(&self, id: u32) -> u32 {
+        if id == 0 {
+            return 0;
+        }
+        self.parents.iter().filter(|p| p[0] == id || p[1] == id).count() as u32
+    }
+
     pub fn select(&mut self, id: u32) {
         self.watch = Watch { id, ..Watch::default() };
     }
@@ -1036,6 +1075,8 @@ impl World {
         let is_watched = self.id[i] == self.watch.id;
         if is_watched {
             self.watch.output = out;
+            self.watch.input.clear();
+            self.watch.input.extend_from_slice(&input);
             self.watch.priorities = genome::priorities(&out);
         }
 
@@ -1185,6 +1226,7 @@ impl World {
         let gain = take * eff;
         self.energy[i] += gain;
         self.ledger.herb_gain += gain as f64;
+        self.life[i].eaten += gain;
         self.ledger.lost_digestion += (take - gain) as f64;
         true
     }
@@ -1218,6 +1260,7 @@ impl World {
         let (_, mut eaters) = self.carnivore_neighbors(i);
         eaters.push(i);
         self.census.kills += 1;
+        self.life[i].kills += 1;
         self.census.kill_eaters += eaters.len() as f64;
         let share = prey * self.params.carn_efficiency / eaters.len() as f32;
         let mut gained = 0.0;
@@ -1225,6 +1268,7 @@ impl World {
             let room = (self.energy_cap(k) - self.energy[k]).max(0.0);
             let gain = share.min(room);
             self.energy[k] += gain;
+            self.life[k].eaten += gain;
             gained += gain;
         }
         self.ledger.carn_gain += gained as f64;
@@ -1324,6 +1368,7 @@ impl World {
         if speed == 0.0 {
             return;
         }
+        self.life[i].distance += speed;
         let (x, y) = (self.xs[i], self.ys[i]);
         let nx = wrap(x + self.hx[i] * speed, self.width);
         let ny = wrap(y + self.hy[i] * speed, self.height);
@@ -1392,6 +1437,12 @@ impl World {
         if self.id[i] == self.watch.id {
             self.watch.speed = speed;
             self.watch.cost = cost;
+            let e = self.energy[i];
+            let hist = &mut self.watch.energy_history;
+            if hist.len() >= ENERGY_HISTORY {
+                hist.remove(0);
+            }
+            hist.push(e);
         }
 
         if self.energy[i] <= 0.0 {
@@ -1417,9 +1468,11 @@ impl World {
             match mate {
                 Mate::Partner(j) => {
                     self.matings += 1;
+                    self.life[i].matings += 1;
                     if self.rng.f32() < self.mating_chance(i, j) {
                         self.reproduce(i, birth_cost * t.adult_size, Some(j));
                     } else {
+                        self.life[i].failed += 1;
                         // 相性が悪く失敗した。繁殖のコストは払う（払わないと、相手を選ぶ利益が生まれない）
                         self.failed_matings += 1;
                         let cost = (birth_cost * t.adult_size).min(self.energy[i]);
@@ -1427,7 +1480,10 @@ impl World {
                         self.ledger.lost_birth += cost as f64;
                     }
                 }
-                Mate::Asexual => self.reproduce(i, birth_cost * t.adult_size, None),
+                Mate::Asexual => {
+                    self.life[i].matings += 1;
+                    self.reproduce(i, birth_cost * t.adult_size, None);
+                }
                 Mate::Missing => {} // 相手がいなければ繁殖できない
             }
         }
@@ -1492,7 +1548,9 @@ impl World {
         let x = self.xs[i] + self.rng.range(-spread, spread);
         let y = self.ys[i] + self.rng.range(-spread, spread);
         self.census.births[self.kind[i] as usize] += 1;
+        let mate_id = mate.map(|j| self.id[j]).unwrap_or(0);
         self.births.push(Birth {
+            parents: [self.id[i], mate_id],
             x,
             y,
             parent_x: self.xs[i],
@@ -1519,6 +1577,7 @@ impl World {
                 (x, y) = (b.parent_x, b.parent_y);
             }
             self.spawn_grown(x, y, b.kind, b.energy, b.generation, g, traits, growth);
+            *self.parents.last_mut().unwrap() = b.parents;
         }
         self.births = births;
         self.births.clear();
@@ -1554,6 +1613,8 @@ impl World {
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
             self.signal.swap_remove(i);
+            self.parents.swap_remove(i);
+            self.life.swap_remove(i);
             self.alive.swap_remove(i);
             let last = self.genomes.len() - GENOME_LEN;
             if i * GENOME_LEN != last {
@@ -2487,6 +2548,23 @@ mod tests {
         assert!((s[10] - 150.0).abs() < 1.0, "重心の x {}", s[10]);
         assert_eq!(w.lineage_stats(HERBIVORE, 0.0, 1.0)[0], 3.0, "幅 1 なら全体");
         assert_eq!(w.lineage_stats(CARNIVORE, 0.0, 1.0)[0], 0.0);
+    }
+
+    #[test]
+    fn 子は両親の_id_を持ち生涯の記録が残る() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 30.0, 0, &g);
+        w.spawn(103.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        let (a, b) = (w.id[0], w.id[1]);
+        w.live(0, 1.0, true, Mate::Partner(1));
+        w.apply_births();
+        assert_eq!(w.parents[2], [a, b]);
+        assert_eq!(w.living_children(a), 1);
+        assert_eq!(w.living_children(b), 1);
+        assert_eq!(w.life[0].matings, 1);
+        w.move_agent(0, 1.5);
+        assert!((w.life[0].distance - 1.5).abs() < 1e-6);
     }
 
     #[test]
