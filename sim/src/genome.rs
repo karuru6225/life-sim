@@ -237,6 +237,28 @@ pub fn softsign(x: f32) -> f32 {
     x / (1.0 + x.abs())
 }
 
+/// 内積。4 本の部分和に分けて足し、最後にまとめる。
+/// この形はコンパイラが SIMD（4 つずつ同時に計算する命令）に置き換えやすい。
+/// 足す順番をコードで決めているので、ネイティブでもブラウザ（WASM）でも同じ結果になる
+#[inline]
+fn dot(w: &[f32], x: &[f32]) -> f32 {
+    let n = w.len().min(x.len());
+    let (w, x) = (&w[..n], &x[..n]);
+    let mut acc = [0.0f32; 4];
+    let chunks = n / 4;
+    for c in 0..chunks {
+        let (wc, xc) = (&w[c * 4..c * 4 + 4], &x[c * 4..c * 4 + 4]);
+        for l in 0..4 {
+            acc[l] += wc[l] * xc[l];
+        }
+    }
+    let mut tail = 0.0f32;
+    for k in chunks * 4..n {
+        tail += w[k] * x[k];
+    }
+    (acc[0] + acc[1]) + (acc[2] + acc[3]) + tail
+}
+
 /// 脳を 1 回動かす。使っている中間ニューロンだけを計算し、その重みだけを読む
 pub fn think(genome: &[f32], input: &[f32; N_IN]) -> [f32; N_OUT] {
     // 使っているニューロンの (番号, 出力)。2 層目と出力層は、これだけを読む
@@ -248,10 +270,7 @@ pub fn think(genome: &[f32], input: &[f32; N_IN]) -> [f32; N_OUT] {
             continue;
         }
         let w = &genome[W1 + h * W1_ROW..W1 + (h + 1) * W1_ROW];
-        let mut sum = w[N_IN]; // バイアス
-        for k in 0..N_IN {
-            sum += w[k] * input[k];
-        }
+        let sum = w[N_IN] + dot(&w[..N_IN], input); // バイアス ＋ 重み × 入力
         idx[n] = h;
         val[n] = softsign(sum);
         n += 1;
@@ -919,6 +938,14 @@ mod tests {
         b[ACT + 10] = 1.0;
         let d = genetic_distance(&a, &b, 0.05, 0.1, 0.5);
         assert!(d > 0.0);
+    }
+
+    #[test]
+    fn 内積は素直な足し算とほぼ同じ() {
+        let w: Vec<f32> = (0..45).map(|k| (k as f32 * 0.37).sin()).collect();
+        let x: Vec<f32> = (0..45).map(|k| (k as f32 * 0.11).cos()).collect();
+        let plain: f32 = w.iter().zip(&x).map(|(a, b)| a * b).sum();
+        assert!((dot(&w, &x) - plain).abs() < 1e-4);
     }
 
     #[test]

@@ -1,0 +1,5 @@
+# WASM を作るときに SIMD 命令（simd128）を使う。脳の内積などを 4 つずつ同時に計算できる。
+# 主要なブラウザ（Chrome 91+、Firefox 89+、Safari 16.4+）で動く。
+# npm run build:sim はリポジトリの直下から cargo を呼ぶので、設定はここに置く
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
