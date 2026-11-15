@@ -1,6 +1,6 @@
 // 観察パネル。個体数の推移と形質の平均（＝進化の進み具合）が主役。性能の数値は脇に置く。
 
-import { AUTO_SUNLIGHT, COLORS, HISTORY_LENGTH, SIM_PARAMS, SPEEDS, SUNLIGHT_RANGE, TICK_HZ } from '../config';
+import { AUTO_SUNLIGHT, COLORS, HISTORY_LENGTH, SIM_PARAMS, SPEEDS, SUNLIGHT_RANGE, TICK_HZ, WORLD_SIZES, type WorldSize } from '../config';
 import type { FromWorker, TraitMeans } from '../protocol';
 import type { ColorMode } from '../render/agents';
 import type { MapMode } from '../render/terrain';
@@ -49,6 +49,8 @@ export interface HudHandlers {
   onMapMode(mode: MapMode): void;
   /** 地図の上に重ねるものの表示を切り替える */
   onLayer(layer: keyof Layers): void;
+  /** 世界の広さを選ぶ（世界を作り直す） */
+  onWorldSize(size: WorldSize): void;
   /** 世界をファイルに保存する */
   onSave(): void;
   /** 保存したファイルから世界を読み込む */
@@ -94,6 +96,7 @@ export class Hud {
   private readonly styleButtons: HTMLButtonElement[] = [];
   private readonly mapButtons: HTMLButtonElement[] = [];
   private readonly layerButtons: HTMLButtonElement[] = [];
+  private readonly sizeButtons: HTMLButtonElement[] = [];
   private readonly traitCells: HTMLElement[][] = [];
   private readonly chart: PopulationChart;
 
@@ -149,6 +152,7 @@ export class Hud {
           <button type="button" data-k="load" title="保存したファイル（.lifesim.gz）から世界を読み込む">読み込み</button>
           <input type="file" data-k="loadFile" accept=".gz,.lifesim.gz,.lifesim" hidden />
         </div>
+        <div class="group" data-k="sizes"><span class="group-label">世界の広さ（選ぶと作り直す）</span></div>
         <div class="group" data-k="speeds"><span class="group-label">速度</span></div>
         <div class="group" data-k="modes"><span class="group-label">色分け</span></div>
         <div class="group" data-k="highlights"><span class="group-label">強調（引いても見えるよう大きめに描く）</span></div>
@@ -266,6 +270,13 @@ export class Hud {
       this.mapButtons.push(b);
       this.el.maps.append(b);
     }
+    for (const [size, def] of Object.entries(WORLD_SIZES) as [WorldSize, (typeof WORLD_SIZES)[WorldSize]][]) {
+      const b = button(def.label, () => handlers.onWorldSize(size));
+      b.dataset.value = size;
+      b.title = `${def.width} × ${def.height}、初期は草食 ${def.herbivores.toLocaleString('ja-JP')}・肉食 ${def.carnivores.toLocaleString('ja-JP')}`;
+      this.sizeButtons.push(b);
+      this.el.sizes.append(b);
+    }
     for (const [layer, label, title] of LAYER_LABELS) {
       const b = button(label, () => handlers.onLayer(layer));
       b.dataset.value = layer;
@@ -364,6 +375,11 @@ export class Hud {
     this.el.tempLegend.hidden = mode !== 'temperature' && mode !== 'tempNow';
     this.el.tempLegendLabel.textContent = mode === 'tempNow' ? '今の気温（色の範囲は 1 年を通して同じ）' : '平均気温';
     this.el.growthLegend.hidden = mode !== 'growth';
+  }
+
+  /** 選んでいる世界の広さ（どれでもなければ null。読み込んだ世界が選択肢と違う大きさのとき） */
+  setWorldSize(size: WorldSize | null): void {
+    for (const b of this.sizeButtons) b.classList.toggle('active', b.dataset.value === size);
   }
 
   /** 表示するものの切り替えボタンの状態をそろえる（押されている = 表示中） */

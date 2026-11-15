@@ -87,6 +87,11 @@ export class AgentLayer {
     }
   }
 
+  /** 世界の大きさを変える（ParticleContainer は自分の範囲を計算しないので明示する） */
+  setWorldSize(width: number, height: number): void {
+    this.container.boundsArea = new Rectangle(0, 0, width, height);
+  }
+
   private particle(i: number): Particle {
     if (i >= this.pool.length) {
       this.pool.push(new Particle({ texture: this.texture, anchorX: 0.5, anchorY: 0.5 }));

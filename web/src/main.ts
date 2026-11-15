@@ -1,5 +1,19 @@
 import { Application, Container, Graphics } from 'pixi.js';
-import { AUTO_RESELECT, BODY_RADIUS, COLORS, DIMMED_ALPHA, HIGHLIGHT_MIN_RADIUS_PX, MIN_BODY_RADIUS_PX, MIN_SELECT_SCALE, SEED, SELECT_RADIUS_PX, SIM_PARAMS, type SimParams } from './config';
+import {
+  AUTO_RESELECT,
+  BODY_RADIUS,
+  COLORS,
+  DIMMED_ALPHA,
+  HIGHLIGHT_MIN_RADIUS_PX,
+  MIN_BODY_RADIUS_PX,
+  MIN_SELECT_SCALE,
+  SEED,
+  SELECT_RADIUS_PX,
+  SIM_PARAMS,
+  WORLD_SIZES,
+  type SimParams,
+  type WorldSize,
+} from './config';
 import { CARNIVORE, HERBIVORE, INSPECT, LINEAGE, type FromWorker, type LineageSelection, type ToWorker } from './protocol';
 import { AgentLayer, type ColorMode } from './render/agents';
 import { Camera } from './render/camera';
@@ -14,6 +28,25 @@ import './style.css';
 type Frame = Extract<FromWorker, { type: 'frame' }>;
 
 const params: SimParams = { ...SIM_PARAMS };
+
+/** 世界の広さ。ブラウザに覚えておき、次に開いたときも同じ広さで作る */
+const WORLD_SIZE_KEY = 'life-sim.worldSize';
+let worldSize: WorldSize = 'medium';
+try {
+  const saved = localStorage.getItem(WORLD_SIZE_KEY);
+  if (saved && saved in WORLD_SIZES) worldSize = saved as WorldSize;
+} catch {
+  // 覚えておけない環境では中
+}
+/** 広さの選択肢をパラメータに反映する */
+function applyWorldSizeParams(size: WorldSize): void {
+  const def = WORLD_SIZES[size];
+  params.world_width = def.width;
+  params.world_height = def.height;
+  params.herb_initial = def.herbivores;
+  params.carn_initial = def.carnivores;
+}
+applyWorldSizeParams(worldSize);
 
 const app = new Application();
 await app.init({
@@ -36,7 +69,7 @@ const carrion = new PlantLayer(params.plant_cell, 8, COLORS.carrion, 0.25, 0.2);
 world.addChild(terrain.sprite, plants.sprite, carrion.sprite);
 
 // 世界の外枠。トーラスなので端はつながっているが、どこまでが世界かは見せておく
-const border = new Graphics().rect(0, 0, params.world_width, params.world_height).stroke({ width: 2, color: 0x56696f });
+const border = new Graphics();
 world.addChild(border);
 
 // 拡大しても角張らないよう、テクスチャは高解像度で作る（見た目の大きさは radius のまま）
@@ -317,6 +350,18 @@ const hud = new Hud(document.getElementById('hud')!, {
     colorMode = mode;
     hud.setColorMode(mode);
   },
+  onWorldSize: (size) => {
+    if (size === sizeOf(params.world_width, params.world_height)) return;
+    if (!window.confirm(`世界の広さを「${WORLD_SIZES[size].label}」にして、世界を作り直します。今の世界は失われます（必要なら先に保存してください）。`)) return;
+    worldSize = size;
+    try {
+      localStorage.setItem(WORLD_SIZE_KEY, size);
+    } catch {
+      // 覚えておけなくても作り直せる
+    }
+    applyWorldSizeParams(size);
+    start();
+  },
   onSave: () => {
     toast.show('保存しています…');
     send({ type: 'save' });
@@ -345,8 +390,23 @@ function setPaused(p: boolean): void {
   hud.setPaused(paused);
 }
 
+/** 表示を世界の大きさに合わせる（枠・個体の層の範囲・カメラ） */
+function applyWorldSize(width: number, height: number): void {
+  border.clear().rect(0, 0, width, height).stroke({ width: 2, color: 0x56696f });
+  for (const layer of [herbivores, carnivores, herbOutline, carnOutline]) layer.setWorldSize(width, height);
+  camera.setWorld(width, height);
+}
+
+/** 選択肢の中から、この大きさの広さを探す（なければ null） */
+function sizeOf(width: number, height: number): WorldSize | null {
+  const found = (Object.keys(WORLD_SIZES) as WorldSize[]).find((k) => WORLD_SIZES[k].width === width && WORLD_SIZES[k].height === height);
+  return found ?? null;
+}
+
 function start(): void {
   resetView();
+  applyWorldSize(params.world_width, params.world_height);
+  hud.setWorldSize(sizeOf(params.world_width, params.world_height));
   send({ type: 'init', seed: SEED, params });
 }
 
@@ -403,6 +463,9 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       resetView();
       // 読み込んだ世界のパラメータを画面にも反映する（次のリセットでも同じ設定で作り直す）
       if (msg.params) Object.assign(params, msg.params);
+      // 読み込んだ世界の広さに表示を合わせる
+      applyWorldSize(params.world_width, params.world_height);
+      hud.setWorldSize(sizeOf(params.world_width, params.world_height));
       hud.setSunlight(params.sunlight);
       toast.show(`tick ${msg.tick.toLocaleString('ja-JP')} の世界を読み込みました${msg.message ? `。${msg.message}` : ''}`);
       break;

@@ -23,8 +23,8 @@ export class Camera {
   constructor(
     private readonly target: Container,
     private readonly canvas: HTMLCanvasElement,
-    private readonly worldWidth: number,
-    private readonly worldHeight: number,
+    private worldWidth: number,
+    private worldHeight: number,
     private readonly handlers: CameraHandlers = {},
   ) {
     canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
@@ -83,6 +83,13 @@ export class Camera {
     const next = Math.min(MAX_SCALE, scale);
     this.target.scale.set(next);
     this.target.position.set(cx - x * next, cy - y * next);
+  }
+
+  /** 世界の大きさを変える（世界を作り直したとき）。全体が収まるように表示し直す */
+  setWorld(width: number, height: number): void {
+    this.worldWidth = width;
+    this.worldHeight = height;
+    this.fit();
   }
 
   /** 世界全体が画面に収まる倍率 */

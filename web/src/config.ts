@@ -173,6 +173,17 @@ export const TICK_HZ = 30;
  * 日射量を変えてから個体数が変わるまで数百〜数千 tick の遅れがあるので、急に動かすと行き過ぎて
  * 個体数が大きく揺れる。そのため変化はゆっくりにしている
  */
+/**
+ * 世界の広さの選択肢。初期の個体数は面積に比例させる（密度が同じになるように）。
+ * 中が SIM_PARAMS の既定値。大は計算が重く、再生が遅くなる
+ */
+export const WORLD_SIZES = {
+  small: { label: '小', width: 4800, height: 3200, herbivores: 11000, carnivores: 700 },
+  medium: { label: '中', width: 7200, height: 4800, herbivores: 25000, carnivores: 1600 },
+  large: { label: '大', width: 10800, height: 7200, herbivores: 56000, carnivores: 3600 },
+} as const;
+export type WorldSize = keyof typeof WORLD_SIZES;
+
 /** 日射量の自動調整（既定はオフ。HUD のチェックで入れる） */
 export const AUTO_SUNLIGHT = {
   /** 起動時に自動調整を使うか */
