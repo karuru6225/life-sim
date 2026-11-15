@@ -108,8 +108,9 @@ export const LINEAGE = {
   coldShare: 14,
   brain1: 15,
   brain2: 16,
+  litter: 17,
 } as const;
-export const LINEAGE_LEN = 17;
+export const LINEAGE_LEN = 18;
 
 /** 種類ごとの集計（形質は平均） */
 export interface TraitMeans {
@@ -218,6 +219,8 @@ export const INSPECT = {
   priFight: 57,
   /** 仲間（同じ種類）を最後に見てからの tick 数 */
   alone: 58,
+  /** 一度に産む数 */
+  litter: 59,
 } as const;
 
 export const HERBIVORE = 0;

@@ -105,6 +105,7 @@ const ROWS: [string, number, number, string][] = [
   ['視野角', LINEAGE.fovDeg, 0, '°'],
   ['好みの気温', LINEAGE.tempPref, 1, '°'],
   ['子への投資', LINEAGE.invest, 2, ''],
+  ['一度に産む数', LINEAGE.litter, 2, ''],
   ['繁殖シグナル', LINEAGE.signal, 2, ''],
   ['脳: 1 層目のニューロン', LINEAGE.brain1, 1, ''],
   ['脳: 2 層目のニューロン', LINEAGE.brain2, 1, ''],
