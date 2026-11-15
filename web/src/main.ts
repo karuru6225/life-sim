@@ -271,7 +271,27 @@ const hud = new Hud(document.getElementById('hud')!, {
     colorMode = mode;
     hud.setColorMode(mode);
   },
+  onSave: () => {
+    toast.show('保存しています…');
+    send({ type: 'save' });
+  },
+  onLoad: async (file) => {
+    toast.show('読み込んでいます…');
+    const buffer = await file.arrayBuffer();
+    send({ type: 'load', buffer }, [buffer]);
+  },
 });
+
+/** 世界を作り直したとき（リセット・読み込み）に、選択や表示の状態を戻す */
+function resetView(): void {
+  cancelReselect();
+  setLineage(null);
+  selectedId = 0;
+  hud.clearHistory();
+  inspector.hide();
+  marker.hide();
+  setFollowing(false);
+}
 
 function setPaused(p: boolean): void {
   paused = p;
@@ -280,13 +300,7 @@ function setPaused(p: boolean): void {
 }
 
 function start(): void {
-  cancelReselect();
-  setLineage(null);
-  selectedId = 0;
-  hud.clearHistory();
-  inspector.hide();
-  marker.hide();
-  setFollowing(false);
+  resetView();
   send({ type: 'init', seed: SEED, params });
 }
 
@@ -322,6 +336,29 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       // まだ描画していない古いフレームは飛ばして、すぐ Worker に返す
       if (latest) returnBuffer(latest);
       latest = msg;
+      break;
+    case 'saved': {
+      // ダウンロードさせる
+      const url = URL.createObjectURL(new Blob([msg.buffer], { type: 'application/gzip' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = msg.filename;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
+      toast.show(`保存しました（${mb(msg.buffer.byteLength)} MB、圧縮前 ${mb(msg.bytes)} MB）`);
+      break;
+    }
+    case 'loaded':
+      if (!msg.ok) {
+        toast.show(msg.message);
+        break;
+      }
+      resetView();
+      // 読み込んだ世界のパラメータを画面にも反映する（次のリセットでも同じ設定で作り直す）
+      if (msg.params) Object.assign(params, msg.params);
+      hud.setSunlight(params.sunlight);
+      toast.show(`tick ${msg.tick.toLocaleString('ja-JP')} の世界を読み込みました${msg.message ? `。${msg.message}` : ''}`);
       break;
     case 'stats':
       hud.setStats(msg, speed, paused);

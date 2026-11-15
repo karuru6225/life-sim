@@ -3,7 +3,8 @@
 
 import wasmUrl from './wasm/sim.wasm?url';
 import { AUTO_SUNLIGHT, TICK_HZ } from './config';
-import type { FromWorker, LineageSelection, ToWorker } from './protocol';
+import { SAVE_MAGIC, type FromWorker, type LineageSelection, type SaveHeader, type ToWorker } from './protocol';
+import { SIM_PARAMS } from './config';
 
 interface SimExports {
   memory: WebAssembly.Memory;
@@ -20,6 +21,14 @@ interface SimExports {
   plant_ptr(): number;
   carrion_ptr(): number;
   select_id(id: number): number;
+  save_world(): number;
+  save_len(): number;
+  save_format_version(): number;
+  load_buffer(len: number): number;
+  load_world(): number;
+  load_error_ptr(): number;
+  load_error_len(): number;
+  get_param(nameLen: number): number;
   select_random_in_lineage(kind: number, from: number, width: number, nonce: number): number;
   brain_ptr(): number;
   brain_inputs(): number;
@@ -85,6 +94,8 @@ let lastTime = performance.now();
 /** 前回の集計時点での、交配の累計回数と失敗の累計回数 */
 /** 統計を取る系統（null なら取らない） */
 let lineageSel: LineageSelection | null = null;
+/** 世界を作り直した直後は、累計の集計の基準を取り直す（読み込んだ世界は累計が 0 から始まらないため） */
+let rebaseline = true;
 let lastMatings = 0;
 let lastHunts = 0;
 let lastKills = 0;
@@ -122,43 +133,115 @@ function setParam(s: SimExports, name: string, value: number): void {
   }
 }
 
+/** 世界を作り直した（初期化・読み込み）あとの共通処理。集計を区切り直し、地形を送る */
+function onNewWorld(s: SimExports): void {
+  sunlightFactor = 1;
+  smoothedMs = 0;
+  rebaseline = true;
+  sim = s;
+  generation++;
+  watching = false;
+  pool = [];
+  allocated = 0;
+  accumulator = 0;
+  dirty = true;
+  const cols = s.plant_cols();
+  const rows = s.plant_rows();
+  const terrain = new Float32Array(cols * rows);
+  terrain.set(new Float32Array(s.memory.buffer, s.terrain_ptr(), cols * rows));
+  const temperature = new Float32Array(cols * rows);
+  temperature.set(new Float32Array(s.memory.buffer, s.temperature_ptr(), cols * rows));
+  post(
+    { type: 'ready', generation, terrain: terrain.buffer, temperature: temperature.buffer, terrainCols: cols, terrainRows: rows },
+    [terrain.buffer, temperature.buffer],
+  );
+}
+
+const decoder = new TextDecoder();
+
+/** gzip で圧縮する（ブラウザに組み込みの CompressionStream を使う） */
+async function gzip(parts: BlobPart[]): Promise<ArrayBuffer> {
+  return new Response(new Blob(parts).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+}
+
+async function gunzip(data: ArrayBuffer): Promise<ArrayBuffer> {
+  return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+}
+
+/** 世界を保存する: 見出し（JSON）＋世界のバイト列を gzip で圧縮して返す */
+async function saveWorld(s: SimExports): Promise<void> {
+  const ptr = s.save_world();
+  const payload = new Uint8Array(s.memory.buffer, ptr, s.save_len()).slice();
+  const v = new Float64Array(s.memory.buffer, s.summary(), s.summary_len());
+  const header: SaveHeader = {
+    format: s.save_format_version(),
+    commit: __COMMIT__,
+    savedAt: new Date().toISOString(),
+    tick: s.current_tick(),
+    herbivores: v[1],
+    carnivores: v[7],
+  };
+  const headerBytes = encoder.encode(JSON.stringify(header));
+  const len = new Uint8Array(4);
+  new DataView(len.buffer).setUint32(0, headerBytes.length, true);
+  const buffer = await gzip([encoder.encode(SAVE_MAGIC), len, headerBytes, payload]);
+  const filename = `life-sim-tick${header.tick}-${header.savedAt.slice(0, 19).replace(/[-:T]/g, '')}.lifesim.gz`;
+  post({ type: 'saved', buffer, filename, bytes: payload.length }, [buffer]);
+}
+
+/** 保存したファイルから世界を読み込む */
+async function loadWorld(s: SimExports, file: ArrayBuffer): Promise<void> {
+  const fail = (message: string) => post({ type: 'loaded', ok: false, message, params: null, tick: 0 });
+  let data: Uint8Array;
+  try {
+    data = new Uint8Array(await gunzip(file));
+  } catch {
+    return fail('ファイルを展開できない（gzip でない、または壊れている）');
+  }
+  const magic = encoder.encode(SAVE_MAGIC);
+  if (data.length < magic.length + 4 || !magic.every((b, k) => data[k] === b)) return fail('life-sim の保存ファイルではない');
+  const headerLen = new DataView(data.buffer, data.byteOffset + magic.length, 4).getUint32(0, true);
+  const headerStart = magic.length + 4;
+  let header: SaveHeader;
+  try {
+    header = JSON.parse(decoder.decode(data.subarray(headerStart, headerStart + headerLen)));
+  } catch {
+    return fail('ファイルの見出しが壊れている');
+  }
+  const payload = data.subarray(headerStart + headerLen);
+  const ptr = s.load_buffer(payload.length);
+  new Uint8Array(s.memory.buffer, ptr, payload.length).set(payload);
+  const ok = s.load_world() === 1;
+  const note = decoder.decode(new Uint8Array(s.memory.buffer, s.load_error_ptr(), s.load_error_len()).slice());
+  if (!ok) return fail(`読み込めない: ${note}（保存したコード ${header.commit}、今のコード ${__COMMIT__}）`);
+  onNewWorld(s);
+  // 画面のパラメータ（日射量など）を、読み込んだ世界の値にそろえる
+  const params: Record<string, number> = {};
+  for (const name of Object.keys(SIM_PARAMS)) {
+    const bytes = encoder.encode(name);
+    new Uint8Array(s.memory.buffer, s.scratch_ptr(bytes.length), bytes.length).set(bytes);
+    const value = s.get_param(bytes.length);
+    if (!Number.isNaN(value)) params[name] = value;
+  }
+  if (params.sunlight !== undefined) baseSunlight = params.sunlight;
+  const notes = [];
+  if (header.commit !== __COMMIT__) notes.push(`別の版で保存されたデータ（保存したコード ${header.commit}、今のコード ${__COMMIT__}）`);
+  if (note) notes.push(note);
+  post({ type: 'loaded', ok: true, message: notes.join('。'), params, tick: header.tick });
+}
+
 function handle(s: SimExports, msg: ToWorker): void {
   switch (msg.type) {
     case 'init':
-      sunlightFactor = 1;
-      smoothedMs = 0;
-      lastMatings = 0;
-      lastFailed = 0;
-      lastHunts = 0;
-      lastKills = 0;
       for (const [name, value] of Object.entries(msg.params)) applyParam(s, name, value);
       s.init(msg.seed);
-      sim = s;
-      generation++;
-      watching = false;
-      pool = [];
-      allocated = 0;
-      accumulator = 0;
-      dirty = true;
-      {
-        const cols = s.plant_cols();
-        const rows = s.plant_rows();
-        const terrain = new Float32Array(cols * rows);
-        terrain.set(new Float32Array(s.memory.buffer, s.terrain_ptr(), cols * rows));
-        const temperature = new Float32Array(cols * rows);
-        temperature.set(new Float32Array(s.memory.buffer, s.temperature_ptr(), cols * rows));
-        post(
-          {
-            type: 'ready',
-            generation,
-            terrain: terrain.buffer,
-            temperature: temperature.buffer,
-            terrainCols: cols,
-            terrainRows: rows,
-          },
-          [terrain.buffer, temperature.buffer],
-        );
-      }
+      onNewWorld(s);
+      break;
+    case 'save':
+      if (sim) void saveWorld(s);
+      break;
+    case 'load':
+      void loadWorld(s, msg.buffer);
       break;
     case 'setParam':
       applyParam(s, msg.name, msg.value);
@@ -331,6 +414,10 @@ function reportStats(s: SimExports, now: number): void {
     sameShare: v[herd + 4],
     signal: v[signal],
   });
+  if (rebaseline) {
+    [lastMatings, lastFailed, lastHunts, lastKills] = [v[23], v[24], v[29], v[30]];
+    rebaseline = false;
+  }
   // 交配の回数は累計なので、前回からの差で失敗率を出す
   const matings = v[23] - lastMatings;
   const failed = v[24] - lastFailed;

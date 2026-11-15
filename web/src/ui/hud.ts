@@ -23,6 +23,10 @@ export interface HudHandlers {
   onHighlight(target: Highlight): void;
   onHighlightStyle(style: HighlightStyle): void;
   onMapMode(mode: MapMode): void;
+  /** 世界をファイルに保存する */
+  onSave(): void;
+  /** 保存したファイルから世界を読み込む */
+  onLoad(file: File): void;
 }
 
 const fmtInt = new Intl.NumberFormat('ja-JP');
@@ -114,6 +118,9 @@ export class Hud {
         <div class="group">
           <button type="button" data-k="pause">一時停止</button>
           <button type="button" data-k="reset">リセット</button>
+          <button type="button" data-k="save" title="今の世界をファイルに保存する（乱数の状態も含むので、読み込むと同じ歴史が続く）">保存</button>
+          <button type="button" data-k="load" title="保存したファイル（.lifesim.gz）から世界を読み込む">読み込み</button>
+          <input type="file" data-k="loadFile" accept=".gz,.lifesim.gz" hidden />
         </div>
         <div class="group" data-k="speeds"><span class="group-label">速度</span></div>
         <div class="group" data-k="modes"><span class="group-label">色分け</span></div>
@@ -161,6 +168,14 @@ export class Hud {
 
     this.el.pause.addEventListener('click', handlers.onTogglePause);
     this.el.reset.addEventListener('click', handlers.onReset);
+    this.el.save.addEventListener('click', handlers.onSave);
+    const loadFile = this.el.loadFile as HTMLInputElement;
+    this.el.load.addEventListener('click', () => loadFile.click());
+    loadFile.addEventListener('change', () => {
+      const file = loadFile.files?.[0];
+      if (file) handlers.onLoad(file);
+      loadFile.value = ''; // 同じファイルをもう一度選べるように
+    });
     const auto = this.el.auto as HTMLInputElement;
     auto.addEventListener('change', () => handlers.onAutoSunlight(auto.checked));
     const sun = this.el.sun as HTMLInputElement;

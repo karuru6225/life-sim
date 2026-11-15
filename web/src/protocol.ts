@@ -22,6 +22,10 @@ export type ToWorker =
   | { type: 'selectId'; id: number }
   /** 統計を取る系統を選ぶ（null で解除） */
   | { type: 'setLineage'; lineage: LineageSelection | null }
+  /** 世界を保存する。結果は saved で返る */
+  | { type: 'save' }
+  /** 保存したファイル（gzip のまま）から世界を読み込む。結果は loaded で返る（成功なら、その前に ready も届く） */
+  | { type: 'load'; buffer: ArrayBuffer }
   /** 描画し終えたバッファを Worker に返して再利用させる */
   | { type: 'returnBuffer'; buffer: ArrayBuffer };
 
@@ -36,6 +40,13 @@ export type FromWorker =
       terrainCols: number;
       terrainRows: number;
     }
+  /** 保存したファイルの中身（gzip）とファイル名 */
+  | { type: 'saved'; buffer: ArrayBuffer; filename: string; bytes: number }
+  /**
+   * 読み込みの結果。ok なら message は注意（別の版で保存された、など。なければ空）、失敗なら理由。
+   * params は読み込んだ世界のパラメータ（成功時のみ）
+   */
+  | { type: 'loaded'; ok: boolean; message: string; params: Record<string, number> | null; tick: number }
   /** select の結果。id が 0 なら近くに個体がいなかった */
   | { type: 'selected'; id: number }
   | {
@@ -113,6 +124,19 @@ export const LINEAGE = {
   deaths: 18,
 } as const;
 export const LINEAGE_LEN = 24;
+/** 保存ファイルの見出し（JSON）。ファイルは gzip で、中身は SAVE_MAGIC・見出しの長さ（u32）・見出し・世界のバイト列 */
+export interface SaveHeader {
+  /** 世界のバイト列の形式の番号（sim/src/world/save.rs の FORMAT_VERSION） */
+  format: number;
+  /** 保存したコードのコミット */
+  commit: string;
+  savedAt: string;
+  tick: number;
+  herbivores: number;
+  carnivores: number;
+}
+export const SAVE_MAGIC = 'LIFESIM\n';
+
 /** 系統ごとの死因を数える期間（sim/src/world.rs の DEATH_WINDOW） */
 export const LINEAGE_DEATH_WINDOW = 1200;
 
