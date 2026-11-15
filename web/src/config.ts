@@ -60,6 +60,7 @@ export const SIM_PARAMS = {
   frail_speed: 0.5,
 
   // 繁殖シグナル
+  call_cell: 128,
   signal_cost: 0.001,
   signal_exposure: 0.5,
 
@@ -112,6 +113,7 @@ export const SIM_PARAMS = {
   herb_repro_threshold: 10,
   herb_birth_cost: 1,
   herb_max_age: 2400,
+  herb_initial_fov: 300,
   herb_repro_rest: 600,
   herb_maturity: 600,
   herb_initial_energy: 5,
@@ -127,6 +129,7 @@ export const SIM_PARAMS = {
   carn_repro_threshold: 16,
   carn_birth_cost: 2,
   carn_max_age: 3600,
+  carn_initial_fov: 120,
   carn_repro_rest: 900,
   carn_maturity: 900,
   carn_initial_energy: 8,

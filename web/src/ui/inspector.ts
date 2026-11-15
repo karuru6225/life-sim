@@ -179,7 +179,9 @@ export class Inspector {
       Math.abs(turnDeg) < 1 ? 'まっすぐ' : `${turnDeg > 0 ? '右' : '左'}へ ${Math.abs(turnDeg).toFixed(0)}°`;
     this.el.throttle.textContent = `最高速度の ${Math.round(v[INSPECT.throttle] * 100)}%`;
     this.el.wantEat.textContent = v[INSPECT.wantEat] > 0 ? '食べたい' : '食べない';
-    this.el.wantChild.textContent = v[INSPECT.wantChild] > 0 ? 'したい' : 'しない';
+    const rest = v[INSPECT.rest];
+    this.el.wantChild.textContent =
+      rest > 0 ? `休み中（あと ${fmtInt.format(rest)} tick）` : v[INSPECT.wantChild] > 0 ? 'したい' : 'しない';
     const compat = v[INSPECT.mateCompat];
     this.el.mate.textContent =
       v[INSPECT.mateNearby] > 0 ? `近くにいる（相性 ${Math.round(Math.max(0, compat) * 100)}%）` : '近くにいない';
@@ -193,7 +195,7 @@ export class Inspector {
       vigor < 1
         ? `${v[INSPECT.maxSpeed].toFixed(2)} px/tick（弱って ${Math.round(vigor * 100)}% しか出ない）`
         : `${v[INSPECT.maxSpeed].toFixed(2)} px/tick`;
-    this.el.vision.textContent = `${v[INSPECT.vision].toFixed(1)} px`;
+    this.el.vision.textContent = `${v[INSPECT.vision].toFixed(1)} px・視野角 ${Math.round((v[INSPECT.fov] * 180) / Math.PI)}°`;
     this.el.invest.textContent = `${Math.round(v[INSPECT.invest] * 100)}%`;
     this.el.hue.style.background = HUE_PALETTE[hueIndex(v[INSPECT.hue])];
   }

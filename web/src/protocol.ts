@@ -148,6 +148,10 @@ export const INSPECT = {
   signal: 40,
   /** 体の調子（飢えと老いで最高速度に掛かる倍率） */
   vigor: 41,
+  /** 視野角（ラジアン） */
+  fov: 42,
+  /** 次に繁殖できるまでの残り tick 数 */
+  rest: 43,
 } as const;
 
 export const HERBIVORE = 0;
