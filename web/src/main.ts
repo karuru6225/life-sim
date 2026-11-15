@@ -201,6 +201,10 @@ const toast = new Toast(document.getElementById('toast')!);
 const inspector = new Inspector(document.getElementById('inspector')!, {
   onClose: () => deselect(),
   onToggleFollow: () => setFollowing(!following),
+  onSelectId: (id) => {
+    cancelReselect();
+    send({ type: 'selectId', id });
+  },
   onShowLineage: () => {
     if (!lastInspect) return;
     // 標識色が近い（hue_similar 以内）個体を同じ系統とみなす。群れの指標と同じ定義
@@ -342,7 +346,12 @@ app.ticker.add(() => {
     lastLineage = now;
   }
   hud.setTick(f.tick);
-  if (f.inspect) showSelection(f.inspect);
+  if (f.inspect) {
+    showSelection(f.inspect);
+    if (f.inspect[INSPECT.status] === 1 && f.inspect[INSPECT.id] === selectedId) {
+      inspector.updateExtra(f.brain, f.energyHistory, f.inspect[INSPECT.reproThreshold]);
+    }
+  }
   returnBuffer(f);
   latest = null;
 });

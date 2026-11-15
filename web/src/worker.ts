@@ -19,6 +19,12 @@ interface SimExports {
   render_stride(): number;
   plant_ptr(): number;
   carrion_ptr(): number;
+  select_id(id: number): number;
+  brain_ptr(): number;
+  brain_inputs(): number;
+  brain_outputs(): number;
+  energy_history_ptr(): number;
+  energy_history_len(): number;
   lineage_stats(kind: number, from: number, width: number): number;
   lineage_len(): number;
   plant_cols(): number;
@@ -177,6 +183,14 @@ function handle(s: SimExports, msg: ToWorker): void {
       post({ type: 'selected', id });
       break;
     }
+    case 'selectId': {
+      if (!sim) break;
+      const id = s.select_id(msg.id);
+      watching = id !== 0;
+      dirty = true;
+      post({ type: 'selected', id });
+      break;
+    }
     case 'deselect':
       if (!sim) break;
       s.deselect();
@@ -251,9 +265,17 @@ function publish(s: SimExports, now: number): void {
   out.set(new Float32Array(s.memory.buffer, s.carrion_ptr(), plantFloats), agentFloats + plantFloats);
 
   const inspect = watching ? Array.from(new Float64Array(s.memory.buffer, s.inspect(), s.inspect_len())) : null;
+  let brain: { input: number[]; output: number[] } | null = null;
+  let energyHistory: number[] | null = null;
+  if (watching) {
+    const nIn = s.brain_inputs();
+    const io = Array.from(new Float32Array(s.memory.buffer, s.brain_ptr(), nIn + s.brain_outputs()));
+    brain = { input: io.slice(0, nIn), output: io.slice(nIn) };
+    energyHistory = Array.from(new Float32Array(s.memory.buffer, s.energy_history_ptr(), s.energy_history_len()));
+  }
 
   post(
-    { type: 'frame', generation, buffer, agentCount, stride, plantCols, plantRows, tick: s.current_tick(), inspect },
+    { type: 'frame', generation, buffer, agentCount, stride, plantCols, plantRows, tick: s.current_tick(), inspect, brain, energyHistory },
     [buffer],
   );
   dirty = false;

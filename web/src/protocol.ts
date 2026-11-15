@@ -16,6 +16,8 @@ export type ToWorker =
    */
   | { type: 'select'; x: number; y: number; radius: number; kind?: number }
   | { type: 'deselect' }
+  /** id の個体を選択する（親や子をたどるとき）。結果は selected で返る */
+  | { type: 'selectId'; id: number }
   /** 統計を取る系統を選ぶ（null で解除） */
   | { type: 'setLineage'; lineage: LineageSelection | null }
   /** 描画し終えたバッファを Worker に返して再利用させる */
@@ -51,6 +53,10 @@ export type FromWorker =
       tick: number;
       /** 選択中の個体の情報（INSPECT の並び）。選択していなければ null */
       inspect: number[] | null;
+      /** 選択中の個体の脳の入力と出力（直前の tick）。選択していなければ null */
+      brain: { input: number[]; output: number[] } | null;
+      /** 選択中の個体の直近のエネルギー（古い順）。選択していなければ null */
+      energyHistory: number[] | null;
     }
   | {
       type: 'stats';
@@ -184,6 +190,19 @@ export const INSPECT = {
   fov: 42,
   /** 次に繁殖できるまでの残り tick 数 */
   rest: 43,
+  /** 生涯の記録 */
+  eaten: 44,
+  kills: 45,
+  distance: 46,
+  matings: 47,
+  failedMatings: 48,
+  /** 親の id（繁殖を決めた側, 相手）。初期個体と無性生殖の相手は 0 */
+  parentA: 49,
+  parentB: 50,
+  livingChildren: 51,
+  /** 好みの獲物の大きさの比（肉食のみ） */
+  preyMin: 52,
+  preyMax: 53,
 } as const;
 
 export const HERBIVORE = 0;

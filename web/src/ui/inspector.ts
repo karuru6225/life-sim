@@ -9,9 +9,28 @@ export interface InspectorHandlers {
   onToggleFollow(): void;
   /** 選択中の個体の系統（標識色の近い個体）の統計を見る */
   onShowLineage(): void;
+  /** id の個体を選び直す（親をたどるとき） */
+  onSelectId(id: number): void;
 }
 
+/** 脳の入力の名前（sim/src/genome.rs の IN_* の並び） */
+const INPUT_LABELS = [
+  'エネルギー', '足元の草', '草の方向・前', '草の方向・右', '天敵・前', '天敵・右', '天敵の近さ',
+  '獲物・前', '獲物・右', '獲物の近さ', '仲間・前', '仲間・右', '仲間の近さ', '仲間の数',
+  '仲間の向き・前', '仲間の向き・右', '興奮した仲間', '近い系統・前', '近い系統・右', '近い系統の割合',
+  '繁殖できる', '繁殖相手の近さ', '前方が水', '獲物の大きさ比', '天敵の大きさ比', '植生の合い具合',
+  '気温の差', '季節', '仲間のシグナル', '呼び声・前', '呼び声・右', '呼び声の大きさ', '死角の見張り',
+  '足元の死体', '死体の方向・前', '死体の方向・右',
+];
+/** 脳の出力の名前（sim/src/genome.rs の OUT_* の並び） */
+const OUTPUT_LABELS = [
+  '優先: 食べる', '優先: 繁殖', '優先: 逃げる', '優先: 仲間', '優先: 自由', '自由な方向・前', '自由な方向・右',
+  '速さ', '繁殖する', '食べる', '警戒', 'シグナル',
+];
+
 const fmtInt = new Intl.NumberFormat('ja-JP');
+/** エネルギーの推移に残す tick 数（sim/src/world.rs の ENERGY_HISTORY） */
+const ENERGY_HISTORY = 300;
 
 const STATE_LABEL: Record<number, Record<number, string>> = {
   [HERBIVORE]: {
@@ -40,6 +59,10 @@ const DEATH_LABEL: Record<number, string> = {
 
 export class Inspector {
   private readonly el: Record<string, HTMLElement> = {};
+  /** 脳の入力・出力の行ごとの [棒, 数値] */
+  private brainRows: [HTMLElement, HTMLElement][][] = [];
+  /** 親のボタンを作り直さずに済むよう、前回の親の id を覚えておく */
+  private lastParents: string | null = null;
 
   constructor(
     private readonly root: HTMLElement,
@@ -89,8 +112,31 @@ export class Inspector {
           <dt>最高速度</dt><dd data-k="maxSpeed">–</dd>
           <dt>視野</dt><dd data-k="vision">–</dd>
           <dt title="繁殖のとき、手持ちのエネルギーのうち子に渡す割合">子への投資</dt><dd data-k="invest">–</dd>
+          <dt title="肉食は、自分の大きさに対してこの範囲の大きさの獲物だけを狙う">好みの獲物</dt><dd data-k="preyRange">–</dd>
           <dt title="生存に影響しない遺伝子。系統の見分けに使う">標識色</dt><dd><i class="dot" data-k="hue"></i> <button type="button" class="link-button" data-k="lineage">この系統を見る</button></dd>
         </dl>
+        <div class="insp-section">生涯の記録</div>
+        <dl class="hud-rows">
+          <dt title="草・獲物・死体から身についたエネルギーの合計">食べた量</dt><dd data-k="eaten">–</dd>
+          <dt>仕留めた数</dt><dd data-k="kills">–</dd>
+          <dt>移動距離</dt><dd data-k="distance">–</dd>
+          <dt title="繁殖相手がいて交配を試みた回数。失敗は遺伝的に遠い相手との交配">交配</dt><dd data-k="matings">–</dd>
+        </dl>
+        <div class="insp-section">家族</div>
+        <dl class="hud-rows">
+          <dt>親</dt><dd data-k="parents">–</dd>
+          <dt>生きている子</dt><dd data-k="liveKids">–</dd>
+        </dl>
+        <div class="insp-section">エネルギーの推移（直近 300 tick）</div>
+        <canvas class="insp-energy" data-k="energyChart" aria-label="エネルギーの推移。点線は繁殖に必要な量"></canvas>
+        <details class="insp-brain">
+          <summary>脳の入力と出力（直前の tick）</summary>
+          <p class="legend-note">棒は 0 を中心に、右が正、左が負。−1〜1 で切り詰めて描く（数値は実際の値）。出力は判断に使う前の値</p>
+          <div class="brain-group">入力</div>
+          <div class="brain-rows" data-k="brainIn"></div>
+          <div class="brain-group">出力</div>
+          <div class="brain-rows" data-k="brainOut"></div>
+        </details>
       </div>
     `;
     for (const node of root.querySelectorAll<HTMLElement>('[data-k]')) {
@@ -99,6 +145,13 @@ export class Inspector {
     this.el.close.addEventListener('click', handlers.onClose);
     this.el.follow.addEventListener('click', handlers.onToggleFollow);
     this.el.lineage.addEventListener('click', handlers.onShowLineage);
+    // 親の id のボタン（中身は update で作り直す）
+    this.el.parents.addEventListener('click', (e) => {
+      const id = Number((e.target as HTMLElement).dataset.id);
+      if (id > 0) handlers.onSelectId(id);
+    });
+    // 脳の入力・出力の行は、名前が変わらないので最初に作っておく
+    this.brainRows = [this.makeBrainRows(this.el.brainIn, INPUT_LABELS), this.makeBrainRows(this.el.brainOut, OUTPUT_LABELS)];
     this.hide();
   }
 
@@ -113,6 +166,71 @@ export class Inspector {
 
   setFollow(on: boolean): void {
     this.el.follow.classList.toggle('active', on);
+  }
+
+  private makeBrainRows(root: HTMLElement, labels: string[]): [HTMLElement, HTMLElement][] {
+    return labels.map((label) => {
+      const row = document.createElement('div');
+      row.className = 'brain-row';
+      row.innerHTML = '<span class="brain-label"></span><div class="brain-bar"><div class="brain-fill"></div></div><span class="brain-value">–</span>';
+      row.querySelector('.brain-label')!.textContent = label;
+      root.append(row);
+      return [row.querySelector<HTMLElement>('.brain-fill')!, row.querySelector<HTMLElement>('.brain-value')!];
+    });
+  }
+
+  /** 脳の入力と出力、エネルギーの推移を表示する */
+  updateExtra(brain: { input: number[]; output: number[] } | null, history: number[] | null, threshold: number): void {
+    if (brain) {
+      [brain.input, brain.output].forEach((values, g) => {
+        this.brainRows[g].forEach(([fill, value], k) => {
+          const x = values[k] ?? 0;
+          const c = Math.max(-1, Math.min(1, x));
+          // 0 を中心に、正なら右へ、負なら左へ伸ばす
+          fill.style.left = `${50 + Math.min(0, c) * 50}%`;
+          fill.style.width = `${Math.abs(c) * 50}%`;
+          value.textContent = x.toFixed(2);
+        });
+      });
+    }
+    if (history) this.drawEnergy(history, threshold);
+  }
+
+  private drawEnergy(values: number[], threshold: number): void {
+    const canvas = this.el.energyChart as HTMLCanvasElement;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (canvas.width !== Math.round(w * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    const ctx = canvas.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    // 縦軸は 0 から（繁殖に必要な量の 2 倍か、それを超えたら最大値）まで
+    const max = Math.max(threshold * 2, ...values, 1e-6);
+    const y = (v: number) => h - 1 - (v / max) * (h - 2);
+    // 繁殖に必要な量の点線
+    ctx.strokeStyle = COLORS.marker;
+    ctx.globalAlpha = 0.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(0, y(threshold));
+    ctx.lineTo(w, y(threshold));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    if (values.length < 2) return;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    values.forEach((v, i) => {
+      // 右端が今。履歴が短いうちは右に寄せる
+      const x = w - ((values.length - 1 - i) / (ENERGY_HISTORY - 1)) * w;
+      if (i === 0) ctx.moveTo(x, y(v));
+      else ctx.lineTo(x, y(v));
+    });
+    ctx.stroke();
   }
 
   update(v: number[]): void {
@@ -202,6 +320,30 @@ export class Inspector {
     this.el.vision.textContent = `${v[INSPECT.vision].toFixed(1)} px・視野角 ${Math.round((v[INSPECT.fov] * 180) / Math.PI)}°`;
     this.el.invest.textContent = `${Math.round(v[INSPECT.invest] * 100)}%`;
     this.el.hue.style.background = HUE_PALETTE[hueIndex(v[INSPECT.hue])];
+    this.el.preyRange.textContent = herb ? '–' : `自分の ${v[INSPECT.preyMin].toFixed(2)}〜${v[INSPECT.preyMax].toFixed(2)} 倍`;
+
+    this.el.eaten.textContent = v[INSPECT.eaten].toFixed(1);
+    this.el.kills.textContent = herb ? '–' : `${fmtInt.format(v[INSPECT.kills])} 体`;
+    this.el.distance.textContent = `${fmtInt.format(Math.round(v[INSPECT.distance]))} px`;
+    const matings = v[INSPECT.matings];
+    this.el.matings.textContent =
+      matings > 0 ? `${fmtInt.format(matings)} 回（うち失敗 ${fmtInt.format(v[INSPECT.failedMatings])} 回）` : '0 回';
+    const parents = [v[INSPECT.parentA], v[INSPECT.parentB]].filter((id) => id > 0);
+    const key = parents.join(',');
+    if (key !== this.lastParents) {
+      this.lastParents = key;
+      this.el.parents.textContent = parents.length === 0 ? '初期個体' : '';
+      for (const id of parents) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'link-button';
+        b.dataset.id = String(id);
+        b.title = '生きていれば、この親を選ぶ';
+        b.textContent = `#${id}`;
+        this.el.parents.append(b);
+      }
+    }
+    this.el.liveKids.textContent = `${fmtInt.format(v[INSPECT.livingChildren])} 体`;
   }
 }
 
