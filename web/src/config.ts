@@ -41,6 +41,7 @@ export const SIM_PARAMS = {
 
   // 共通
   move_cost: 0.006,
+  move_size_power: 0.7,
   vision_cost: 0.00008,
   speed_upkeep: 0.002,
   max_turn: 0.5,

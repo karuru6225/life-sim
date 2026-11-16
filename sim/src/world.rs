@@ -1805,7 +1805,7 @@ impl World {
             (p.carn_metabolism, p.carn_birth_cost)
         };
 
-        // 代謝は大きさの 0.75 乗と視野と最高速度に、移動は大きさと速度の 2 乗に比例する。
+        // 代謝は大きさの 0.75 乗と視野と最高速度に、移動は大きさの約 0.7 乗と速度の 2 乗に比例する。
         // 持っている以上は失えない（エネルギーが負になって帳尻が狂うのを防ぐ）
         // 速く走れる体は、走っていなくても維持費がかかる（最高速度 × 大きさの 0.75 乗に比例）
         let upkeep = p.speed_upkeep * t.max_speed * t.size_pow075;
@@ -1822,7 +1822,9 @@ impl World {
         let eye = p.vision_cost * EYE_REF_RANGE * (0.5 * t.fov * t.vision * t.vision) / EYE_REF_AREA * t.size_pow075;
         // 脳の維持費は、使っている中間ニューロンの数に比例
         let brain = p.brain_cost * (t.brain.0 + t.brain.1) as f32 * t.size_pow075;
-        let cost = (basal + upkeep + thermal + signal + eye + brain + p.move_cost * t.size * speed * speed)
+        // 移動は大きさの move_size_power 乗（約 0.7 乗。体重あたりは大きいほど割安）と速度の 2 乗に比例する
+        let movement = p.move_cost * t.size.max(0.01).powf(p.move_size_power) * speed * speed;
+        let cost = (basal + upkeep + thermal + signal + eye + brain + movement)
             .min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
@@ -2771,6 +2773,24 @@ mod tests {
         let open = 1.0 - w.params.cover_strength;
         assert!((visible(&w, 1) - open).abs() < 1e-5);
         assert!((visible(&w, 0) / visible(&w, 1) - 0.5f32.powf(1.0 / 3.0)).abs() < 1e-3, "草の中でも大きさの差は同じ比");
+    }
+
+    #[test]
+    fn 移動の消費は大きさの0_7乗に比例し体重あたりは大きいほど割安() {
+        // 動いたときと止まっているときの消費の差（移動の分だけ）を測る。基本の代謝は 0 にしておく
+        let moving = |size: f32| {
+            let run = |speed: f32| {
+                let mut w = empty_world();
+                w.params.herb_metabolism = 0.0;
+                w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, size, 2.0, 30.0, 0.0));
+                w.live(0, speed, false, Mate::Missing);
+                5.0 - w.energy[0]
+            };
+            run(1.0) - run(0.0)
+        };
+        let (unit, big) = (moving(1.0), moving(2.0));
+        assert!((unit - empty_world().params.move_cost).abs() < 1e-6, "大きさ 1・速さ 1 で move_cost");
+        assert!((big / unit - 2.0f32.powf(0.7)).abs() < 1e-3, "大きさの 0.7 乗: {big} / {unit}");
     }
 
     #[test]
