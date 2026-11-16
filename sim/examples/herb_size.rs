@@ -10,6 +10,8 @@
 //!   逃: 襲われて逃げきれた割合（1 − 食 ÷ 襲）     幼食: 食べられた個体のうち成熟前の割合
 //!   餓: 飢えて死んだ数     他: そのほかの死（寿命・病気・争い）     純: 生 − 死の合計（増える勢い）
 //!   蓄え: 大人のエネルギー ÷ 繁殖に必要な量 の平均（区間の終わり）
+//!   不足: 草を食べようとしたうち、その場所の草が一口に足りなかった割合
+//!   取得: 実際に食べた量 ÷ 食べようとした一口の量（大きさに比例する一口のうち、どれだけ取れたか）
 
 use sim::params::Params;
 use sim::world::{Census, HERB_SIZE_BINS, HERB_SIZE_EDGES, HERBIVORE, World, death, herb_size_bin};
@@ -50,8 +52,8 @@ fn main() {
             mean_adult_size(&w)
         );
         println!(
-            "  {:>9} {:>6} {:>5} | {:>6} {:>6} {:>6} {:>5} {:>5} | {:>6} {:>6} | {:>6} | {:>5}",
-            "大きさ", "数", "割合", "生/体", "襲/体", "食/体", "逃", "幼食", "餓/体", "他/体", "純/体", "蓄え"
+            "  {:>9} {:>6} {:>5} | {:>6} {:>6} {:>6} {:>5} {:>5} | {:>6} {:>6} | {:>6} | {:>5} | {:>5} {:>5}",
+            "大きさ", "数", "割合", "生/体", "襲/体", "食/体", "逃", "幼食", "餓/体", "他/体", "純/体", "蓄え", "不足", "取得"
         );
         let energy = adult_energy(&w);
         for b in 0..HERB_SIZE_BINS {
@@ -68,8 +70,12 @@ fn main() {
             let starved = deaths(death::STARVED as usize);
             let juvenile_eaten =
                 (c.herb_size_juvenile_deaths[b][death::EATEN as usize] - last.herb_size_juvenile_deaths[b][death::EATEN as usize]) as f64;
+            let grazes = (c.herb_size_grazes[b] - last.herb_size_grazes[b]) as f64;
+            let short = (c.herb_size_graze_short[b] - last.herb_size_graze_short[b]) as f64;
+            let bite = c.herb_size_bite[b] - last.herb_size_bite[b];
+            let take = c.herb_size_take[b] - last.herb_size_take[b];
             println!(
-                "  {:>9} {:>6} {:>5.2} | {:>6.2} {:>6.2} {:>6.2} {:>5.2} {:>5.2} | {:>6.2} {:>6.2} | {:>+6.2} | {:>5.2}",
+                "  {:>9} {:>6} {:>5.2} | {:>6.2} {:>6.2} {:>6.2} {:>5.2} {:>5.2} | {:>6.2} {:>6.2} | {:>+6.2} | {:>5.2} | {:>5.2} {:>5.2}",
                 label(b),
                 pop[b],
                 pop[b] as f64 / total.max(1) as f64,
@@ -82,6 +88,8 @@ fn main() {
                 (all_deaths - eaten - starved) * scale,
                 (births - all_deaths) * scale,
                 energy[b],
+                if grazes > 0.0 { short / grazes } else { f64::NAN },
+                if bite > 0.0 { take / bite } else { f64::NAN },
             );
         }
         last = c;

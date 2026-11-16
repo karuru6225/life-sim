@@ -207,6 +207,14 @@ pub struct Census {
     pub herb_size_juvenile_deaths: [[u64; 8]; HERB_SIZE_BINS],
     /// 肉食に襲われた回数 [段階]
     pub herb_size_attacked: [u64; HERB_SIZE_BINS],
+    /// 草を食べようとした回数 [段階]
+    pub herb_size_grazes: [u64; HERB_SIZE_BINS],
+    /// そのうち、その場所の草が一口に足りなかった回数 [段階]
+    pub herb_size_graze_short: [u64; HERB_SIZE_BINS],
+    /// 食べようとした一口の量の合計（今の大きさ・警戒・植生で決まる） [段階]
+    pub herb_size_bite: [f64; HERB_SIZE_BINS],
+    /// 実際に食べた量の合計 [段階]
+    pub herb_size_take: [f64; HERB_SIZE_BINS],
 }
 
 /// 欲求の番号（genome::mix_drives の並び）
@@ -1568,6 +1576,12 @@ impl World {
         let take = bite
             .min(self.plants.biomass[c])
             .min(room / eff);
+        let b = herb_size_bin(self.traits[i].adult_size);
+        let cs = &mut self.census;
+        cs.herb_size_grazes[b] += 1;
+        cs.herb_size_graze_short[b] += (self.plants.biomass[c] < bite.min(room / eff)) as u64;
+        cs.herb_size_bite[b] += bite as f64;
+        cs.herb_size_take[b] += take.max(0.0) as f64;
         if take <= 0.0 {
             return false;
         }
