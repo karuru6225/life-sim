@@ -174,6 +174,15 @@ pub fn herb_size_bin(adult_size: f32) -> usize {
     HERB_SIZE_EDGES.iter().take_while(|&&e| adult_size >= e).count()
 }
 
+/// 肉食の大人の大きさの段階の境目（診断用）
+pub const CARN_SIZE_EDGES: [f32; 5] = [0.9, 1.1, 1.3, 1.5, 1.7];
+pub const CARN_SIZE_BINS: usize = CARN_SIZE_EDGES.len() + 1;
+
+/// 肉食の大人の大きさが入る段階
+pub fn carn_size_bin(adult_size: f32) -> usize {
+    CARN_SIZE_EDGES.iter().take_while(|&&e| adult_size >= e).count()
+}
+
 /// 起きたことの累計（調整・診断用）。添字 [種類] は HERBIVORE / CARNIVORE
 #[derive(Default, Clone, Debug)]
 pub struct Census {
@@ -207,6 +216,19 @@ pub struct Census {
     pub herb_size_juvenile_deaths: [[u64; 8]; HERB_SIZE_BINS],
     /// 肉食に襲われた回数 [段階]
     pub herb_size_attacked: [u64; HERB_SIZE_BINS],
+    /// 肉食の大人の大きさの段階ごとの記録（carn_size_bin）。生まれた数は親（産んだ側）の段階で数える
+    pub carn_size_births: [u64; CARN_SIZE_BINS],
+    /// 死因ごとの死亡数 [段階][死因]
+    pub carn_size_deaths: [[u64; 8]; CARN_SIZE_BINS],
+    /// 襲った回数・仕留めた回数 [段階]
+    pub carn_size_hunts: [u64; CARN_SIZE_BINS],
+    pub carn_size_kills: [u64; CARN_SIZE_BINS],
+    /// 襲ったときの 獲物の大きさ ÷ 自分の大きさ の合計 [段階]
+    pub carn_size_ratio: [f64; CARN_SIZE_BINS],
+    /// 狩りで得たエネルギーの合計（仲間と分けた分を含め、受け取った側の段階で数える） [段階]
+    pub carn_size_gain: [f64; CARN_SIZE_BINS],
+    /// 襲う費用の合計 [段階]
+    pub carn_size_attack_cost: [f64; CARN_SIZE_BINS],
     /// 草を食べようとした回数 [段階]
     pub herb_size_grazes: [u64; HERB_SIZE_BINS],
     /// そのうち、その場所の草が一口に足りなかった回数 [段階]
@@ -1624,6 +1646,10 @@ impl World {
         if self.kind[j] == HERBIVORE {
             c.herb_size_attacked[herb_size_bin(self.traits[j].adult_size)] += 1;
         }
+        let cb = carn_size_bin(self.traits[i].adult_size);
+        c.carn_size_hunts[cb] += 1;
+        c.carn_size_ratio[cb] += odds.size_ratio as f64;
+        c.carn_size_attack_cost[cb] += cost as f64;
         if self.rng.f32() >= odds.chance {
             self.counterattack(i, &odds);
             return Hunt::Failed; // 逃げられた
@@ -1635,6 +1661,7 @@ impl World {
         let (_, mut eaters) = self.carnivore_neighbors(i);
         eaters.push(i);
         self.census.kills += 1;
+        self.census.carn_size_kills[carn_size_bin(self.traits[i].adult_size)] += 1;
         self.life[i].kills += 1;
         self.census.kill_eaters += eaters.len() as f64;
         let share = prey * self.params.carn_efficiency / eaters.len() as f32;
@@ -1644,6 +1671,7 @@ impl World {
             let gain = share.min(room);
             self.energy[k] += gain;
             self.life[k].eaten += gain;
+            self.census.carn_size_gain[carn_size_bin(self.traits[k].adult_size)] += gain as f64;
             gained += gain;
         }
         self.ledger.carn_gain += gained as f64;
@@ -1781,6 +1809,9 @@ impl World {
         self.recent_deaths.push_back(DeathRecord { tick: self.tick, kind: self.kind[i], cause, hue: self.traits[i].hue });
         if self.growth[i] < 1.0 {
             self.census.juvenile_deaths[self.kind[i] as usize][cause as usize] += 1;
+        }
+        if self.kind[i] == CARNIVORE {
+            self.census.carn_size_deaths[carn_size_bin(self.traits[i].adult_size)][cause as usize] += 1;
         }
         if self.kind[i] == HERBIVORE {
             let b = herb_size_bin(self.traits[i].adult_size);
@@ -1974,6 +2005,8 @@ impl World {
             self.census.births[self.kind[i] as usize] += 1;
             if self.kind[i] == HERBIVORE {
                 self.census.herb_size_births[herb_size_bin(self.traits[i].adult_size)] += 1;
+            } else {
+                self.census.carn_size_births[carn_size_bin(self.traits[i].adult_size)] += 1;
             }
             self.births.push(Birth {
                 parents: [self.id[i], mate_id],
