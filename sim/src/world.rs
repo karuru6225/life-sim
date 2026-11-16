@@ -879,7 +879,7 @@ impl World {
         self.traits[i].size * (1.0 + p.coop_strength * allies)
     }
 
-    /// 個体 i が同じ種類の敵 j を攻撃する。勝つ確率は強さの 2 乗の比。
+    /// 個体 i が同じ種類の敵 j を攻撃する。勝つ確率は強さの fight_size_power 乗の比（既定では 2 乗の比）。
     /// 負けた側は勝った側の大きさに応じたけがをし、しばらく「攻撃された」状態になる。勝った側も小さなけがをする
     fn fight(&mut self, i: usize, j: usize, cause: u8) {
         let cost = self.params.fight_cost.min(self.energy[i]);
@@ -887,7 +887,9 @@ impl World {
         self.ledger.lost_metabolism += cost as f64;
         self.cooldown[i] = self.params.attack_cooldown as u16;
         let (si, sj) = (self.fight_strength(i), self.fight_strength(j));
-        let win = self.rng.f32() < si * si / (si * si + sj * sj).max(1e-6);
+        let k = self.params.fight_size_power;
+        let (pi, pj) = (si.powf(k), sj.powf(k));
+        let win = self.rng.f32() < pi / (pi + pj).max(1e-6);
         let (winner, loser) = if win { (i, j) } else { (j, i) };
         let (p_damage, p_backlash) = (self.params.fight_damage, self.params.fight_backlash);
         let damage = p_damage * self.traits[winner].size;
