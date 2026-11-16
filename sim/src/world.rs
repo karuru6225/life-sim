@@ -927,16 +927,18 @@ impl World {
         }
     }
 
-    /// 近傍探索のグリッドを作り直す。相手からの見えにくさは、足元の草から、繁殖シグナルで目立つ分を引いたもの
-    /// 見えにくさ = 隠れの強さ × 足元の草 × (1 − シグナルで目立つ分) × 1 / √いまの大きさ（小さいほど隠れやすい）。
-    /// 相手の見える距離は 視野 × (1 − 見えにくさ) になる。どれだけ隠れても視野の 5% までは見える
+    /// 近傍探索のグリッドを作り直す。相手からの見えにくさ（グリッドに渡す値）は 1 − 見つかりやすさ。
+    /// 見つかりやすさ = いまの大きさ^conceal_size_power × (1 − 隠れの強さ × 足元の草 × (1 − シグナルで目立つ分))。
+    /// 見つけられる距離は体長（大きさの 1/3 乗）に比例するので、小さいほど見つかりにくい。草の隠れは大きさによらない。
+    /// 相手の見える距離は 視野 × 見つかりやすさ になる。視野を超えず、どれだけ隠れても視野の 5% までは見える
     fn build_grid(&mut self) {
-        let (exposure, hide) = (self.params.signal_exposure, self.params.cover_strength);
+        let (exposure, hide, power) = (self.params.signal_exposure, self.params.cover_strength, self.params.conceal_size_power);
         self.conceal.clear();
         for i in 0..self.count() {
-            let by_size = 1.0 / self.traits[i].size.max(0.05).sqrt();
-            let c = hide * self.cover[i] * (1.0 - exposure * self.signal[i]) * by_size;
-            self.conceal.push(c.min(0.95));
+            let by_size = self.traits[i].size.max(0.01).powf(power);
+            let by_cover = 1.0 - hide * self.cover[i] * (1.0 - exposure * self.signal[i]);
+            let visible = (by_size * by_cover).clamp(0.05, 1.0);
+            self.conceal.push(1.0 - visible);
         }
         self.grid.build(&self.xs, &self.ys, &self.kind, &self.conceal);
     }
@@ -2730,21 +2732,42 @@ mod tests {
     }
 
     #[test]
+    fn 見つかる距離は大きさの3分の1乗に比例し草の隠れは大きさによらない() {
+        let mut w = empty_world();
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.5, 1.0, 30.0, 0.0));
+        w.spawn(200.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 1.0, 1.0, 30.0, 0.0));
+        w.spawn(300.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 2.0, 1.0, 30.0, 0.0));
+        let visible = |w: &World, i: usize| 1.0 - w.conceal[i];
+        // 草のない場所
+        w.cover = vec![0.0; 3];
+        w.build_grid();
+        assert!((visible(&w, 0) - 0.5f32.powf(1.0 / 3.0)).abs() < 1e-3, "小さいと見つかる距離が縮む");
+        assert!((visible(&w, 1) - 1.0).abs() < 1e-6, "大きさ 1 は等倍");
+        assert!((visible(&w, 2) - 1.0).abs() < 1e-6, "見る側の視野は超えない");
+        // 草が満杯の場所: 大きさ 1 は (1 − 隠れの強さ) 倍、大きさ 0.5 はさらに大きさの分だけ縮む（掛け算）
+        w.cover = vec![1.0; 3];
+        w.build_grid();
+        let open = 1.0 - w.params.cover_strength;
+        assert!((visible(&w, 1) - open).abs() < 1e-5);
+        assert!((visible(&w, 0) / visible(&w, 1) - 0.5f32.powf(1.0 / 3.0)).abs() < 1e-3, "草の中でも大きさの差は同じ比");
+    }
+
+    #[test]
     fn 肉食は好みの大きさの獲物だけを狙う() {
         let mut w = empty_world();
         w.plants.biomass.fill(0.0);
         // 好みの下限は 0.25 なので、肉食を 2.0 にして小さい獲物（0.2）との比を範囲外（0.1）にする
         let carn = genome::initial(false, 2.0, 1.0, 40.0, 0.0);
         w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
-        // 25px 先に小さすぎる獲物（比 0.1。気づく距離は 40 × 0.035 = 1.4px まで縮む）、30px 先に好みの大きさの獲物（比 0.4）
+        // 25px 先に小さすぎる獲物（比 0.1。気づく距離は 40 × 0.2^(1/3) × 0.035 ≈ 0.8px まで縮む）、30px 先に好みの大きさの獲物（比 0.4）
         w.spawn(125.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.2, 1.0, 30.0, 0.0));
         w.spawn(130.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 0.8, 1.0, 30.0, 0.0));
         face(&mut w, 0, 1.0, 0.0);
         w.build_grid();
         let prey = w.sense(0).prey.map(|(j, ..)| j);
         assert_eq!(prey, Some(2), "少し離れた小さすぎる獲物は気にせず、好みの大きさの獲物を狙う");
-        // 好みの獲物がいなければ、目の前の小さすぎる獲物も狙う
-        w.xs[1] = 101.0;
+        // 好みの獲物がいなければ、目の前の小さすぎる獲物も狙う（小さい獲物は見つかる距離も 0.2^(1/3) 倍に縮むので、すぐ目の前に置く）
+        w.xs[1] = 100.5;
         w.xs[2] = 300.0;
         w.build_grid();
         let prey = w.sense(0).prey.map(|(j, ..)| j);
