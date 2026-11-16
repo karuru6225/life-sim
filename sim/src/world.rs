@@ -165,6 +165,15 @@ pub struct Watch {
     pub death: Option<(u8, u64)>,
 }
 
+/// 草食の大人の大きさの段階の境目（診断用）。段階は境目の数 ＋ 1 個
+pub const HERB_SIZE_EDGES: [f32; 5] = [0.5, 0.65, 0.8, 1.0, 1.2];
+pub const HERB_SIZE_BINS: usize = HERB_SIZE_EDGES.len() + 1;
+
+/// 大人の大きさが入る段階
+pub fn herb_size_bin(adult_size: f32) -> usize {
+    HERB_SIZE_EDGES.iter().take_while(|&&e| adult_size >= e).count()
+}
+
 /// 起きたことの累計（調整・診断用）。添字 [種類] は HERBIVORE / CARNIVORE
 #[derive(Default, Clone, Debug)]
 pub struct Census {
@@ -190,6 +199,14 @@ pub struct Census {
     pub hunt_chance: f64,
     /// 仕留めた獲物を分け合った人数の合計
     pub kill_eaters: f64,
+    /// 草食の大人の大きさの段階ごとの記録（herb_size_bin）。生まれた数は親（産んだ側）の段階で数える
+    pub herb_size_births: [u64; HERB_SIZE_BINS],
+    /// 死因ごとの死亡数 [段階][死因]
+    pub herb_size_deaths: [[u64; 8]; HERB_SIZE_BINS],
+    /// そのうち、成熟する前に死んだ数 [段階][死因]
+    pub herb_size_juvenile_deaths: [[u64; 8]; HERB_SIZE_BINS],
+    /// 肉食に襲われた回数 [段階]
+    pub herb_size_attacked: [u64; HERB_SIZE_BINS],
 }
 
 /// 欲求の番号（genome::mix_drives の並び）
@@ -1581,6 +1598,9 @@ impl World {
         c.hunt_allies += odds.allies as f64;
         c.hunt_rivals += odds.rivals as f64;
         c.hunt_chance += odds.chance as f64;
+        if self.kind[j] == HERBIVORE {
+            c.herb_size_attacked[herb_size_bin(self.traits[j].adult_size)] += 1;
+        }
         if self.rng.f32() >= odds.chance {
             self.counterattack(i, &odds);
             return Hunt::Failed; // 逃げられた
@@ -1738,6 +1758,13 @@ impl World {
         self.recent_deaths.push_back(DeathRecord { tick: self.tick, kind: self.kind[i], cause, hue: self.traits[i].hue });
         if self.growth[i] < 1.0 {
             self.census.juvenile_deaths[self.kind[i] as usize][cause as usize] += 1;
+        }
+        if self.kind[i] == HERBIVORE {
+            let b = herb_size_bin(self.traits[i].adult_size);
+            self.census.herb_size_deaths[b][cause as usize] += 1;
+            if self.growth[i] < 1.0 {
+                self.census.herb_size_juvenile_deaths[b][cause as usize] += 1;
+            }
         }
         if self.id[i] == self.watch.id {
             self.watch.death = Some((cause, self.tick));
@@ -1920,6 +1947,9 @@ impl World {
             let x = self.xs[i] + self.rng.range(-spread, spread);
             let y = self.ys[i] + self.rng.range(-spread, spread);
             self.census.births[self.kind[i] as usize] += 1;
+            if self.kind[i] == HERBIVORE {
+                self.census.herb_size_births[herb_size_bin(self.traits[i].adult_size)] += 1;
+            }
             self.births.push(Birth {
                 parents: [self.id[i], mate_id],
                 x,
