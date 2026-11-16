@@ -18,6 +18,7 @@ sim/                       Rust クレート（WASM とネイティブの両方�
   src/rng.rs               シード付き乱数（決定論の要）
   examples/headless.rs     画面なしで回し、個体数・形質・群れの度合いの推移を出す（調整の主力）
   examples/diagnose.rs     肉食の生死と狩りの内訳を区間ごとに出す
+  examples/herb_size.rs    草食を大人の大きさで段階に分け、段階ごとの誕生・襲われた数・死因を出す
   examples/seasonal.rs     季節の効き方を見る
   examples/resume.rs       保存ファイルから画面なしで続きを進める
 web/src/
