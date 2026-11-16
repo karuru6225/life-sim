@@ -134,6 +134,7 @@ export const SIM_PARAMS = {
   habitat_limit: 0.3,
   herb_bite: 0.12,
   herb_efficiency: 0.6,
+  herb_digest_size_power: 0.25,
   herb_metabolism: 0.005,
   herb_repro_threshold: 10,
   herb_birth_cost: 1,

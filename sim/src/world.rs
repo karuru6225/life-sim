@@ -1559,12 +1559,19 @@ impl World {
     }
 
     /// いまいるマスの草を食べる。蓄えの上限を超える分は食べない。食べたら true
+    /// 草食が食べた植物のうちエネルギーになる割合。大きい体ほど草を長く腸にとどめて多くを取り出せる
+    /// （ジャーマン・ベルの原理）ので、大人の大きさの herb_digest_size_power 乗に比例させる
+    pub fn digest_efficiency(&self, i: usize) -> f32 {
+        let p = &self.params;
+        (p.herb_efficiency * self.traits[i].adult_size.max(0.01).powf(p.herb_digest_size_power)).min(0.95)
+    }
+
     fn graze(&mut self, i: usize) -> bool {
         let room = self.energy_cap(i) - self.energy[i];
         if room <= 0.0 {
             return false;
         }
-        let eff = self.params.herb_efficiency;
+        let eff = self.digest_efficiency(i);
         let c = self.plants.cell_index(self.xs[i], self.ys[i]);
         // 一口の大きさ: 警戒しているほど小さく（周りを見ながらでは食べる量が減る）、
         // 生まれた場所と違う植生の草ほど小さい（うまく食べられない）
@@ -2764,6 +2771,19 @@ mod tests {
         let open = 1.0 - w.params.cover_strength;
         assert!((visible(&w, 1) - open).abs() < 1e-5);
         assert!((visible(&w, 0) / visible(&w, 1) - 0.5f32.powf(1.0 / 3.0)).abs() < 1e-3, "草の中でも大きさの差は同じ比");
+    }
+
+    #[test]
+    fn 草食の消化の効率は大人の大きさの4分の1乗に比例する() {
+        let mut w = empty_world();
+        for (k, size) in [0.5f32, 1.0, 2.0, 40.0].iter().enumerate() {
+            w.spawn(100.0 * (k + 1) as f32, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, *size, 1.0, 30.0, 0.0));
+        }
+        let base = w.params.herb_efficiency;
+        assert!((w.digest_efficiency(1) - base).abs() < 1e-6, "大人の大きさ 1 は基準どおり");
+        assert!((w.digest_efficiency(0) / base - 0.5f32.powf(0.25)).abs() < 1e-4);
+        assert!((w.digest_efficiency(2) / base - 2.0f32.powf(0.25)).abs() < 1e-4);
+        assert!(w.digest_efficiency(3) <= 0.95, "1 を超えるとエネルギーが湧くので上限を設ける");
     }
 
     #[test]
