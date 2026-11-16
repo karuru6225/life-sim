@@ -1565,8 +1565,8 @@ impl World {
         if d2 >= range * range || self.cooldown[i] > 0 {
             return Hunt::NoAttempt;
         }
-        // 襲いかかる。成功・失敗にかかわらずエネルギーを使い、しばらく次を襲えない
-        let cost = self.params.attack_cost.min(self.energy[i]);
+        // 襲いかかる。成功・失敗にかかわらず、大きさに比例したエネルギーを使い、しばらく次を襲えない
+        let cost = (self.params.attack_cost * self.traits[i].size).min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
         self.cooldown[i] = self.params.attack_cooldown as u16;
@@ -2648,12 +2648,28 @@ mod tests {
     }
 
     #[test]
+    fn 襲う費用は自分の大きさに比例する() {
+        let spent = |size: f32| {
+            let mut w = empty_world();
+            w.params.hunt_success = 0.0;
+            let carn = genome::initial(false, size, 1.0, 40.0, 0.5);
+            w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
+            let herb = genome::initial(true, 0.1, 1.0, 30.0, 0.0);
+            w.spawn(101.0, 100.0, HERBIVORE, 5.0, 0, &herb);
+            w.build_grid();
+            w.try_hunt(0, 1, 1.0);
+            (5.0 - w.energy[0]) / w.traits[0].size
+        };
+        assert!((spent(0.5) - spent(2.0)).abs() < 1e-4, "大きさあたりの費用は同じ");
+    }
+
+    #[test]
     fn 小さな獲物なら失敗しても反撃を受けない() {
         let mut w = hunting_world(1.0);
         w.params.hunt_success = 0.0;
         w.build_grid();
         w.try_hunt(0, 1, 16.0);
-        assert!((w.energy[0] - (5.0 - w.params.attack_cost)).abs() < 1e-5, "襲う費用だけ失う");
+        assert!((w.energy[0] - (5.0 - w.params.attack_cost * w.traits[0].size)).abs() < 1e-5, "襲う費用だけ失う");
     }
 
     #[test]
