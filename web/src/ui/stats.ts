@@ -17,6 +17,17 @@ const REDRAW_INTERVAL_MS = 250;
 const GEOMETRY_KEY = 'life-sim.statsWindow';
 
 type Tab = 'size' | 'traits' | 'deaths';
+/** 表示する期間: null は全期間、数は直近の tick 数、[始まり, 終わり] はドラッグで選んだ範囲 */
+type Range = null | number | [number, number];
+/** 期間のボタン: [直近の tick 数（null は全期間）, 名前] */
+const RANGES: [number | null, string][] = [
+  [null, '全期間'],
+  [100_000, '直近 10 万'],
+  [20_000, '直近 2 万'],
+  [5_000, '直近 5 千'],
+];
+/** ドラッグをこれより短く動かしたときは、範囲の選択とみなさない（px） */
+const DRAG_MIN_PX = 5;
 type KindKey = 'herb' | 'carn';
 
 const KINDS: [KindKey, string, string][] = [
@@ -177,6 +188,10 @@ interface TimeAxis {
   end: number;
 }
 
+function tickAtX(ax: TimeAxis, x: number): number {
+  return ax.start + ((x - ax.x0) / ax.pw) * (ax.end - ax.start);
+}
+
 function timeX(ax: TimeAxis, tick: number): number {
   return ax.x0 + ((tick - ax.start) / Math.max(1, ax.end - ax.start)) * ax.pw;
 }
@@ -184,7 +199,7 @@ function timeX(ax: TimeAxis, tick: number): number {
 /** x 座標に最も近い記録の番号 */
 function indexAt(records: HistorySample[], ax: TimeAxis, x: number): number | null {
   if (records.length === 0 || x < ax.x0 || x > ax.x0 + ax.pw) return null;
-  const tick = ax.start + ((x - ax.x0) / ax.pw) * (ax.end - ax.start);
+  const tick = tickAtX(ax, x);
   // 記録 i は区間 (tick − span, tick] を表す
   let lo = 0;
   let hi = records.length - 1;
@@ -229,6 +244,12 @@ export class StatsWindow {
   private sizeKind: KindKey = 'herb';
   /** マウスを乗せている記録の番号（null なら最新） */
   private hover: number | null = null;
+  private range: Range = null;
+  /** いま表示している記録と、時間の範囲 */
+  private visible: HistorySample[] = [];
+  private view = { start: 0, end: 1 };
+  /** ドラッグ中の範囲の選択（グラフの x 座標） */
+  private drag: { canvas: HTMLCanvasElement; from: number; to: number } | null = null;
   private lastDraw = 0;
   private drawQueued = false;
   /** 時間軸を持つグラフごとの軸（マウスの位置から記録を探すのに使う） */
@@ -257,6 +278,10 @@ export class StatsWindow {
         <button type="button" class="stats-close" data-k="close" aria-label="統計を閉じる" title="閉じる">×</button>
       </header>
       <div class="stats-when" data-k="when">–</div>
+      <div class="stats-range" data-k="ranges">
+        <span class="group-label">期間</span>
+        <span class="range-help">グラフを横にドラッグで範囲を選ぶ · ダブルクリックで全期間</span>
+      </div>
       <div class="stats-pane" data-pane="size">
         <div class="stats-row">
           <div class="seg" data-k="sizeKinds"></div>
@@ -287,6 +312,14 @@ export class StatsWindow {
     this.el.close.addEventListener('click', () => this.setOpen(false));
     for (const b of root.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
       b.addEventListener('click', () => this.setTab(b.dataset.tab as Tab));
+    }
+    for (const [ticks, label] of RANGES) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.dataset.range = String(ticks);
+      b.addEventListener('click', () => this.setRange(ticks));
+      this.el.ranges.insertBefore(b, this.el.ranges.querySelector('.range-help'));
     }
     for (const [key, label] of KINDS) {
       const b = document.createElement('button');
@@ -384,7 +417,19 @@ export class StatsWindow {
     this.draw();
   }
 
+  private setRange(range: Range): void {
+    this.range = range;
+    this.hover = null;
+    this.syncButtons();
+    this.draw();
+  }
+
   private syncButtons(): void {
+    for (const b of this.el.ranges.querySelectorAll<HTMLButtonElement>('button')) {
+      const on = !Array.isArray(this.range) && b.dataset.range === String(this.range);
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
     for (const b of this.root.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
       const on = b.dataset.tab === this.tab;
       b.setAttribute('aria-selected', String(on));
@@ -403,7 +448,13 @@ export class StatsWindow {
       const ax = this.axes.get(canvas);
       if (!ax) return;
       const rect = canvas.getBoundingClientRect();
-      const i = indexAt(this.history.all(), ax, e.clientX - rect.left);
+      const x = e.clientX - rect.left;
+      if (this.drag?.canvas === canvas) {
+        this.drag.to = Math.min(Math.max(x, ax.x0), ax.x0 + ax.pw);
+        this.draw();
+        return;
+      }
+      const i = indexAt(this.visible, ax, x);
       if (i !== this.hover) {
         this.hover = i;
         this.draw();
@@ -413,6 +464,58 @@ export class StatsWindow {
       this.hover = null;
       this.draw();
     });
+    // 横にドラッグして、その範囲に拡大する
+    canvas.addEventListener('pointerdown', (e) => {
+      const ax = this.axes.get(canvas);
+      if (!ax || e.button !== 0) return;
+      const x = e.clientX - canvas.getBoundingClientRect().left;
+      if (x < ax.x0 || x > ax.x0 + ax.pw) return;
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        // 捕まえられなくても、グラフの上で離せば選べる
+      }
+      this.drag = { canvas, from: x, to: x };
+    });
+    canvas.addEventListener('pointerup', () => {
+      const drag = this.drag;
+      const ax = this.axes.get(canvas);
+      this.drag = null;
+      if (!drag || !ax || Math.abs(drag.to - drag.from) < DRAG_MIN_PX) {
+        this.draw();
+        return;
+      }
+      const a = tickAtX(ax, Math.min(drag.from, drag.to));
+      const b = tickAtX(ax, Math.max(drag.from, drag.to));
+      this.setRange([a, b]);
+    });
+    canvas.addEventListener('dblclick', () => this.setRange(null));
+  }
+
+  /** 期間に合わせて、表示する記録と時間の範囲を決める */
+  private applyRange(all: HistorySample[]): void {
+    if (all.length === 0) {
+      this.visible = [];
+      return;
+    }
+    const first = all[0].tick - all[0].span;
+    const last = all[all.length - 1].tick;
+    let [start, end] = [first, last];
+    if (typeof this.range === 'number') start = Math.max(first, last - this.range);
+    else if (Array.isArray(this.range)) {
+      start = Math.max(first, this.range[0]);
+      end = Math.min(last, this.range[1]);
+      // 選んだ範囲に記録がなくなった（作り直した後など）ときは全期間
+      if (end <= start) [start, end] = [first, last];
+    }
+    this.view = { start, end };
+    this.visible = all.filter((r) => r.tick > start && r.tick - r.span < end);
+    if (this.visible.length === 0) {
+      // 範囲が 1 つの記録より狭いときは、その範囲を含む記録を見せる
+      const i = all.findIndex((r) => r.tick >= start);
+      this.visible = [all[Math.max(0, i)]];
+    }
+    if (this.hover !== null && this.hover >= this.visible.length) this.hover = null;
   }
 
   private requestDraw(): void {
@@ -428,20 +531,34 @@ export class StatsWindow {
   private draw(): void {
     if (!this.isOpen) return;
     this.lastDraw = performance.now();
-    const records = this.history.all();
+    const all = this.history.all();
+    this.applyRange(all);
+    const records = this.visible;
     const at = records.length === 0 ? null : (this.hover ?? records.length - 1);
+    const latest = at !== null && this.hover === null && records[at] === all[all.length - 1];
     this.el.when.textContent =
       at === null
         ? '記録を待っています（200 tick ごとに記録する。リセット・読み込みのたびに最初から）'
-        : `${this.hover === null ? '最新' : 'マウスの位置'}: tick ${records[at].tick.toLocaleString('ja-JP')}` +
-          `  ·  記録 ${tickLabel(records[0].tick - records[0].span)}〜${tickLabel(records[records.length - 1].tick)}`;
+        : `${this.hover !== null ? 'マウスの位置' : latest ? '最新' : '表示の最後'}: tick ${records[at].tick.toLocaleString('ja-JP')}` +
+          `  ·  表示 ${tickLabel(this.view.start)}〜${tickLabel(this.view.end)}` +
+          `  ·  記録 ${tickLabel(all[0].tick - all[0].span)}〜${tickLabel(all[all.length - 1].tick)}` +
+          `  ·  1 列 ${tickLabel(records[at].span)} tick`;
     if (this.tab === 'size') this.drawSize(records, at);
     else if (this.tab === 'traits') this.drawTraits(records, at);
     else this.drawDeaths(records, at);
+    // ドラッグ中の範囲
+    if (this.drag) {
+      const { canvas, from, to } = this.drag;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = TEXT;
+      ctx.globalAlpha = 0.18;
+      ctx.fillRect(Math.min(from, to), 0, Math.abs(to - from), canvas.clientHeight);
+      ctx.globalAlpha = 1;
+    }
   }
 
-  private timeAxis(records: HistorySample[], x0: number, pw: number): TimeAxis {
-    return { x0, pw, start: records[0].tick - records[0].span, end: records[records.length - 1].tick };
+  private timeAxis(_records: HistorySample[], x0: number, pw: number): TimeAxis {
+    return { x0, pw, start: this.view.start, end: this.view.end };
   }
 
   // ---- 大きさ ----
@@ -518,8 +635,14 @@ export class StatsWindow {
     const off = new OffscreenCanvas(records.length, shown);
     off.getContext('2d')!.putImageData(img, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    const x0 = timeX(ax, ax.start);
-    ctx.drawImage(off, x0, top, timeX(ax, ax.end) - x0, ph);
+    // 画像の横は記録の区間（最初の記録の始まり〜最後の記録の終わり）。表示の範囲の外は切り落とす
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ax.x0, 0, ax.pw, h);
+    ctx.clip();
+    const x0 = timeX(ax, records[0].tick - records[0].span);
+    ctx.drawImage(off, x0, top, timeX(ax, records[records.length - 1].tick) - x0, ph);
+    ctx.restore();
 
     // 縦の目盛り（大きさ）
     ctx.textAlign = 'right';
@@ -586,7 +709,7 @@ export class StatsWindow {
   private showHeatTip(e: MouseEvent): void {
     const heat = this.el.heat as HTMLCanvasElement;
     const ax = this.axes.get(heat);
-    const records = this.history.all();
+    const records = this.visible;
     const tip = this.el.tip;
     if (!ax || records.length === 0) return;
     const rect = heat.getBoundingClientRect();
@@ -723,6 +846,10 @@ export class StatsWindow {
       }
       drawTimeTicks(ctx, ax, top + ph + 1);
 
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(ax.x0, 0, ax.pw, h);
+      ctx.clip();
       // 死因ごとの面（下から順に。各記録は区間 [tick − span, tick] を表すので、区間の両端で同じ高さの段にする）
       CAUSES.forEach(([, , color], c) => {
         ctx.fillStyle = color;
@@ -765,6 +892,7 @@ export class StatsWindow {
       ctx.strokeStyle = BIRTH_COLOR;
       ctx.lineWidth = 2;
       ctx.stroke();
+      ctx.restore();
       if (this.hover !== null) {
         const r = records[this.hover];
         drawHoverLine(ctx, timeX(ax, r.tick - r.span / 2), top, top + ph);
