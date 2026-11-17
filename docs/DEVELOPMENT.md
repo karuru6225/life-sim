@@ -7,7 +7,7 @@
 
 ```text
 sim/                       Rust クレート（WASM とネイティブの両方にビルドする）
-  src/lib.rs               JS との境界。extern "C" の関数と、JS に渡す並び（INSPECT / SUMMARY / 系統の統計）
+  src/lib.rs               JS との境界。extern "C" の関数と、JS に渡す並び（INSPECT / SUMMARY / 系統の統計 / 長期の統計）
   src/world.rs             世界と個体（SoA）。1 tick の処理、狩り・争い・繁殖・死、集計
   src/world/save.rs        世界の保存と読み込み（バイナリ）、保存ファイルの入れ物
   src/genome.rs            遺伝子の並び、脳（入力・中間 2 層・出力）、初期配線、交叉と変異
@@ -23,11 +23,11 @@ sim/                       Rust クレート（WASM とネイティブの両方�
   examples/resume.rs       保存ファイルから画面なしで続きを進める
 web/src/
   main.ts                  エントリ。描画ループ、選択、世界の広さ、保存と読み込み
-  worker.ts                WASM を読み込んで sim を回す Web Worker。個体数の履歴もここで持つ
+  worker.ts                WASM を読み込んで sim を回す Web Worker。200 tick ごとに長期の統計の標本を取って送る
   protocol.ts              メインと Worker の間のメッセージ型、INSPECT / LINEAGE / DEATH の並び
   config.ts                パラメータ（SIM_PARAMS）、色、世界の広さの選択肢、表示の設定
   render/                  PixiJS の描画（個体・植物・地形・カメラ・選択の印）
-  ui/                      左のパネル（hud）、個体の詳細（inspector）、系統の統計（lineage）
+  ui/                      左のパネル（hud）、個体の詳細（inspector）、系統の統計（lineage）、統計のウインドウ（stats。長期の記録もここで持つ）
 scripts/                   WASM のコピー、コミットのハッシュの取得（ビルド時）
 .cargo/config.toml         WASM のビルドで SIMD（simd128）を有効にする
 .github/workflows/pages.yml  main への push で GitHub Pages に公開
@@ -99,6 +99,7 @@ config.ts の SIM_PARAMS ──(名前と値)──▶ worker ──set_param─
 | 個体の詳細 | `lib.rs` の `inspect()` と `INSPECT_LEN` | `protocol.ts` の `INSPECT`、`ui/inspector.ts` |
 | 全体の集計 | `lib.rs` の `summary()` と `SUMMARY_LEN` | `worker.ts`、`ui/hud.ts` |
 | 系統の統計 | `world.rs` の `lineage_stats()` と `LINEAGE_STATS` | `protocol.ts` の `LINEAGE` と `LINEAGE_LEN`、`ui/lineage.ts` |
+| 長期の統計 | `lib.rs` の `history_sample()` と `HISTORY_LEN`（大きさの分布の段階は `world.rs` の `SIZE_HIST_BINS`） | `worker.ts` の `sampleHistory()`、`protocol.ts` の `HistorySample`、`ui/stats.ts` |
 
 長さの定数は Rust と JS の両方にあるので、そろえて変える。WASM を作り直さずに画面だけ更新すると、
 読む位置がずれて NaN が出る（`npm run build:sim` を忘れない）。
