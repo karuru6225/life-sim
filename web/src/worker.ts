@@ -3,7 +3,7 @@
 
 import wasmUrl from './wasm/sim.wasm?url';
 import { AUTO_SUNLIGHT, TICK_HZ } from './config';
-import { CARNIVORE, HERBIVORE, HISTORY_EVERY, LINEAGE, SAVE_MAGIC, type FromWorker, type HistoryKind, type LineageSelection, type SaveHeader, type ToWorker } from './protocol';
+import { SAVE_MAGIC, type FromWorker, type LineageSelection, type SaveHeader, type ToWorker } from './protocol';
 import { SIM_PARAMS } from './config';
 
 interface SimExports {
@@ -48,8 +48,12 @@ interface SimExports {
   deselect(): void;
   inspect(): number;
   inspect_len(): number;
-  history_sample(): number;
-  history_len(): number;
+  history_count(): number;
+  history_version(): number;
+  history_last_tick(): number;
+  history_record_len(): number;
+  history_size_bins(i: number): number;
+  history_export(from: number): number;
 }
 
 /** 転送用バッファの最大数。メインスレッドが返してこない限り、これ以上は作らない */
@@ -105,10 +109,10 @@ let lastHunts = 0;
 let lastKills = 0;
 let lastFailed = 0;
 
-/** 長期の統計: 前の記録の tick と、そのときの出生・死亡の累計 [種類] */
-let historyTick = 0;
-let historyBirths = [0, 0];
-let historyDeaths: number[][] = [[], []];
+/** 長期の統計の記録を最後に送ったときの、記録の数・並べ直しの回数・標本の tick */
+let historyCount = 0;
+let historyVersion = -1;
+let historyLastTick = -1;
 
 let statStart = performance.now();
 let statTicks = 0;
@@ -148,7 +152,6 @@ function onNewWorld(s: SimExports): void {
   smoothedMs = 0;
   rebaseline = true;
   sim = s;
-  historyBaseline(s);
   generation++;
   watching = false;
   pool = [];
@@ -168,6 +171,8 @@ function onNewWorld(s: SimExports): void {
   // 季節で変わる地図のデータもすぐ送る（地図の表示を切り替えたときに空にならないように）
   sendClimate(s);
   lastClimate = performance.now();
+  // 長期の統計の記録の全部（読み込んだ世界なら保存までの記録も）。ready の後に送る（メインは ready で記録を消すため）
+  syncHistory(s, true);
 }
 
 const decoder = new TextDecoder();
@@ -334,60 +339,39 @@ function stepTimed(s: SimExports, ticks: number): void {
   statStepMs += performance.now() - t0;
   statTicks += ticks;
   dirty = true;
-  sampleHistory(s);
+  syncHistory(s);
 }
 
-/** history_sample() の並び（sim/src/lib.rs を参照） */
-function readHistory(s: SimExports): Float64Array {
-  return new Float64Array(s.memory.buffer, s.history_sample(), s.history_len()).slice();
-}
-
-/** 長期の統計の基準を取り直す（世界を作り直した・読み込んだとき。累計は 0 から始まるとは限らない） */
-function historyBaseline(s: SimExports): void {
-  const h = readHistory(s);
-  historyTick = s.current_tick();
-  historyBirths = [h[3], h[4]];
-  historyDeaths = [Array.from(h.subarray(5, 13)), Array.from(h.subarray(13, 21))];
-}
-
-/** 前の記録から HISTORY_EVERY tick 以上進んでいたら、長期の統計を 1 つ記録して送る */
-function sampleHistory(s: SimExports): void {
-  const tick = s.current_tick();
-  if (tick - historyTick < HISTORY_EVERY) return;
-  const h = readHistory(s);
-  const bins = h[0];
-  const kindOf = (k: number, kind: number): HistoryKind => {
-    // 種類全体の形質の平均は、系統の統計を「全部の色相」で取って得る
-    const l = new Float64Array(s.memory.buffer, s.lineage_stats(kind, 0, 1), s.lineage_len());
-    const deaths = Array.from(h.subarray(5 + k * 8, 13 + k * 8));
-    const out: HistoryKind = {
-      count: l[LINEAGE.count],
-      size: l[LINEAGE.size],
-      speed: l[LINEAGE.speed],
-      vision: l[LINEAGE.vision],
-      fov: l[LINEAGE.fovDeg],
-      tempPref: l[LINEAGE.tempPref],
-      invest: l[LINEAGE.invest],
-      litter: l[LINEAGE.litter],
-      generation: l[LINEAGE.generation],
-      brain: l[LINEAGE.brain1] + l[LINEAGE.brain2],
-      births: Math.max(0, h[3 + k] - historyBirths[k]),
-      deaths: deaths.map((d, c) => Math.max(0, d - (historyDeaths[k][c] ?? 0))),
-      sizeHist: Array.from(h.subarray(21 + k * bins, 21 + (k + 1) * bins)),
-    };
-    historyBirths[k] = h[3 + k];
-    historyDeaths[k] = deaths;
-    return out;
-  };
-  const sample = {
-    tick,
-    span: tick - historyTick,
-    sizeRange: [h[1], h[2]] as [number, number],
-    herb: kindOf(0, HERBIVORE),
-    carn: kindOf(1, CARNIVORE),
-  };
-  historyTick = tick;
-  post({ type: 'history', generation, sample });
+/**
+ * 長期の統計の記録（Rust が持つ）に新しい標本が入っていたら、メインスレッドへ送る。
+ * 並べ直し（隣どうしをまとめた）があったときや all のときは全部、そうでなければ最後に送った記録（まとめ途中だったもの）以降
+ */
+function syncHistory(s: SimExports, all = false): void {
+  const lastTick = s.history_last_tick();
+  const version = s.history_version();
+  if (!all && lastTick === historyLastTick && version === historyVersion) return;
+  const count = s.history_count();
+  const reset = all || version !== historyVersion || count < historyCount;
+  const from = reset ? 0 : Math.max(0, historyCount - 1);
+  const recordLen = s.history_record_len();
+  const ptr = s.history_export(from);
+  const data = new Float64Array(s.memory.buffer, ptr, (count - from) * recordLen).slice();
+  post(
+    {
+      type: 'history',
+      generation,
+      reset,
+      from,
+      recordLen,
+      bins: s.history_size_bins(0),
+      sizeRange: [s.history_size_bins(1), s.history_size_bins(2)],
+      data: data.buffer,
+    },
+    [data.buffer],
+  );
+  historyCount = count;
+  historyVersion = version;
+  historyLastTick = lastTick;
 }
 
 function advance(s: SimExports, now: number): void {

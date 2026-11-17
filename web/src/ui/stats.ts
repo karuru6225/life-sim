@@ -4,14 +4,13 @@
 // - 個体数と形質: 種類ごとの個体数と形質の平均の推移
 // - 死因と出生: 種類ごとの、死因ごとの死亡数（積み上げ）と生まれた数（線）。1,000 tick あたり
 //
-// 記録は Worker が HISTORY_EVERY tick ごとに送ってくる。長くなったら隣どうしをまとめて、数を MAX_RECORDS 以下に保つ。
+// 記録は Rust の世界が持ち（sim/src/world/history.rs。保存ファイルにも入る）、Worker が新しい標本のたびに差分を送ってくる。
 // グラフにマウスを乗せると、その時点の値を表示する（どのタブでも同じ時点を指す）。
 
 import { COLORS } from '../config';
-import { DEATH, type HistoryKind, type HistorySample } from '../protocol';
+import { DEATH, HISTORY_FIELD as F, type FromWorker, type HistoryKind, type HistorySample } from '../protocol';
 
-/** 記録の数の上限。超えたら隣どうしをまとめて半分にする */
-const MAX_RECORDS = 600;
+type HistoryMessage = Extract<FromWorker, { type: 'history' }>;
 /** 描き直しの最短間隔（ms）。最大速度では記録が毎秒何度も届くので */
 const REDRAW_INTERVAL_MS = 250;
 const GEOMETRY_KEY = 'life-sim.statsWindow';
@@ -74,63 +73,33 @@ const TEXT = '#dde6e4';
 const PANEL = '#0c1215';
 const FONT = "11px ui-monospace, 'Cascadia Mono', Consolas, monospace";
 
-/** 2 つの記録をまとめる（形質は区間の長さで重みをつけた平均、出生と死亡は合計） */
-function merge(a: HistorySample, b: HistorySample): HistorySample {
-  const span = a.span + b.span;
-  const wa = a.span / span;
-  const wb = b.span / span;
-  const kind = (x: HistoryKind, y: HistoryKind): HistoryKind => ({
-    count: x.count * wa + y.count * wb,
-    size: x.size * wa + y.size * wb,
-    speed: x.speed * wa + y.speed * wb,
-    vision: x.vision * wa + y.vision * wb,
-    fov: x.fov * wa + y.fov * wb,
-    tempPref: x.tempPref * wa + y.tempPref * wb,
-    invest: x.invest * wa + y.invest * wb,
-    litter: x.litter * wa + y.litter * wb,
-    generation: x.generation * wa + y.generation * wb,
-    brain: x.brain * wa + y.brain * wb,
-    births: x.births + y.births,
-    deaths: x.deaths.map((d, i) => d + (y.deaths[i] ?? 0)),
-    sizeHist: x.sizeHist.map((n, i) => n * wa + (y.sizeHist[i] ?? 0) * wb),
-  });
-  return { tick: b.tick, span, sizeRange: b.sizeRange, herb: kind(a.herb, b.herb), carn: kind(a.carn, b.carn) };
-}
-
-/** 長期の記録。数が MAX_RECORDS を超えたら隣どうしをまとめ、以後は 2 倍の数の標本を 1 つにまとめて足す */
-class History {
-  private records: HistorySample[] = [];
-  private stride = 1;
-  private pending: HistorySample | null = null;
-  private pendingCount = 0;
-
-  add(s: HistorySample): void {
-    this.pending = this.pending ? merge(this.pending, s) : s;
-    this.pendingCount++;
-    if (this.pendingCount < this.stride) return;
-    this.records.push(this.pending);
-    this.pending = null;
-    this.pendingCount = 0;
-    if (this.records.length > MAX_RECORDS) {
-      const halved: HistorySample[] = [];
-      for (let i = 0; i + 1 < this.records.length; i += 2) halved.push(merge(this.records[i], this.records[i + 1]));
-      if (this.records.length % 2 === 1) halved.push(this.records[this.records.length - 1]);
-      this.records = halved;
-      this.stride *= 2;
-    }
+/** Worker から届いた記録の並び（Float64）を読む */
+function decodeHistory(msg: HistoryMessage): HistorySample[] {
+  const v = new Float64Array(msg.data);
+  const kindLen = (msg.recordLen - 2) / 2;
+  const out: HistorySample[] = [];
+  for (let o = 0; o + msg.recordLen <= v.length; o += msg.recordLen) {
+    const kind = (k: number): HistoryKind => {
+      const b = o + 2 + k * kindLen;
+      return {
+        count: v[b + F.count],
+        size: v[b + F.size],
+        speed: v[b + F.speed],
+        vision: v[b + F.vision],
+        fov: v[b + F.fovDeg],
+        tempPref: v[b + F.tempPref],
+        invest: v[b + F.invest],
+        litter: v[b + F.litter],
+        generation: v[b + F.generation],
+        brain: v[b + F.brain],
+        births: v[b + F.births],
+        deaths: Array.from(v.subarray(b + F.deaths, b + F.deaths + 8)),
+        sizeHist: Array.from(v.subarray(b + F.sizeHist, b + F.sizeHist + msg.bins)),
+      };
+    };
+    out.push({ tick: v[o], span: v[o + 1], sizeRange: msg.sizeRange, herb: kind(0), carn: kind(1) });
   }
-
-  clear(): void {
-    this.records = [];
-    this.stride = 1;
-    this.pending = null;
-    this.pendingCount = 0;
-  }
-
-  /** 表示に使う記録（まとめ途中のものも最後に含める） */
-  all(): HistorySample[] {
-    return this.pending ? [...this.records, this.pending] : this.records;
-  }
+  return out;
 }
 
 /** canvas を表示上の大きさ × 画素比で作り直し、表示上の座標で描ける文脈を返す */
@@ -239,7 +208,8 @@ function drawHoverLine(ctx: CanvasRenderingContext2D, x: number, top: number, bo
 export class StatsWindow {
   private readonly root: HTMLElement;
   private readonly el: Record<string, HTMLElement> = {};
-  private readonly history = new History();
+  /** 長期の記録（古い順。最後の 1 つはまとめ途中のことがある） */
+  private records: HistorySample[] = [];
   private tab: Tab = 'size';
   private sizeKind: KindKey = 'herb';
   /** マウスを乗せている記録の番号（null なら最新） */
@@ -397,14 +367,17 @@ export class StatsWindow {
     this.setOpen(!this.isOpen);
   }
 
-  add(sample: HistorySample): void {
-    this.history.add(sample);
+  /** Worker から届いた記録を反映する（全部か、from 番目以降の差し替え） */
+  setHistory(msg: HistoryMessage): void {
+    const decoded = decodeHistory(msg);
+    if (msg.reset) this.records = decoded;
+    else this.records = this.records.slice(0, msg.from).concat(decoded);
     this.requestDraw();
   }
 
-  /** 世界を作り直したとき（リセット・読み込み） */
+  /** 世界を作り直したとき（リセット・読み込み）。記録の全部がすぐ後に届く */
   clear(): void {
-    this.history.clear();
+    this.records = [];
     this.hover = null;
     this.requestDraw();
   }
@@ -531,14 +504,14 @@ export class StatsWindow {
   private draw(): void {
     if (!this.isOpen) return;
     this.lastDraw = performance.now();
-    const all = this.history.all();
+    const all = this.records;
     this.applyRange(all);
     const records = this.visible;
     const at = records.length === 0 ? null : (this.hover ?? records.length - 1);
     const latest = at !== null && this.hover === null && records[at] === all[all.length - 1];
     this.el.when.textContent =
       at === null
-        ? '記録を待っています（200 tick ごとに記録する。リセット・読み込みのたびに最初から）'
+        ? '記録を待っています（200 tick ごとに記録する。保存ファイルには記録も入る）'
         : `${this.hover !== null ? 'マウスの位置' : latest ? '最新' : '表示の最後'}: tick ${records[at].tick.toLocaleString('ja-JP')}` +
           `  ·  表示 ${tickLabel(this.view.start)}〜${tickLabel(this.view.end)}` +
           `  ·  記録 ${tickLabel(all[0].tick - all[0].span)}〜${tickLabel(all[all.length - 1].tick)}` +

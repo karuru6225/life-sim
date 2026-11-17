@@ -431,7 +431,7 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       hud.setTempRange(terrain.currentMode === 'tempNow' ? terrain.tempNowRange : terrain.tempRange);
       break;
     case 'history':
-      if (msg.generation === generation) stats.add(msg.sample);
+      if (msg.generation === generation) stats.setHistory(msg);
       break;
     case 'selected':
       selectedId = msg.id;
