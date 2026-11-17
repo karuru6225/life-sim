@@ -15,8 +15,8 @@ export class PlantLayer {
 
   constructor(
     private readonly cellSize: number,
-    /** この量で不透明度が最大になる */
-    private readonly capacity: number,
+    /** この量で不透明度が最大になる（表示する層を変えたら変える） */
+    public capacity: number,
     color: string = COLORS.plant,
     /** 量が threshold 以上あるときの最低の不透明度（0〜1）。少量でも見落とさないようにする */
     private readonly minAlpha = 0,

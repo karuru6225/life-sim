@@ -158,6 +158,21 @@ let latest: Frame | null = null;
 let speed = 1;
 let paused = false;
 let colorMode: ColorMode = 'kind';
+/** 地図に描く植物の層（-1 は合計、0: 地面の草、1: 茂み、2: 枝） */
+let plantLayer = -1;
+
+/**
+ * 層 k が 1 マスに溜まりうる最大の量（その層だけを描くとき、この量で色が最も濃い）。
+ * 林の度合いで層の割合が変わるので、最も林（茂み・枝）か最も草原（地面の草）の場所での上限。sim/src/plants.rs の share_at と同じ式
+ */
+function plantLayerMax(k: number): number {
+  const p = params;
+  if (k < 0) return p.plant_capacity;
+  const c = Math.min(1, Math.max(0, p.woodland_contrast));
+  const upper = p.plant_share_shrub + p.plant_share_tree;
+  const share = [1 - upper * (1 - c), p.plant_share_shrub * (1 + c), p.plant_share_tree * (1 + c)][k];
+  return p.plant_capacity * Math.min(1, Math.max(0.05, share));
+}
 let highlight: Highlight = 'none';
 let highlightStyle: HighlightStyle = 'dim';
 /** 統計を見ている系統（null なら選んでいない）。選んでいる間は、系統の外の個体と、もう一方の種類を薄く描く */
@@ -352,6 +367,12 @@ const hud = new Hud(document.getElementById('hud')!, {
     hud.setMapMode(mode);
     hud.setTempRange(mode === 'tempNow' ? terrain.tempNowRange : terrain.tempRange);
   },
+  onPlantLayer: (layer) => {
+    plantLayer = layer;
+    plants.capacity = plantLayerMax(layer);
+    send({ type: 'setPlantLayer', layer });
+    hud.setPlantLayer(layer);
+  },
   onLayer: (layer) => {
     layers[layer] = !layers[layer];
     applyLayers();
@@ -430,7 +451,14 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
     case 'ready':
       generation = msg.generation;
       stats.clear();
-      terrain.setData(new Float32Array(msg.terrain), new Float32Array(msg.temperature), msg.terrainCols, msg.terrainRows);
+      terrain.setData(
+        new Float32Array(msg.terrain),
+        new Float32Array(msg.temperature),
+        new Float32Array(msg.wood),
+        new Float32Array(msg.elevation),
+        msg.terrainCols,
+        msg.terrainRows,
+      );
       hud.setTempRange(terrain.currentMode === 'tempNow' ? terrain.tempNowRange : terrain.tempRange);
       break;
     case 'history':
@@ -610,5 +638,6 @@ hud.setSunlight(params.sunlight);
 hud.setColorMode(colorMode);
 setHighlight('none', 'dim');
 hud.setMapMode('vegetation');
+hud.setPlantLayer(plantLayer);
 applyLayers();
 start();

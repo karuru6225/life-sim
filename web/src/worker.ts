@@ -19,6 +19,9 @@ interface SimExports {
   render_buffer_ptr(): number;
   render_stride(): number;
   plant_ptr(): number;
+  plant_layer_ptr(k: number): number;
+  wood_ptr(): number;
+  elevation_ptr(): number;
   carrion_ptr(): number;
   select_id(id: number): number;
   save_world(): number;
@@ -108,6 +111,8 @@ let lastTime = performance.now();
 /** 前回の集計時点での、交配の累計回数と失敗の累計回数 */
 /** 統計を取る系統（null なら取らない） */
 let lineageSel: LineageSelection | null = null;
+/** 地図に描く植物の層（-1 は合計）。メインスレッドが setPlantLayer で選ぶ */
+let plantLayer = -1;
 /** 世界を作り直した直後は、累計の集計の基準を取り直す（読み込んだ世界は累計が 0 から始まらないため） */
 let rebaseline = true;
 let lastMatings = 0;
@@ -171,9 +176,23 @@ function onNewWorld(s: SimExports): void {
   terrain.set(new Float32Array(s.memory.buffer, s.terrain_ptr(), cols * rows));
   const temperature = new Float32Array(cols * rows);
   temperature.set(new Float32Array(s.memory.buffer, s.temperature_ptr(), cols * rows));
+  // wood_ptr は terrain_ptr と同じ置き場を使うので、地形を写し取った後に読む
+  const wood = new Float32Array(cols * rows);
+  wood.set(new Float32Array(s.memory.buffer, s.wood_ptr(), cols * rows));
+  const elevation = new Float32Array(cols * rows);
+  elevation.set(new Float32Array(s.memory.buffer, s.elevation_ptr(), cols * rows));
   post(
-    { type: 'ready', generation, terrain: terrain.buffer, temperature: temperature.buffer, terrainCols: cols, terrainRows: rows },
-    [terrain.buffer, temperature.buffer],
+    {
+      type: 'ready',
+      generation,
+      terrain: terrain.buffer,
+      temperature: temperature.buffer,
+      wood: wood.buffer,
+      elevation: elevation.buffer,
+      terrainCols: cols,
+      terrainRows: rows,
+    },
+    [terrain.buffer, temperature.buffer, wood.buffer, elevation.buffer],
   );
   // 季節で変わる地図のデータもすぐ送る（地図の表示を切り替えたときに空にならないように）
   sendClimate(s);
@@ -330,6 +349,10 @@ function handle(s: SimExports, msg: ToWorker): void {
     case 'setLineage':
       lineageSel = msg.lineage;
       break;
+    case 'setPlantLayer':
+      plantLayer = msg.layer;
+      dirty = true;
+      break;
     case 'returnBuffer':
       if (pool.length < MAX_BUFFERS) pool.push(msg.buffer);
       break;
@@ -423,7 +446,7 @@ function publish(s: SimExports, now: number): void {
   // memory.buffer は WASM のメモリが伸びると作り直されるので、ポインタを取ってから毎回取り直す
   const agentsPtr = s.render_buffer_ptr();
   out.set(new Float32Array(s.memory.buffer, agentsPtr, agentFloats), 0);
-  const plantsPtr = s.plant_ptr();
+  const plantsPtr = plantLayer < 0 ? s.plant_ptr() : s.plant_layer_ptr(plantLayer);
   out.set(new Float32Array(s.memory.buffer, plantsPtr, plantFloats), agentFloats);
   out.set(new Float32Array(s.memory.buffer, s.carrion_ptr(), plantFloats), agentFloats + plantFloats);
 

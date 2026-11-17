@@ -22,6 +22,8 @@ export type ToWorker =
   | { type: 'selectId'; id: number }
   /** 統計を取る系統を選ぶ（null で解除） */
   | { type: 'setLineage'; lineage: LineageSelection | null }
+  /** 地図に描く植物の層（0: 地面の草、1: 茂み、2: 枝、-1: 合計）。フレームの植物量がその層になる */
+  | { type: 'setPlantLayer'; layer: number }
   /** 世界を保存する。結果は saved で返る */
   | { type: 'save' }
   /** 保存したファイル（gzip のまま）から世界を読み込む。結果は loaded で返る（成功なら、その前に ready も届く） */
@@ -37,6 +39,10 @@ export type FromWorker =
       terrain: ArrayBuffer;
       /** 平均気温（Float32、cols × rows、度） */
       temperature: ArrayBuffer;
+      /** 林の度合い（Float32、cols × rows）。水は −1、陸は 0（最も草原）〜1（最も林）。世界を作り直すまで変わらない */
+      wood: ArrayBuffer;
+      /** 標高（Float32、cols × rows）。陸は 0（海面）〜1（最も高い所）、水は 0（水際）〜−1（最も深い所） */
+      elevation: ArrayBuffer;
       terrainCols: number;
       terrainRows: number;
     }

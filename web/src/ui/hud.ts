@@ -18,7 +18,15 @@ export interface Layers {
 }
 
 /** 表示の切り替えボタンの並びと名前 */
-export const LAYER_LABELS: [keyof Layers, string, string][] = [
+export /** 地図に描ける植物の層: [層の番号（-1 は合計）, 名前, 説明] */
+const PLANT_LAYERS = [
+  [-1, '合計', '全部の層の植物量'],
+  [0, '地面の草', '地面の草の量。誰でも届く。大きい口ほど短い草を食べ残す'],
+  [1, '茂み', '低い茂みの量。体長 0.85（大きさ約 0.6）から届き始める'],
+  [2, '枝', '高い枝の量。体長 1.05（大きさ約 1.16）から届き始める'],
+] as const;
+
+const LAYER_LABELS: [keyof Layers, string, string][] = [
   ['terrain', '地形', '水域・陸の色（地図の表示方法で変わる）'],
   ['plants', '植物', '植物量'],
   ['carrion', '死体', '死体の量'],
@@ -51,6 +59,8 @@ export interface HudHandlers {
   onHighlight(target: Highlight): void;
   onHighlightStyle(style: HighlightStyle): void;
   onMapMode(mode: MapMode): void;
+  /** 地図に描く植物の層（-1 は合計） */
+  onPlantLayer(layer: number): void;
   /** 地図の上に重ねるものの表示を切り替える */
   onLayer(layer: keyof Layers): void;
   /** 世界の広さを選ぶ（世界を作り直す） */
@@ -99,6 +109,7 @@ export class Hud {
   private readonly highlightButtons: HTMLButtonElement[] = [];
   private readonly styleButtons: HTMLButtonElement[] = [];
   private readonly mapButtons: HTMLButtonElement[] = [];
+  private readonly plantLayerButtons: HTMLButtonElement[] = [];
   private readonly layerButtons: HTMLButtonElement[] = [];
   private readonly sizeButtons: HTMLButtonElement[] = [];
   private readonly traitCells: HTMLElement[][] = [];
@@ -164,6 +175,7 @@ export class Hud {
         <div class="group" data-k="highlights"><span class="group-label">強調（引いても見えるよう大きめに描く）</span></div>
         <div class="group" data-k="styles"><span class="group-label">強調の方法</span></div>
         <div class="group" data-k="maps"><span class="group-label">地図の表示方法</span></div>
+        <div class="group" data-k="plantLayers"><span class="group-label">植物の表示（高さの層）</span></div>
         <div class="group" data-k="layers"><span class="group-label">表示するもの</span></div>
       </div>
       <dl class="hud-rows hud-perf">
@@ -184,17 +196,29 @@ export class Hud {
           <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.tempCold}, ${COLORS.tempMild}, ${COLORS.tempHot})"></div>
           <div class="swatch-scale"><span data-k="tempMin">–</span><span data-k="tempMax">–</span></div>
         </div>
+        <div data-k="elevLegend" hidden>
+          <span class="group-label">標高（高い所ほど寒い。季節で変わらない）</span>
+          <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.deep}, ${COLORS.shallow} 49%, ${COLORS.lowland} 51%, ${COLORS.highland})"></div>
+          <div class="swatch-scale"><span>深い水</span><span>水際</span><span>最も高い所</span></div>
+        </div>
+        <div data-k="woodLegend" hidden>
+          <span class="group-label">林と草原（植物の層の割合。土の肥えた場所ほど林になる。季節で変わらない）</span>
+          <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.grassland}, ${COLORS.woodland})"></div>
+          <div class="swatch-scale"><span>草原（地面の草が多い）</span><span>林（茂みと枝が多い）</span></div>
+        </div>
         <div data-k="growthLegend" hidden>
           <span class="group-label">今の育ちやすさ（土の肥えかた × 今の気温による育ちやすさ）</span>
           <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.landPoor}, ${COLORS.growthHigh})"></div>
           <div class="swatch-scale"><span>育たない</span><span>最も育つ</span></div>
         </div>
-        <span class="group-label">地形</span>
-        <div class="terrain-legend">
-          <span><i class="swatch" style="background:${COLORS.water}"></i>水域（入れない）</span>
-          <span><i class="swatch" style="background:linear-gradient(to right, ${COLORS.landPoor}, ${COLORS.landRich})"></i>陸（明るいほど肥沃）</span>
+        <div data-k="vegLegend">
+          <span class="group-label">地形</span>
+          <div class="terrain-legend">
+            <span><i class="swatch" style="background:${COLORS.water}"></i>水域（入れない）</span>
+            <span><i class="swatch" style="background:linear-gradient(to right, ${COLORS.landPoor}, ${COLORS.landRich})"></i>陸（明るいほど肥沃）</span>
+          </div>
         </div>
-        <span class="group-label">植物量</span>
+        <span class="group-label" data-k="plantLegendLabel">植物量（全部の層の合計）</span>
         <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.background}, ${COLORS.plant})"></div>
         <div class="swatch-scale"><span>なし</span><span>上限</span></div>
         <div class="terrain-legend">
@@ -268,6 +292,8 @@ export class Hud {
 
     for (const [mode, label, title] of [
       ['vegetation', '植生', '植生の種類（土の肥えかた）。季節で変わらない'],
+      ['elevation', '標高', '陸の高さと水の深さ。高い所ほど寒い。季節で変わらない'],
+      ['woodland', '林と草原', '植物の層の割合。草原は地面の草が多く、林は茂みと枝が多い。季節で変わらない'],
       ['temperature', '平均気温', '1 年を通した平均の気温'],
       ['tempNow', '今の気温', '季節の変化を含めた今の気温。寒い地域ほど季節で大きく変わる'],
       ['growth', '育ちやすさ', '今の植物の育ちやすさ。冬は寒い地域で育たない'],
@@ -277,6 +303,13 @@ export class Hud {
       b.title = title;
       this.mapButtons.push(b);
       this.el.maps.append(b);
+    }
+    for (const [layer, label, title] of PLANT_LAYERS) {
+      const b = button(label, () => handlers.onPlantLayer(layer));
+      b.dataset.value = String(layer);
+      b.title = title;
+      this.plantLayerButtons.push(b);
+      this.el.plantLayers.append(b);
     }
     for (const [size, def] of Object.entries(WORLD_SIZES) as [WorldSize, (typeof WORLD_SIZES)[WorldSize]][]) {
       const b = button(def.label, () => handlers.onWorldSize(size));
@@ -383,6 +416,18 @@ export class Hud {
     this.el.tempLegend.hidden = mode !== 'temperature' && mode !== 'tempNow';
     this.el.tempLegendLabel.textContent = mode === 'tempNow' ? '今の気温（色の範囲は 1 年を通して同じ）' : '平均気温';
     this.el.growthLegend.hidden = mode !== 'growth';
+    this.el.woodLegend.hidden = mode !== 'woodland';
+    this.el.elevLegend.hidden = mode !== 'elevation';
+    // 地形の凡例（肥沃度の明るさ）は植生の表示のときだけ正しい
+    this.el.vegLegend.hidden = mode !== 'vegetation';
+  }
+
+  /** 地図に描いている植物の層（-1 は合計）をボタンと凡例に反映する */
+  setPlantLayer(layer: number): void {
+    for (const b of this.plantLayerButtons) b.classList.toggle('active', b.dataset.value === String(layer));
+    const entry = PLANT_LAYERS.find(([k]) => k === layer);
+    this.el.plantLegendLabel.textContent =
+      layer < 0 || !entry ? '植物量（全部の層の合計）' : `植物量（${entry[1]}だけ。その層が溜まりうる最大の量で最も濃い）`;
   }
 
   /** 選んでいる世界の広さ（どれでもなければ null。読み込んだ世界が選択肢と違う大きさのとき） */

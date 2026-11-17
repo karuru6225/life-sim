@@ -20,6 +20,9 @@ pub struct Terrain {
     pub cell_size: f32,
     /// マスが水なら true。個体は入れず、植物も育たない
     pub water: Vec<bool>,
+    /// 標高。陸は海面からの高さ（0: 海面、1: 最も高い所）、水は深さを負で（0: 水際、−1: 最も深い所）。
+    /// 水域と気温を決めるのに使う。シードから毎回作るので保存しない（表示用に残す）
+    pub elevation: Vec<f32>,
     /// 土の肥えかた（陸は fertility_min〜1、水は 0）。季節で変わらない「植生の種類」
     pub soil: Vec<f32>,
     /// 平均気温での肥沃度（土 × 気温による育ちやすさ）。植物が溜まる上限と育つ速さの目安。季節ごとの値は productivity_into で求める
@@ -94,11 +97,22 @@ impl Terrain {
             .map(|k| if water[k] { 0.0 } else { spec.fertility_min + (1.0 - spec.fertility_min) * fert_noise[k] })
             .collect();
         let land_cells = water.iter().filter(|&&w| !w).count();
+        let bottom = sorted[0];
+        let relative: Vec<f32> = (0..cols * rows)
+            .map(|k| {
+                if water[k] {
+                    -(sea_level - elevation[k]) / (sea_level - bottom).max(1e-6)
+                } else {
+                    (elevation[k] - sea_level) / (land_top - sea_level).max(1e-6)
+                }
+            })
+            .collect();
         let mut t = Terrain {
             cols,
             rows,
             cell_size,
             water,
+            elevation: relative,
             fertility: Vec::new(),
             soil,
             land_cells,
@@ -140,6 +154,7 @@ impl Terrain {
             rows,
             cell_size,
             water: vec![false; n],
+            elevation: vec![0.0; n],
             fertility: vec![1.0; n],
             soil: vec![1.0; n],
             land_cells: n,

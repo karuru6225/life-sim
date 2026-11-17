@@ -567,6 +567,27 @@ pub extern "C" fn terrain_ptr() -> *const f32 {
     })
 }
 
+/// 標高の配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス。
+/// 陸は 0（海面）〜1（最も高い所）、水は 0（水際）〜−1（最も深い所）。世界を作り直すまで変わらない
+#[unsafe(no_mangle)]
+pub extern "C" fn elevation_ptr() -> *const f32 {
+    with_world(|w| w.terrain.elevation.as_ptr())
+}
+
+/// 林の度合いの配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス。
+/// 陸は 0（最も草原）〜1（最も林）、水は −1。世界を作り直すまで変わらない
+#[unsafe(no_mangle)]
+pub extern "C" fn wood_ptr() -> *const f32 {
+    TERRAIN.with(|buf| {
+        let mut out = buf.borrow_mut();
+        with_world(|w| {
+            out.clear();
+            out.extend(w.terrain.water.iter().zip(&w.plants.wood).map(|(&water, &v)| if water { -1.0 } else { v }));
+        });
+        out.as_ptr()
+    })
+}
+
 /// 平均気温の配列（plant_cols() × plant_rows() の f32、行優先、度）の先頭アドレス。世界を作り直すまで変わらない
 #[unsafe(no_mangle)]
 pub extern "C" fn temperature_ptr() -> *const f32 {
@@ -589,6 +610,16 @@ pub extern "C" fn fertility_now_ptr() -> *const f32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn carrion_ptr() -> *const f32 {
     with_world(|w| w.carrion.as_ptr())
+}
+
+/// 層 k（0: 地面の草、1: 茂み、2: 枝）の植物量の配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス。
+/// 範囲外の k は層の合計（plant_ptr と同じ）
+#[unsafe(no_mangle)]
+pub extern "C" fn plant_layer_ptr(k: u32) -> *const f32 {
+    with_world(|w| match w.plants.layer.get(k as usize) {
+        Some(layer) => layer.as_ptr(),
+        None => w.plants.biomass.as_ptr(),
+    })
 }
 
 /// 植物量の配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス

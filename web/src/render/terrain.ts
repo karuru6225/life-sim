@@ -1,15 +1,17 @@
 // 地形の描画。マス目 1 つを 1 ピクセルにした画像を作り、世界の大きさに引き伸ばして植物の下に敷く。
-// 表示は 4 通り:
+// 表示は 6 通り:
 //   植生: 水域は青、陸は土の肥えかた（植生の種類）が高いほど少し明るい。季節で変わらない
 //   平均気温: 寒い所ほど青紫、暑い所ほど赤い（寒い陸と見分けられるよう、水域は黒に近い色）
 //   今の気温: 平均気温に季節の変化を加えたもの。色の範囲は 1 年を通して同じにして、季節の移り変わりが色の変化で見えるようにする
 //   育ちやすさ: 今の植物の育ちやすさ（土の肥えかた × 今の気温による育ちやすさ）。冬は寒い地域が暗くなる
+//   標高: 陸は低い所ほど暗い緑、高い所ほど明るい灰茶。水域は浅い所ほど明るく、深い所ほど暗い青
+//   林と草原: 植物の層の割合。草原（地面の草が多い）は黄土色、林（茂みと枝が多い）は深い緑。季節で変わらない
 // 植生と平均気温は世界を作り直すまで変わらない。今の気温と育ちやすさは約 1 秒ごとに届く値で描き直す。
 
 import { Color, Sprite, Texture } from 'pixi.js';
 import { COLORS, SIM_PARAMS } from '../config';
 
-export type MapMode = 'vegetation' | 'temperature' | 'tempNow' | 'growth';
+export type MapMode = 'vegetation' | 'elevation' | 'woodland' | 'temperature' | 'tempNow' | 'growth';
 
 export class TerrainLayer {
   readonly sprite = new Sprite();
@@ -19,6 +21,8 @@ export class TerrainLayer {
   private temperature: Float32Array | null = null;
   private tempNow: Float32Array | null = null;
   private fertility: Float32Array | null = null;
+  private wood: Float32Array | null = null;
+  private elevation: Float32Array | null = null;
   private cols = 0;
   private rows = 0;
   private mode: MapMode = 'vegetation';
@@ -37,10 +41,22 @@ export class TerrainLayer {
     return this.mode;
   }
 
-  /** terrain: 水は −1、陸は土の肥えかた 0〜1。temperature: 平均気温（度）。どちらも cols × rows（行優先） */
-  setData(terrain: Float32Array, temperature: Float32Array, cols: number, rows: number): void {
+  /**
+   * terrain: 水は −1、陸は土の肥えかた 0〜1。temperature: 平均気温（度）。wood: 林の度合い（陸は 0〜1）。
+   * elevation: 標高（陸は 0〜1、水は深さを 0〜−1）。どれも cols × rows（行優先）
+   */
+  setData(
+    terrain: Float32Array,
+    temperature: Float32Array,
+    wood: Float32Array,
+    elevation: Float32Array,
+    cols: number,
+    rows: number,
+  ): void {
+    this.elevation = elevation;
     this.terrain = terrain;
     this.temperature = temperature;
+    this.wood = wood;
     this.tempNow = null;
     this.fertility = null;
     this.cols = cols;
@@ -82,6 +98,13 @@ export class TerrainLayer {
     const water = rgb(temperatureMode ? COLORS.tempWater : COLORS.water);
     const poor = rgb(COLORS.landPoor);
     const rich = rgb(mode === 'growth' ? COLORS.growthHigh : COLORS.landRich);
+    const grassland = rgb(COLORS.grassland);
+    const woodland = rgb(COLORS.woodland);
+    const lowland = rgb(COLORS.lowland);
+    const highland = rgb(COLORS.highland);
+    const shallow = rgb(COLORS.shallow);
+    const deep = rgb(COLORS.deep);
+    const elev = this.elevation;
     const cold = rgb(COLORS.tempCold);
     const mild = rgb(COLORS.tempMild);
     const hot = rgb(COLORS.tempHot);
@@ -92,10 +115,14 @@ export class TerrainLayer {
       const o = i * 4;
       for (let ch = 0; ch < 3; ch++) {
         let v: number;
-        if (terrain[i] < 0) {
+        if (mode === 'elevation' && elev) {
+          v = elev[i] < 0 || terrain[i] < 0 ? mix(shallow, deep, Math.min(1, -elev[i]), ch) : mix(lowland, highland, elev[i], ch);
+        } else if (terrain[i] < 0) {
           v = water[ch];
         } else if (mode === 'vegetation') {
           v = mix(poor, rich, terrain[i], ch);
+        } else if (mode === 'woodland') {
+          v = mix(grassland, woodland, this.wood ? this.wood[i] : 0.5, ch);
         } else if (mode === 'growth') {
           v = mix(poor, rich, Math.min(1, this.fertility![i]), ch);
         } else {
