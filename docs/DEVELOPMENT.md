@@ -28,7 +28,7 @@ web/src/
   protocol.ts              メインと Worker の間のメッセージ型、INSPECT / LINEAGE / DEATH の並び
   config.ts                パラメータ（SIM_PARAMS）、色、世界の広さの選択肢、表示の設定
   render/                  PixiJS の描画（個体・植物・地形・カメラ・選択の印）
-  ui/                      左のパネル（hud）、個体の詳細（inspector）、系統の統計（lineage）、統計のウインドウ（stats。長期の記録もここで持つ）
+  ui/                      左のパネル（hud）、個体の詳細（inspector）、系統の統計（lineage）、統計のウインドウ（stats）、脳のウインドウ（brain）、浮かぶウインドウの共通の動き（floating）
 scripts/                   WASM のコピー、コミットのハッシュの取得（ビルド時）
 .cargo/config.toml         WASM のビルドで SIMD（simd128）を有効にする
 .github/workflows/pages.yml  main への push で GitHub Pages に公開
