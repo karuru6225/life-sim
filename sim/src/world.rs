@@ -905,13 +905,13 @@ impl World {
         let c = ((self.xs[i] / self.plants.cell_size) as usize).min(cols - 1);
         let r = ((self.ys[i] / self.plants.cell_size) as usize).min(rows - 1);
         let cap = self.params.plant_capacity;
-        let reach = self.reach(i);
+        let (reach, floor) = (self.reach(i), self.graze_floor(i));
         let mut sum = 0.0;
         for dr in -1i32..=1 {
             for dc in -1i32..=1 {
                 let rr = (r as i32 + dr).rem_euclid(rows as i32) as usize;
                 let cc = (c as i32 + dc).rem_euclid(cols as i32) as usize;
-                sum += (self.food_value(&reach, rr * cols + cc) / cap).min(1.0);
+                sum += (self.food_value(&reach, floor, rr * cols + cc) / cap).min(1.0);
             }
         }
         sum
@@ -927,10 +927,27 @@ impl World {
         [1.0, reach_from(p.reach_shrub), reach_from(p.reach_tree)]
     }
 
-    /// マス c の植物の、届く割合が reach の個体にとっての価値（届く量 × 質 の合計。植物量と同じ尺度）
-    fn food_value(&self, reach: &[f32; LAYERS], c: usize) -> f32 {
+    /// 個体 i が地面の草を食べ残す高さ（地面の層の上限に対する割合、graze_floor_min〜0.95）。大きい口ほど短い草を噛み取れない
+    pub fn graze_floor(&self, i: usize) -> f32 {
+        let p = &self.params;
+        (p.graze_floor * self.traits[i].size.max(0.0).powf(p.graze_floor_power)).clamp(p.graze_floor_min.clamp(0.0, 0.95), 0.95)
+    }
+
+    /// 個体が層 k から取れる量。地面の草は、食べ残す高さ floor（割合）より上の分だけ
+    fn layer_available(&self, reach: &[f32; LAYERS], floor: f32, k: usize, c: usize) -> f32 {
+        let amount = self.plants.layer[k][c];
+        if k == 0 {
+            let cap = self.params.plant_capacity * self.plants.share[0] * self.plants.fertility[c];
+            (amount - floor * cap).max(0.0)
+        } else {
+            reach[k] * amount
+        }
+    }
+
+    /// マス c の植物の、届く割合が reach・食べ残す高さが floor の個体にとっての価値（取れる量 × 質 の合計。植物量と同じ尺度）
+    fn food_value(&self, reach: &[f32; LAYERS], floor: f32, c: usize) -> f32 {
         let q = self.params.plant_qualities();
-        (0..LAYERS).map(|k| reach[k] * q[k] * self.plants.layer[k][c]).sum()
+        (0..LAYERS).map(|k| q[k] * self.layer_available(reach, floor, k, c)).sum()
     }
 
     /// 個体 i の近く（coop_radius 以内）にいる、同じ種類で系統色の近い（同じ系統の）生きている個体の数
@@ -1281,11 +1298,11 @@ impl World {
         let gradient = if self.kind[i] == HERBIVORE {
             let (natal, p) = (self.natal[i], &self.params);
             let (tol, lim) = (p.habitat_tolerance, p.habitat_limit);
-            let reach = self.reach(i);
+            let (reach, floor) = (self.reach(i), self.graze_floor(i));
             self.plants.richer_direction_by(x, y, |k| {
                 let f = self.plants.vegetation[k];
                 let t = (((f - natal).abs() - tol) / (lim - tol).max(1e-6)).clamp(0.0, 1.0);
-                self.food_value(&reach, k) * (1.0 - t * t * (3.0 - 2.0 * t))
+                self.food_value(&reach, floor, k) * (1.0 - t * t * (3.0 - 2.0 * t))
             })
         } else {
             None
@@ -1639,17 +1656,18 @@ impl World {
             * self.traits[i].size
             * (1.0 - self.params.vigilance_bite_cost * self.vigilance[i])
             * fit;
-        // 届く層のうち、届く量 × 質 が最も大きい層から食べる。硬い層ほど身になる割合が低い
-        let reach = self.reach(i);
+        // 届く層のうち、取れる量 × 質 が最も大きい層から食べる。硬い層ほど身になる割合が低い。
+        // 地面の草は、口の大きさで決まる食べ残す高さより上しか取れない
+        let (reach, floor) = (self.reach(i), self.graze_floor(i));
         let quality = self.params.plant_qualities();
         let (mut layer, mut best) = (0, -1.0);
         for k in 0..LAYERS {
-            let v = reach[k] * quality[k] * self.plants.layer[k][c];
+            let v = quality[k] * self.layer_available(&reach, floor, k, c);
             if v > best {
                 (layer, best) = (k, v);
             }
         }
-        let available = reach[layer] * self.plants.layer[layer][c];
+        let available = self.layer_available(&reach, floor, layer, c);
         let eff = eff * quality[layer];
         let take = bite.min(available).min(room / eff.max(1e-6));
         let b = herb_size_bin(self.traits[i].adult_size);
@@ -3483,6 +3501,8 @@ mod tests {
     #[test]
     fn 周りの草の量を届く層の量と質で数える() {
         let mut w = empty_world();
+        w.params.graze_floor = 0.0;
+        w.params.graze_floor_min = 0.0;
         w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 1.0, 1.0, 30.0, 0.0));
         w.plants.fill(0.0);
         assert_eq!(w.plants_around(0), 0.0);
@@ -3509,6 +3529,8 @@ mod tests {
     #[test]
     fn 届く層のうち量と質の大きい層から食べ届かない層は減らない() {
         let mut w = empty_world();
+        w.params.graze_floor = 0.0;
+        w.params.graze_floor_min = 0.0;
         w.params.herb_metabolism = 0.0;
         w.spawn(100.0, 100.0, HERBIVORE, 1.0, 0, &genome::initial(true, 0.3, 1.0, 30.0, 0.0));
         w.spawn(200.0, 100.0, HERBIVORE, 1.0, 0, &genome::initial(true, 3.0, 1.0, 30.0, 0.0));
@@ -3548,6 +3570,32 @@ mod tests {
         assert_eq!(h[size_hist_bin(2.0)], 1);
         assert_eq!(h.iter().sum::<u32>(), 3);
         assert_eq!(w.adult_size_histogram(CARNIVORE).iter().sum::<u32>(), 0);
+    }
+
+    #[test]
+    fn 大きい口ほど地面の草を高く食べ残す() {
+        let mut w = empty_world();
+        w.params.herb_metabolism = 0.0;
+        w.spawn(100.0, 100.0, HERBIVORE, 1.0, 0, &genome::initial(true, 0.3, 1.0, 30.0, 0.0));
+        w.spawn(200.0, 100.0, HERBIVORE, 1.0, 0, &genome::initial(true, 3.0, 1.0, 30.0, 0.0));
+        assert!(w.graze_floor(0) < w.graze_floor(1), "大きい体ほど食べ残す");
+        // どんなに小さくても、下限より低くは食べられない
+        assert!((w.graze_floor(0) - w.params.graze_floor_min).abs() < 1e-6, "大きさ 0.3 は下限に当たる: {}", w.graze_floor(0));
+        let (small, big) = (w.plants.cell_index(100.0, 100.0), w.plants.cell_index(200.0, 100.0));
+        w.plants.fill(0.0);
+        // 地面の草だけが、両者の食べ残す高さの中間まである
+        for c in [small, big] {
+            let cap = w.params.plant_capacity * w.plants.share[0] * w.plants.fertility[c];
+            w.plants.set_cell(c, 0.0);
+            w.plants.layer[0][c] = cap * (w.graze_floor(0) + w.graze_floor(1)) / 2.0;
+        }
+        w.plants.sum_layers();
+        let before = w.plants.layer[0][big];
+        assert!(w.plants_around(0) > 0.0, "小さい体には短い草が見える");
+        assert_eq!(w.plants_around(1), 0.0, "大きい体には食べられる草がない");
+        assert!(w.graze(0), "小さい体は短い草を食べる");
+        assert!(!w.graze(1), "大きい体は短い草を噛み取れない");
+        assert_eq!(w.plants.layer[0][big], before);
     }
 
     #[test]

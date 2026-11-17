@@ -45,6 +45,9 @@ export const SIM_PARAMS = {
   reach_shrub: 0.85,
   reach_tree: 1.05,
   reach_width: 0.15,
+  graze_floor: 0.1,
+  graze_floor_power: 1.5,
+  graze_floor_min: 0.03,
 
   // 共通
   move_cost: 0.006,
