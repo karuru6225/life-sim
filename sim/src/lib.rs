@@ -14,14 +14,15 @@ pub mod world;
 
 use params::Params;
 use std::cell::RefCell;
+use world::history::KIND_LEN;
 use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, SIZE_HIST_BINS, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
 const INSPECT_LEN: usize = 60;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
 const SUMMARY_LEN: usize = 31;
-/// history_sample() が書き込む配列の要素数
-const HISTORY_LEN: usize = 21 + SIZE_HIST_BINS * 2;
+/// history_export() が書き込む記録 1 つの要素数: tick, 区間の長さ, 草食の値, 肉食の値
+const HISTORY_RECORD_LEN: usize = 2 + KIND_LEN * 2;
 
 thread_local! {
     static WORLD: RefCell<Option<World>> = const { RefCell::new(None) };
@@ -32,7 +33,8 @@ thread_local! {
     /// 選択中の個体の情報。id が f32 の精度を超えうるので f64 で持つ
     static INSPECT: RefCell<[f64; INSPECT_LEN]> = const { RefCell::new([0.0; INSPECT_LEN]) };
     static SUMMARY: RefCell<[f64; SUMMARY_LEN]> = const { RefCell::new([0.0; SUMMARY_LEN]) };
-    static HISTORY: RefCell<[f64; HISTORY_LEN]> = const { RefCell::new([0.0; HISTORY_LEN]) };
+    /// 長期の統計の記録を JS に渡すための作業領域
+    static HISTORY: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
     /// 系統の統計（選んだ系統と種類全体の 2 組）
     static LINEAGE: RefCell<[f64; LINEAGE_STATS * 2]> = const { RefCell::new([0.0; LINEAGE_STATS * 2]) };
     /// 選択中の個体の脳の入力と出力を JS に渡すための作業領域
@@ -433,40 +435,57 @@ pub extern "C" fn summary() -> *const f64 {
     })
 }
 
-/// 長期の統計の記録に使う値を書き込み、その先頭アドレスを返す（f64 × history_len()）。
-///  0: 大きさの分布の段階の数 B   1, 2: 分布の大きさの範囲（下限, 上限。この間を対数で等間隔に B 段階に分ける）
-///  3, 4: これまでに生まれた草食・肉食の数（累計）
-///  5〜20: これまでの死亡数（累計）。[種類 × 8 + 死因]（死因の番号は world::death、0 は使わない）
-///  21〜: 草食の大人の大きさの分布（B 段階）、続けて肉食の分布（B 段階）
+/// 長期の統計の記録の数（まとめ途中のものを含む）
 #[unsafe(no_mangle)]
-pub extern "C" fn history_sample() -> *const f64 {
+pub extern "C" fn history_count() -> u32 {
+    with_world(|w| w.history.len() as u32)
+}
+
+/// 記録を並べ直した（隣どうしをまとめた）回数。変わったら JS は全部を取り直す
+#[unsafe(no_mangle)]
+pub extern "C" fn history_version() -> u32 {
+    with_world(|w| w.history.version)
+}
+
+/// 最後に標本を取った tick。変わったら新しい記録がある（数が同じでも、まとめ途中の記録が変わっている）
+#[unsafe(no_mangle)]
+pub extern "C" fn history_last_tick() -> f64 {
+    with_world(|w| w.history.last_tick as f64)
+}
+
+/// 記録 1 つの要素数（history_export() の並び）
+#[unsafe(no_mangle)]
+pub extern "C" fn history_record_len() -> u32 {
+    HISTORY_RECORD_LEN as u32
+}
+
+/// 大きさの分布の段階の数と、その範囲（下限, 上限。この間を対数で等間隔に分ける）。i = 0, 1, 2
+#[unsafe(no_mangle)]
+pub extern "C" fn history_size_bins(i: u32) -> f64 {
+    match i {
+        0 => SIZE_HIST_BINS as f64,
+        1 => genome::SIZE_RANGE.0 as f64,
+        _ => genome::SIZE_RANGE.1 as f64,
+    }
+}
+
+/// from 番目から最後（まとめ途中のもの）までの記録を書き込み、その先頭アドレスを返す（f64 × 記録の数 × history_record_len()）。
+/// 記録 1 つは [tick, 区間の長さ, 草食の値 × KIND_LEN, 肉食の値 × KIND_LEN]。値の並びは world::history::field
+#[unsafe(no_mangle)]
+pub extern "C" fn history_export(from: u32) -> *const f64 {
     HISTORY.with(|buf| {
         let mut out = buf.borrow_mut();
+        out.clear();
         with_world(|w| {
-            out[0] = SIZE_HIST_BINS as f64;
-            out[1] = genome::SIZE_RANGE.0 as f64;
-            out[2] = genome::SIZE_RANGE.1 as f64;
-            out[3] = w.census.births[HERBIVORE as usize] as f64;
-            out[4] = w.census.births[CARNIVORE as usize] as f64;
-            for kind in 0..2 {
-                for cause in 0..8 {
-                    out[5 + kind * 8 + cause] = w.census.deaths[kind][cause] as f64;
-                }
-            }
-            for (k, kind) in [HERBIVORE, CARNIVORE].into_iter().enumerate() {
-                let hist = w.adult_size_histogram(kind);
-                for (b, &n) in hist.iter().enumerate() {
-                    out[21 + k * SIZE_HIST_BINS + b] = n as f64;
-                }
+            for i in from as usize..w.history.len() {
+                let r = w.history.get(i).expect("記録の範囲内");
+                out.push(r.tick as f64);
+                out.push(r.span as f64);
+                out.extend(r.values.iter().flatten().map(|&v| v as f64));
             }
         });
         out.as_ptr()
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn history_len() -> u32 {
-    HISTORY_LEN as u32
 }
 
 /// 系統の統計を書き込み、その先頭アドレスを返す（f64 × lineage_len()）。

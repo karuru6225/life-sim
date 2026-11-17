@@ -21,7 +21,9 @@ use crate::rng::Rng;
 use crate::terrain::{Terrain, TerrainSpec};
 use std::collections::VecDeque;
 
+pub mod history;
 mod save;
+pub use history::History;
 pub use save::FORMAT_VERSION as SAVE_FORMAT_VERSION;
 pub use save::save_file;
 
@@ -441,6 +443,8 @@ pub struct World {
     pub matings: u64,
     pub failed_matings: u64,
     pub census: Census,
+    /// 長期の統計の記録（history.rs）
+    pub history: History,
     /// 直近 DEATH_WINDOW tick の死亡の記録（古い順）。系統ごとの死因の内訳に使う
     recent_deaths: VecDeque<DeathRecord>,
     /// 世界を作ったときの乱数の種（保存した世界を読み込むときに地形を作り直すのに使う）
@@ -559,6 +563,7 @@ impl World {
             carrion_age: vec![0.0; plants.biomass.len()],
             plants,
             ledger: Ledger::default(),
+            history: History::new(),
             watch: Watch::default(),
             render: Vec::new(),
             grid,
@@ -1090,6 +1095,7 @@ impl World {
             self.recent_deaths.pop_front();
         }
         self.tick += 1;
+        self.sample_history();
     }
 
     /// 視野の中で最も近い天敵・獲物・仲間を探す。

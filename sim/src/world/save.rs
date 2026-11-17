@@ -8,6 +8,9 @@
 //! これが今のコードと違えば、遺伝子を正しく読めないので読み込みを断る。
 //! パラメータは名前と値の組で書くので、パラメータが増えただけなら古いデータも読める（増えた分は既定値）。
 //!
+//! 長期の統計の記録（history.rs）は末尾に、バイト数を先に書いて置く。記録の並びが今のコードと違えば、読み飛ばして記録を空から始める
+//! （記録は世界の進み方に関わらないので、なくても歴史は同じに続く）。形式 2（記録のない形式）も読める。
+//!
 //! 遺伝子は 1 体あたり千数百個あり、使っていないニューロンの重みは 0 なので、
 //! 0 でない値だけを書き、どこが 0 でないかはビットの並びで示す。
 
@@ -17,7 +20,9 @@ use crate::genome::{H1, H2, N_OUT, N_TRAITS};
 /// ファイルの先頭の印
 const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
+/// 読み込める最も古い形式の番号（形式 2 は長期の統計の記録がない）
+const OLDEST_FORMAT: u32 = 2;
 /// 死因の数（Census の配列の長さ）
 const N_CAUSES: usize = 8;
 
@@ -216,6 +221,11 @@ impl World {
                 }
             }
         }
+        // 長期の統計の記録。読み飛ばせるよう、先にバイト数を書く
+        let mut h = Writer(Vec::new());
+        write_history(&mut h, &self.history);
+        w.u32(h.0.len() as u32);
+        w.0.extend_from_slice(&h.0);
         w.0
     }
 
@@ -226,7 +236,7 @@ impl World {
             return Err("life-sim の世界のデータではない".into());
         }
         let version = r.u32()?;
-        if version != FORMAT_VERSION {
+        if !(OLDEST_FORMAT..=FORMAT_VERSION).contains(&version) {
             return Err(format!("保存形式の番号が違う（保存 {version}、今のコード {FORMAT_VERSION}）"));
         }
         let saved_layout: Vec<u32> = (0..layout().len()).map(|_| r.u32()).collect::<Result<_, _>>()?;
@@ -354,6 +364,17 @@ impl World {
             world.life.push(life);
             world.alive.push(true);
         }
+        if version >= 3 {
+            let len = r.u32()? as usize;
+            let bytes = r.take(len)?;
+            match read_history(&mut Reader { data: bytes, at: 0 }) {
+                Ok(Some(h)) => world.history = h,
+                // 記録の並びが違う、または壊れている: 記録は空から始める
+                _ => world.rebase_history(),
+            }
+        } else {
+            world.rebase_history();
+        }
         if r.at != data.len() {
             return Err(format!("データの末尾に余分なバイトがある（{} バイト）", data.len() - r.at));
         }
@@ -365,6 +386,71 @@ impl World {
         world.tick = now;
         Ok((world, unknown))
     }
+}
+
+fn write_history(w: &mut Writer, h: &History) {
+    use super::history::KIND_LEN;
+    w.u32(KIND_LEN as u32);
+    w.u32(h.stride);
+    w.u32(h.pending_count);
+    w.u64(h.last_tick);
+    for k in 0..2 {
+        w.u64(h.last_births[k]);
+        for &d in &h.last_deaths[k] {
+            w.u64(d);
+        }
+    }
+    let record = |w: &mut Writer, r: &super::history::Record| {
+        w.u64(r.tick);
+        w.u64(r.span);
+        for v in r.values.iter().flatten() {
+            w.f32(*v);
+        }
+    };
+    w.u32(h.records.len() as u32);
+    for r in &h.records {
+        record(w, r);
+    }
+    w.u8(h.pending.is_some() as u8);
+    if let Some(p) = &h.pending {
+        record(w, p);
+    }
+}
+
+/// 長期の統計の記録を読む。記録の並び（種類ごとの値の数）が今のコードと違えば None
+fn read_history(r: &mut Reader) -> Result<Option<History>, String> {
+    use super::history::{KIND_LEN, Record};
+    if r.u32()? as usize != KIND_LEN {
+        return Ok(None);
+    }
+    let mut h = History::new();
+    h.stride = r.u32()?;
+    h.pending_count = r.u32()?;
+    h.last_tick = r.u64()?;
+    for k in 0..2 {
+        h.last_births[k] = r.u64()?;
+        for d in h.last_deaths[k].iter_mut() {
+            *d = r.u64()?;
+        }
+    }
+    let record = |r: &mut Reader| -> Result<Record, String> {
+        let (tick, span) = (r.u64()?, r.u64()?);
+        let mut values = [[0.0f32; KIND_LEN]; 2];
+        for v in values.iter_mut().flatten() {
+            *v = r.f32()?;
+        }
+        Ok(Record { tick, span, values })
+    };
+    for _ in 0..r.u32()? {
+        h.records.push(record(r)?);
+    }
+    if r.u8()? != 0 {
+        h.pending = Some(record(r)?);
+    }
+    if r.at != r.data.len() {
+        return Ok(None);
+    }
+    Ok(Some(h))
 }
 
 /// ブラウザの保存ファイルと同じ入れ物（圧縮なし）にする: "LIFESIM\n"、見出し（JSON）の長さ（u32）、見出し、世界のバイト列。
@@ -421,6 +507,37 @@ mod tests {
         assert_eq!(a.plants.biomass, b.plants.biomass);
         assert_eq!(a.carrion, b.carrion);
         assert_eq!(a.ledger.expected_total(), b.ledger.expected_total());
+        assert!(a.history.len() > 0, "記録が溜まっている");
+        assert_eq!(a.history, b.history, "長期の統計の記録も続く");
+    }
+
+    #[test]
+    fn 記録のない形式2のデータも読み込め記録はそこから始まる() {
+        let mut a = World::new(11, params());
+        for _ in 0..450 {
+            a.step();
+        }
+        let mut data = a.save();
+        // 形式 3 の末尾の記録（バイト数 + 中身）を取り除き、形式の番号を 2 にする
+        let len = a.history_bytes_len();
+        data.truncate(data.len() - 4 - len);
+        data[8..12].copy_from_slice(&2u32.to_le_bytes());
+        let (mut b, _) = World::load(&data).expect("形式 2 も読める");
+        assert_eq!(b.history.len(), 0);
+        assert_eq!(b.history.last_tick, 450);
+        for _ in 0..200 {
+            b.step();
+        }
+        assert_eq!(b.history.len(), 1);
+        assert_eq!(b.history.get(0).unwrap().span, 200);
+    }
+
+    impl World {
+        fn history_bytes_len(&self) -> usize {
+            let mut h = Writer(Vec::new());
+            write_history(&mut h, &self.history);
+            h.0.len()
+        }
     }
 
     #[test]
