@@ -48,6 +48,7 @@ export const SIM_PARAMS = {
   graze_floor: 0.1,
   graze_floor_power: 1.5,
   graze_floor_min: 0.03,
+  far_view: 320,
 
   // 共通
   move_cost: 0.006,

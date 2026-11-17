@@ -935,6 +935,42 @@ impl World {
         (p.graze_floor * self.traits[i].size.max(0.0).powf(p.graze_floor_power)).clamp(p.graze_floor_min.clamp(0.0, 0.95), 0.95)
     }
 
+    /// 遠くの景色の区画 b の、届く割合が reach・食べ残す高さが floor・生まれた植生が natal の草食にとっての価値
+    /// （取れる量 × 質 × 植生の合い具合。植物量と同じ尺度の、区画のマスあたりの平均）
+    fn landscape_value(&self, i: usize, reach: &[f32; LAYERS], floor: f32, b: usize) -> f32 {
+        let ls = &self.plants.landscape;
+        if ls.vegetation[b] < 0.0 {
+            return 0.0; // 陸がない
+        }
+        let q = self.params.plant_qualities();
+        let cap = self.params.plant_capacity * self.plants.share[0] * ls.fertility[b];
+        let ground = (ls.layer[0][b] - floor * cap).max(0.0);
+        let food = q[0] * ground + (1..LAYERS).map(|k| q[k] * reach[k] * ls.layer[k][b]).sum::<f32>();
+        food * self.habitat_fit(i, ls.vegetation[b])
+    }
+
+    /// 草食 i が遠くの景色で見つけた、食べ物の多い場所の方向（世界の向きの単位ベクトル）。
+    /// 見渡せる距離（far_view × 体長）の 8 方向の区画を比べ、今いる区画より十分に多いものがなければ None
+    fn far_food_direction(&self, i: usize, reach: &[f32; LAYERS], floor: f32) -> Option<(f32, f32)> {
+        if self.plants.landscape.cols == 0 {
+            return None;
+        }
+        let (x, y) = (self.xs[i], self.ys[i]);
+        let range = self.params.far_view * self.traits[i].size.max(0.0).cbrt();
+        let here = self.landscape_value(i, reach, floor, self.plants.landscape_block(x, y));
+        let mut best = here * 1.2 + 0.05;
+        let mut dir = None;
+        const D: f32 = std::f32::consts::FRAC_1_SQRT_2;
+        for (dx, dy) in [(1.0, 0.0), (D, D), (0.0, 1.0), (-D, D), (-1.0, 0.0), (-D, -D), (0.0, -1.0), (D, -D)] {
+            let v = self.landscape_value(i, reach, floor, self.plants.landscape_block(x + dx * range, y + dy * range));
+            if v > best {
+                best = v;
+                dir = Some((dx, dy));
+            }
+        }
+        dir
+    }
+
     /// 個体が層 k から取れる量。地面の草は、食べ残す高さ floor（割合）より上の分だけ
     fn layer_available(&self, reach: &[f32; LAYERS], floor: f32, k: usize, c: usize) -> f32 {
         let amount = self.plants.layer[k][c];
@@ -1093,6 +1129,7 @@ impl World {
             self.cover[i] = self.plants.ratio_at(self.xs[i], self.ys[i], cap);
         }
         lap!(1);
+        self.plants.update_landscape();
         lap!(2);
         self.build_grid();
         self.build_calls();
@@ -1329,7 +1366,13 @@ impl World {
 
         let mut input = [0.0f32; N_IN];
         input[genome::IN_ENERGY] = self.energy[i] / self.repro_threshold(i);
-        input[genome::IN_PLANT_HERE] = self.cover[i];
+        // 足元の草: 草食は自分が食べられる量（届く層の量 × 質から食べ残しを引いたもの）、肉食は草の量の合計（隠れ場所の手がかり）
+        input[genome::IN_PLANT_HERE] = if self.kind[i] == HERBIVORE {
+            let c = self.plants.cell_index(x, y);
+            (self.food_value(&self.reach(i), self.graze_floor(i), c) / self.params.plant_capacity).min(1.0)
+        } else {
+            self.cover[i]
+        };
         let fit_here = self.habitat_fit(i, self.terrain.soil_at(x, y));
         input[genome::IN_HABITAT_FIT] = fit_here;
         input[genome::IN_TEMP_DIFF] = (self.terrain.temperature_at(x, y) - t.temp_pref) / 10.0;
@@ -1351,6 +1394,14 @@ impl World {
             let (f, r) = to_local(dc / len, dr / len);
             input[genome::IN_GRAD_FWD] = f;
             input[genome::IN_GRAD_RIGHT] = r;
+        }
+        // 遠くの景色: 見渡せる距離に、食べ物の多い場所があればその方向
+        if self.kind[i] == HERBIVORE {
+            if let Some((dx, dy)) = self.far_food_direction(i, &self.reach(i), self.graze_floor(i)) {
+                let (f, r) = to_local(dx, dy);
+                input[genome::IN_FAR_FWD] = f;
+                input[genome::IN_FAR_RIGHT] = r;
+            }
         }
         for (seen, at) in [
             (senses.predator, genome::IN_PRED_FWD),
@@ -1470,8 +1521,13 @@ impl World {
         };
         // 食べ物の方向: 草食は自分の食べられる草の多い方へ。肉食は獲物へ。
         // 肉食は獲物が見えなくても、獲物を追っている仲間がいればその向きへ（群れの目）
+        // 草食は、隣のマスに草の多い方向がなければ、遠くの景色で見つけた場所へ
         let food = if self.kind[i] == HERBIVORE {
-            (input[genome::IN_GRAD_FWD], input[genome::IN_GRAD_RIGHT])
+            if input[genome::IN_GRAD_FWD] != 0.0 || input[genome::IN_GRAD_RIGHT] != 0.0 {
+                (input[genome::IN_GRAD_FWD], input[genome::IN_GRAD_RIGHT])
+            } else {
+                (input[genome::IN_FAR_FWD], input[genome::IN_FAR_RIGHT])
+            }
         } else if senses.prey.is_some() {
             unit(senses.prey)
         } else if input[genome::IN_CARRION_FWD] != 0.0 || input[genome::IN_CARRION_RIGHT] != 0.0 {
@@ -3589,6 +3645,37 @@ mod tests {
         assert_eq!(w.plants.layer[0][big], 0.01);
         let sum: f32 = (0..LAYERS).map(|k| w.plants.layer[k][big]).sum();
         assert!((w.plants.biomass[big] - sum).abs() < 1e-6, "合計は層の和のまま");
+    }
+
+    #[test]
+    fn 遠くの景色で食べ物の多い場所の方向がわかり大きい体ほど遠くまで見える() {
+        let mut w = empty_world();
+        w.params.graze_floor_min = 0.0;
+        w.params.graze_floor = 0.0;
+        for size in [1.0f32, 0.3] {
+            w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, size, 1.0, 30.0, 0.0));
+        }
+        // 生まれた植生をその場所に合わせる（植生の合い具合で値が落ちないように）
+        for i in 0..2 {
+            w.natal[i] = w.plants.vegetation[w.plants.cell_index(400.0, 100.0)];
+        }
+        w.plants.fill(0.0);
+        // x = 384〜511（区画 3 列目）の、y = 0〜127 の区画だけに草を置く
+        let cs = w.plants.cell_size as usize;
+        let blk = crate::plants::BLOCK * cs;
+        for r in 0..crate::plants::BLOCK {
+            for c in 3 * crate::plants::BLOCK..4 * crate::plants::BLOCK {
+                let i = r * w.plants.cols + c;
+                if w.plants.fertility[i] > 0.0 {
+                    w.plants.set_cell(i, w.params.plant_capacity);
+                }
+            }
+        }
+        assert_eq!(blk, 128);
+        w.plants.update_landscape();
+        let dir = |w: &World, i: usize| w.far_food_direction(i, &w.reach(i), w.graze_floor(i));
+        assert_eq!(dir(&w, 0), Some((1.0, 0.0)), "大きさ 1 は 320px 先の草が見える");
+        assert_eq!(dir(&w, 1), None, "大きさ 0.3 は見渡せる距離が約 214px で届かない");
     }
 
     #[test]

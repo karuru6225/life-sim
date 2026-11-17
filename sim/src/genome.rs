@@ -127,7 +127,11 @@ pub const IN_ALONE: usize = 43;
 /// 周りの食べ物は、草食は周り 3 × 3 マスの草の量（上限に対する割合の合計）、肉食は見えている獲物の数。
 /// 食べ物が少なく仲間が多いほど 1 に近い
 pub const IN_SCARCITY: usize = 44;
-pub const N_IN: usize = 45;
+/// 遠くの景色で、自分が食べられる草の多い場所の方向（前・右。見渡せる距離に 8 方向を比べ、
+/// 今いる場所より十分に多い場所がなければ 0。草食のみ）
+pub const IN_FAR_FWD: usize = 45;
+pub const IN_FAR_RIGHT: usize = 46;
+pub const N_IN: usize = 47;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -561,6 +565,8 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         IN_RIVAL_COUNT,
         IN_ALONE,
         IN_SCARCITY,
+        IN_FAR_FWD,
+        IN_FAR_RIGHT,
     ];
     for h in [6, 7] {
         for &k in &kin_inputs {

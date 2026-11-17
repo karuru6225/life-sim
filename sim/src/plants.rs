@@ -10,6 +10,21 @@
 
 /// 高さの層の数（0: 地面の草、1: 低い茂み、2: 高い枝）
 pub const LAYERS: usize = 3;
+/// 遠くの景色（粗い地図）の 1 区画の、1 辺のマスの数
+pub const BLOCK: usize = 4;
+
+/// 遠くの景色: マスを BLOCK × BLOCK ずつまとめた粗い地図。遠くを見るときは、マスではなくこの区画の平均を読む
+#[derive(Default)]
+pub struct Landscape {
+    pub cols: usize,
+    pub rows: usize,
+    /// 区画ごとの層ごとの植物量の平均（水のマスも 0 として平均に入る）[層][区画]
+    pub layer: [Vec<f32>; LAYERS],
+    /// 区画ごとの肥沃度の平均（水のマスも 0 として入る）
+    pub fertility: Vec<f32>,
+    /// 区画ごとの植生の種類の平均（陸のマスだけで平均する。陸がなければ −1）
+    pub vegetation: Vec<f32>,
+}
 
 pub struct PlantField {
     pub cols: usize,
@@ -25,6 +40,8 @@ pub struct PlantField {
     pub fertility: Vec<f32>,
     /// マスごとの植生の種類（土の肥えかた、0〜1）。季節で変わらない。地形の soil と同じ並び
     pub vegetation: Vec<f32>,
+    /// 遠くの景色（update_landscape() で作り直す）
+    pub landscape: Landscape,
 }
 
 impl PlantField {
@@ -51,11 +68,61 @@ impl PlantField {
             share,
             fertility: fertility.to_vec(),
             vegetation: vegetation.to_vec(),
+            landscape: Landscape::default(),
         };
         for c in 0..cols * rows {
             field.set_cell(c, initial * fertility[c]);
         }
         field
+    }
+
+    /// 遠くの景色（区画ごとの平均）を、今の植物量と肥沃度から作り直す
+    pub fn update_landscape(&mut self) {
+        let (bc, br) = (self.cols.div_ceil(BLOCK), self.rows.div_ceil(BLOCK));
+        let ls = &mut self.landscape;
+        if ls.cols != bc || ls.rows != br {
+            *ls = Landscape {
+                cols: bc,
+                rows: br,
+                layer: std::array::from_fn(|_| vec![0.0; bc * br]),
+                fertility: vec![0.0; bc * br],
+                vegetation: vec![0.0; bc * br],
+            };
+        }
+        for b in 0..bc * br {
+            let (c0, r0) = ((b % bc) * BLOCK, (b / bc) * BLOCK);
+            let mut sum = [0.0f32; LAYERS];
+            let (mut fert, mut veg, mut cells, mut land) = (0.0f32, 0.0f32, 0u32, 0u32);
+            for r in r0..(r0 + BLOCK).min(self.rows) {
+                for c in c0..(c0 + BLOCK).min(self.cols) {
+                    let i = r * self.cols + c;
+                    for (k, s) in sum.iter_mut().enumerate() {
+                        *s += self.layer[k][i];
+                    }
+                    fert += self.fertility[i];
+                    cells += 1;
+                    // 植生の種類は陸だけで平均する（水が混ざると別の植生に見えてしまう）
+                    if self.fertility[i] > 0.0 || self.biomass[i] > 0.0 {
+                        veg += self.vegetation[i];
+                        land += 1;
+                    }
+                }
+            }
+            let n = cells.max(1) as f32;
+            for k in 0..LAYERS {
+                ls.layer[k][b] = sum[k] / n;
+            }
+            ls.fertility[b] = fert / n;
+            ls.vegetation[b] = if land > 0 { veg / land as f32 } else { -1.0 };
+        }
+    }
+
+    /// 世界の座標 (x, y) を含む遠くの景色の区画（トーラスなので世界の外は反対側に折り返す）
+    pub fn landscape_block(&self, x: f32, y: f32) -> usize {
+        let (w, h) = (self.cols as f32 * self.cell_size, self.rows as f32 * self.cell_size);
+        let c = ((x.rem_euclid(w) / self.cell_size) as usize).min(self.cols - 1) / BLOCK;
+        let r = ((y.rem_euclid(h) / self.cell_size) as usize).min(self.rows - 1) / BLOCK;
+        r * self.landscape.cols + c
     }
 
     /// マス c の植物量を、層の割合で分けて amount にする（初期化と試験用）
