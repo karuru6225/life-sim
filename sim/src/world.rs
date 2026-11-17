@@ -1367,7 +1367,17 @@ impl World {
 
     /// 知覚 → 脳の判断。世界には書き込まない
     fn plan(&self, i: usize) -> Plan {
+        #[cfg(feature = "profile")]
+        let mut sw = profile::Stopwatch::start();
+        // profile 機能のときだけ、前の区切りからの時間を判断の段の区切り k に足す
+        macro_rules! lap {
+            ($k:expr) => {
+                #[cfg(feature = "profile")]
+                sw.lap($k);
+            };
+        }
         let senses = self.sense(i);
+        lap!(0);
         let t = self.traits[i];
         let (x, y) = (self.xs[i], self.ys[i]);
         let (hx, hy) = (self.hx[i], self.hy[i]);
@@ -1413,6 +1423,7 @@ impl World {
                 input[genome::IN_FAR_RIGHT] = r;
             }
         }
+        lap!(1);
         for (seen, at) in [
             (senses.predator, genome::IN_PRED_FWD),
             (senses.prey, genome::IN_PREY_FWD),
@@ -1505,7 +1516,9 @@ impl World {
             input[genome::IN_MATE_NEAR] = 1.0 - 0.5 * (d2.sqrt() / t.vision).min(1.0);
         }
 
+        lap!(2);
         let out = genome::think(self.genome(i), &input);
+        lap!(3);
         Plan { senses, input, out, call_dir, alone }
     }
 

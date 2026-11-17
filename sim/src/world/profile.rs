@@ -39,3 +39,35 @@ impl Laps {
 pub fn totals() -> [f64; NAMES.len()] {
     *TOTALS.lock().unwrap()
 }
+
+/// 判断の段（plan）の中の区切りの名前
+pub const PLAN_NAMES: [&str; 4] = [
+    "知覚（視野の中の個体を探す）",
+    "草の量と方向・遠くの景色",
+    "その他の入力（呼び声・死体・群れなど）",
+    "脳",
+];
+
+/// 判断の段の中の区切りごとの合計時間（ナノ秒）。並列に足すので原子的に足す
+static PLAN_NS: [std::sync::atomic::AtomicU64; PLAN_NAMES.len()] = [const { std::sync::atomic::AtomicU64::new(0) }; PLAN_NAMES.len()];
+
+/// 判断の段の中の区切りまでの時間を足していく（個体ごとに作る）
+pub struct Stopwatch(Instant);
+
+impl Stopwatch {
+    pub fn start() -> Self {
+        Stopwatch(Instant::now())
+    }
+
+    /// 前の区切りからここまでを区切り k の時間として足す
+    pub fn lap(&mut self, k: usize) {
+        let now = Instant::now();
+        PLAN_NS[k].fetch_add((now - self.0).as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        self.0 = now;
+    }
+}
+
+/// 判断の段の中の区切りごとの合計時間（秒。並列のときはスレッドの合計）
+pub fn plan_totals() -> [f64; PLAN_NAMES.len()] {
+    std::array::from_fn(|k| PLAN_NS[k].load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9)
+}

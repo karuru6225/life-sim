@@ -157,6 +157,12 @@ fn main() {
         for (name, t) in sim::world::profile::NAMES.iter().zip(totals) {
             println!("  {name}: {t:.1} 秒（{:.0}%）", t / sum.max(1e-9) * 100.0);
         }
+        let plan = sim::world::profile::plan_totals();
+        let plan_sum: f64 = plan.iter().sum();
+        println!("判断の段の内訳（スレッドの合計 {plan_sum:.1} 秒）:");
+        for (name, t) in sim::world::profile::PLAN_NAMES.iter().zip(plan) {
+            println!("  {name}: {t:.1} 秒（{:.0}%）", t / plan_sum.max(1e-9) * 100.0);
+        }
     }
     println!("エネルギー帳尻の誤差: {err:.4}（帳簿 {:.1}）", w.ledger.expected_total());
     if let Some(path) = save_path {
