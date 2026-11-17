@@ -529,6 +529,7 @@ impl World {
             &terrain.fertility,
             &terrain.soil,
             params.plant_shares(),
+            params.woodland_contrast,
         );
         let grid = Grid::new(width, height, GRID_CELL);
         let mut world = World {
@@ -943,20 +944,20 @@ impl World {
             return 0.0; // 陸がない
         }
         let q = self.params.plant_qualities();
-        let cap = self.params.plant_capacity * self.plants.share[0] * ls.fertility[b];
+        let cap = self.params.plant_capacity * ls.ground_cap[b];
         let ground = (ls.layer[0][b] - floor * cap).max(0.0);
         let food = q[0] * ground + (1..LAYERS).map(|k| q[k] * reach[k] * ls.layer[k][b]).sum::<f32>();
         food * self.habitat_fit(i, ls.vegetation[b])
     }
 
     /// 草食 i が遠くの景色で見つけた、食べ物の多い場所の方向（世界の向きの単位ベクトル）。
-    /// 見渡せる距離（far_view × 体長）の 8 方向の区画を比べ、今いる区画より十分に多いものがなければ None
+    /// 見渡せる距離（far_view × 体長。林の中では枝に遮られて縮む）の 8 方向の区画を比べ、今いる区画より十分に多いものがなければ None
     fn far_food_direction(&self, i: usize, reach: &[f32; LAYERS], floor: f32) -> Option<(f32, f32)> {
         if self.plants.landscape.cols == 0 {
             return None;
         }
         let (x, y) = (self.xs[i], self.ys[i]);
-        let range = self.params.far_view * self.traits[i].size.max(0.0).cbrt();
+        let range = self.params.far_view * self.traits[i].size.max(0.0).cbrt() * self.view_openness(x, y);
         let here = self.landscape_value(i, reach, floor, self.plants.landscape_block(x, y));
         let mut best = here * 1.2 + 0.05;
         let mut dir = None;
@@ -971,11 +972,19 @@ impl World {
         dir
     }
 
+    /// 場所 (x, y) の見通しのよさ（遠くを見渡せる距離に掛ける倍率）。枝の層の割合が多いほど低く、全体の平均の割合の場所で 1
+    pub fn view_openness(&self, x: f32, y: f32) -> f32 {
+        let k = self.params.far_view_tree.max(0.0);
+        let tree = self.plants.share_at(self.plants.cell_index(x, y))[2];
+        let mean = self.plants.share[2];
+        ((1.0 - k * tree).max(0.1) / (1.0 - k * mean).max(0.1)).max(0.0)
+    }
+
     /// 個体が層 k から取れる量。地面の草は、食べ残す高さ floor（割合）より上の分だけ
     fn layer_available(&self, reach: &[f32; LAYERS], floor: f32, k: usize, c: usize) -> f32 {
         let amount = self.plants.layer[k][c];
         if k == 0 {
-            let cap = self.params.plant_capacity * self.plants.share[0] * self.plants.fertility[c];
+            let cap = self.params.plant_capacity * self.plants.ground_cap(c);
             (amount - floor * cap).max(0.0)
         } else {
             reach[k] * amount
@@ -1120,6 +1129,7 @@ impl World {
         }
         let sunlight = self.params.sunlight * (1.0 + self.params.season_amplitude * self.season());
         self.plants.share = self.params.plant_shares();
+        self.plants.woodland = self.params.woodland_contrast;
         self.ledger.sunlight_in += self.plants.grow(sunlight, self.params.plant_capacity);
         lap!(0);
 
@@ -3711,7 +3721,7 @@ mod tests {
         w.plants.fill(0.0);
         // 地面の草だけが、両者の食べ残す高さの中間まである
         for c in [small, big] {
-            let cap = w.params.plant_capacity * w.plants.share[0] * w.plants.fertility[c];
+            let cap = w.params.plant_capacity * w.plants.ground_cap(c);
             w.plants.set_cell(c, 0.0);
             w.plants.layer[0][c] = cap * (w.graze_floor(0) + w.graze_floor(1)) / 2.0;
         }

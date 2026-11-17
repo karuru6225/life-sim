@@ -7,6 +7,8 @@
 //!
 //! 各マスの植物は高さの層（地面の草・低い茂み・高い枝）に分かれ、日射と上限を層の割合で分けて、それぞれ育つ。
 //! 高い層は大きい体だけが届く（届く割合は World が決める）。
+//! 層の割合は場所ごとに違う。土の肥えた場所ほど茂みと枝が多い林に、やせた場所ほど地面の草が多い草原になる
+//! （植生の種類で決まり、季節で変わらない）。
 
 /// 高さの層の数（0: 地面の草、1: 低い茂み、2: 高い枝）
 pub const LAYERS: usize = 3;
@@ -20,8 +22,8 @@ pub struct Landscape {
     pub rows: usize,
     /// 区画ごとの層ごとの植物量の平均（水のマスも 0 として平均に入る）[層][区画]
     pub layer: [Vec<f32>; LAYERS],
-    /// 区画ごとの肥沃度の平均（水のマスも 0 として入る）
-    pub fertility: Vec<f32>,
+    /// 区画ごとの、地面の層の上限の割合（肥沃度 × 地面の層の割合）の平均（水のマスも 0 として入る）。植物の上限を掛けると地面の層の上限
+    pub ground_cap: Vec<f32>,
     /// 区画ごとの植生の種類の平均（陸のマスだけで平均する。陸がなければ −1）
     pub vegetation: Vec<f32>,
 }
@@ -34,8 +36,12 @@ pub struct PlantField {
     pub biomass: Vec<f32>,
     /// 層ごとのマスごとの植物量 [層][マス]
     pub layer: [Vec<f32>; LAYERS],
-    /// 層ごとの、日射と上限の割合（合計 1）
+    /// 層ごとの、日射と上限の割合の全体の平均（合計 1）。マスごとの割合は share_at
     pub share: [f32; LAYERS],
+    /// 林と草原の差の大きさ（0 ならどこも share、1 なら最もやせた場所で茂みと枝がなくなり、最も肥えた場所で 2 倍）
+    pub woodland: f32,
+    /// マスごとの林の度合い（0: 最も草原、1: 最も林）。陸のマスの植生の種類の順位で決める（植生の分布によらず一様に散らばる）
+    pub wood: Vec<f32>,
     /// マスごとの肥沃度（0〜1）。季節とともに変わる（World が地形から書き込む）
     pub fertility: Vec<f32>,
     /// マスごとの植生の種類（土の肥えかた、0〜1）。季節で変わらない。地形の soil と同じ並び
@@ -55,6 +61,7 @@ impl PlantField {
         fertility: &[f32],
         vegetation: &[f32],
         share: [f32; LAYERS],
+        woodland: f32,
     ) -> Self {
         let cols = ((width / cell_size).ceil() as usize).max(1);
         let rows = ((height / cell_size).ceil() as usize).max(1);
@@ -66,6 +73,8 @@ impl PlantField {
             biomass: vec![0.0; cols * rows],
             layer: std::array::from_fn(|_| vec![0.0; cols * rows]),
             share,
+            woodland,
+            wood: wood_ranks(fertility, vegetation),
             fertility: fertility.to_vec(),
             vegetation: vegetation.to_vec(),
             landscape: Landscape::default(),
@@ -79,13 +88,14 @@ impl PlantField {
     /// 遠くの景色（区画ごとの平均）を、今の植物量と肥沃度から作り直す
     pub fn update_landscape(&mut self) {
         let (bc, br) = (self.cols.div_ceil(BLOCK), self.rows.div_ceil(BLOCK));
+        let ground: Vec<f32> = (0..self.cols * self.rows).map(|i| self.share_at(i)[0] * self.fertility[i]).collect();
         let ls = &mut self.landscape;
         if ls.cols != bc || ls.rows != br {
             *ls = Landscape {
                 cols: bc,
                 rows: br,
                 layer: std::array::from_fn(|_| vec![0.0; bc * br]),
-                fertility: vec![0.0; bc * br],
+                ground_cap: vec![0.0; bc * br],
                 vegetation: vec![0.0; bc * br],
             };
         }
@@ -99,7 +109,7 @@ impl PlantField {
                     for (k, s) in sum.iter_mut().enumerate() {
                         *s += self.layer[k][i];
                     }
-                    fert += self.fertility[i];
+                    fert += ground[i];
                     cells += 1;
                     // 植生の種類は陸だけで平均する（水が混ざると別の植生に見えてしまう）
                     if self.fertility[i] > 0.0 || self.biomass[i] > 0.0 {
@@ -112,7 +122,7 @@ impl PlantField {
             for k in 0..LAYERS {
                 ls.layer[k][b] = sum[k] / n;
             }
-            ls.fertility[b] = fert / n;
+            ls.ground_cap[b] = fert / n;
             ls.vegetation[b] = if land > 0 { veg / land as f32 } else { -1.0 };
         }
     }
@@ -125,10 +135,24 @@ impl PlantField {
         r * self.landscape.cols + c
     }
 
+    /// マス c の層ごとの、日射と上限の割合（合計 1）。林の度合いが高いほど茂みと枝が多い
+    pub fn share_at(&self, c: usize) -> [f32; LAYERS] {
+        let m = 1.0 + self.woodland.clamp(0.0, 1.0) * (2.0 * self.wood[c] - 1.0);
+        let (mut shrub, mut tree) = (self.share[1] * m, self.share[2] * m);
+        // 地面の層は少なくとも 5% 残す
+        let upper = shrub + tree;
+        if upper > 0.95 {
+            shrub *= 0.95 / upper;
+            tree *= 0.95 / upper;
+        }
+        [1.0 - shrub - tree, shrub, tree]
+    }
+
     /// マス c の植物量を、層の割合で分けて amount にする（初期化と試験用）
     pub fn set_cell(&mut self, c: usize, amount: f32) {
+        let share = self.share_at(c);
         for k in 0..LAYERS {
-            self.layer[k][c] = amount * self.share[k];
+            self.layer[k][c] = amount * share[k];
         }
         self.biomass[c] = amount;
     }
@@ -163,8 +187,9 @@ impl PlantField {
                 continue; // 水
             }
             let mut grown = 0.0;
+            let share = self.share_at(c);
             for k in 0..LAYERS {
-                let s = self.share[k];
+                let s = share[k];
                 if s <= 0.0 {
                     continue;
                 }
@@ -177,6 +202,11 @@ impl PlantField {
             total += grown as f64;
         }
         total
+    }
+
+    /// マス c の地面の層の上限の、植物の上限に対する割合（肥沃度 × 地面の層の割合）
+    pub fn ground_cap(&self, c: usize) -> f32 {
+        self.share_at(c)[0] * self.fertility[c]
     }
 
     pub fn cell_index(&self, x: f32, y: f32) -> usize {
@@ -224,5 +254,62 @@ impl PlantField {
 
     pub fn total(&self) -> f64 {
         self.biomass.iter().map(|&b| b as f64).sum()
+    }
+}
+
+/// 陸のマスの林の度合い（0〜1）を、植生の種類の順位で決める。同じ値は同じ度合い。水のマスと、植生がどこも同じなら 0.5
+fn wood_ranks(fertility: &[f32], vegetation: &[f32]) -> Vec<f32> {
+    let mut land: Vec<usize> = (0..vegetation.len()).filter(|&i| fertility[i] > 0.0).collect();
+    let mut wood = vec![0.5; vegetation.len()];
+    if land.len() < 2 {
+        return wood;
+    }
+    land.sort_by(|&a, &b| vegetation[a].total_cmp(&vegetation[b]));
+    let n = land.len() as f32;
+    let mut k = 0;
+    while k < land.len() {
+        // 同じ値の並びには、その並びの順位の平均を使う
+        let mut e = k;
+        while e + 1 < land.len() && vegetation[land[e + 1]] == vegetation[land[k]] {
+            e += 1;
+        }
+        let rank = ((k + e) as f32 / 2.0 + 0.5) / n;
+        for &i in &land[k..=e] {
+            wood[i] = rank;
+        }
+        k = e + 1;
+    }
+    if (vegetation[land[0]] - vegetation[land[land.len() - 1]]).abs() < 1e-6 {
+        wood.fill(0.5);
+    }
+    wood
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 土の肥えた場所ほど茂みと枝が多く全体の平均は変わらない() {
+        // 4 マスの陸（土の肥えかた 0.3〜0.9）と 1 マスの水
+        let fertility = [1.0, 1.0, 1.0, 1.0, 0.0];
+        let vegetation = [0.9, 0.3, 0.5, 0.7, 0.0];
+        let field = PlantField::new(5.0, 1.0, 1.0, 0.0, &fertility, &vegetation, [0.5, 0.3, 0.2], 0.8);
+        let shares: Vec<[f32; LAYERS]> = (0..4).map(|c| field.share_at(c)).collect();
+        // 最もやせたマス（1。順位 0.125）は草原、最も肥えたマス（0。順位 0.875）は林
+        assert!(shares[1][0] > 0.75 && shares[1][2] < 0.1, "草原: {:?}", shares[1]);
+        assert!(shares[0][0] < 0.25 && shares[0][2] > 0.3, "林: {:?}", shares[0]);
+        for s in &shares {
+            assert!((s.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+        }
+        // 陸の平均は全体の割合と同じ
+        for k in 0..LAYERS {
+            let mean = shares.iter().map(|s| s[k]).sum::<f32>() / 4.0;
+            assert!((mean - field.share[k]).abs() < 1e-5, "層 {k}: {mean}");
+        }
+        // 差をなくせばどこも同じ
+        let flat = PlantField::new(5.0, 1.0, 1.0, 0.0, &fertility, &vegetation, [0.5, 0.3, 0.2], 0.0);
+        let s = flat.share_at(1);
+        assert!((s[0] - 0.5).abs() < 1e-6 && s[1] == 0.3 && s[2] == 0.2, "{s:?}");
     }
 }

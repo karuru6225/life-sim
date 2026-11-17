@@ -40,6 +40,7 @@ export const SIM_PARAMS = {
   plant_capacity: 10,
   plant_share_shrub: 0.3,
   plant_share_tree: 0.2,
+  woodland_contrast: 0.8,
   shrub_quality: 0.85,
   tree_quality: 0.7,
   reach_shrub: 0.85,
@@ -49,6 +50,7 @@ export const SIM_PARAMS = {
   graze_floor_power: 1.5,
   graze_floor_min: 0.03,
   far_view: 320,
+  far_view_tree: 1.5,
 
   // 共通
   move_cost: 0.006,
