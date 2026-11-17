@@ -183,6 +183,16 @@ pub fn carn_size_bin(adult_size: f32) -> usize {
     CARN_SIZE_EDGES.iter().take_while(|&&e| adult_size >= e).count()
 }
 
+/// 大きさの分布（adult_size_histogram）の段階の数
+pub const SIZE_HIST_BINS: usize = 40;
+
+/// 大人の大きさ s が入る分布の段階。genome::SIZE_RANGE を対数で等間隔に分ける（範囲の外は端の段階）
+pub fn size_hist_bin(s: f32) -> usize {
+    let (lo, hi) = genome::SIZE_RANGE;
+    let t = (s.max(lo) / lo).ln() / (hi / lo).ln();
+    ((t * SIZE_HIST_BINS as f32) as usize).min(SIZE_HIST_BINS - 1)
+}
+
 /// 起きたことの累計（調整・診断用）。添字 [種類] は HERBIVORE / CARNIVORE
 #[derive(Default, Clone, Debug)]
 pub struct Census {
@@ -2234,6 +2244,17 @@ impl World {
         self.id[members[(r.f32() * members.len() as f32) as usize % members.len()]]
     }
 
+    /// 種類 kind の大人の大きさの分布。大きさの範囲（genome::SIZE_RANGE）を、対数で等間隔に SIZE_HIST_BINS 段階に分けて数える
+    pub fn adult_size_histogram(&self, kind: u8) -> [u32; SIZE_HIST_BINS] {
+        let mut out = [0u32; SIZE_HIST_BINS];
+        for i in 0..self.count() {
+            if self.alive[i] && self.kind[i] == kind {
+                out[size_hist_bin(self.traits[i].adult_size)] += 1;
+            }
+        }
+        out
+    }
+
     /// 種類ごとの形質の平均。[個体数, 大きさ, 最高速度, 視野, 子への投資, 世代]
     pub fn trait_means(&self, kind: u8) -> [f64; 6] {
         let mut sum = [0.0f64; 6];
@@ -3501,6 +3522,26 @@ mod tests {
         assert_eq!(w.plants.layer[0][big], 0.01);
         let sum: f32 = (0..LAYERS).map(|k| w.plants.layer[k][big]).sum();
         assert!((w.plants.biomass[big] - sum).abs() < 1e-6, "合計は層の和のまま");
+    }
+
+    #[test]
+    fn 大きさの分布の段階は対数で等間隔に分ける() {
+        let (lo, hi) = genome::SIZE_RANGE;
+        assert_eq!(size_hist_bin(lo), 0);
+        assert_eq!(size_hist_bin(0.01), 0, "範囲より小さいものは最初の段階");
+        assert_eq!(size_hist_bin(hi), SIZE_HIST_BINS - 1, "上限は最後の段階");
+        // 2 倍ごとに同じ段階の数だけ進む
+        let step = |s: f32| size_hist_bin(s * 2.0) as i32 - size_hist_bin(s) as i32;
+        assert!((step(0.2) - step(1.0)).abs() <= 1);
+        let mut w = empty_world();
+        for size in [0.3f32, 0.3, 2.0] {
+            w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, size, 1.0, 30.0, 0.0));
+        }
+        let h = w.adult_size_histogram(HERBIVORE);
+        assert_eq!(h[size_hist_bin(0.3)], 2);
+        assert_eq!(h[size_hist_bin(2.0)], 1);
+        assert_eq!(h.iter().sum::<u32>(), 3);
+        assert_eq!(w.adult_size_histogram(CARNIVORE).iter().sum::<u32>(), 0);
     }
 
     #[test]

@@ -14,12 +14,14 @@ pub mod world;
 
 use params::Params;
 use std::cell::RefCell;
-use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, World};
+use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, SIZE_HIST_BINS, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
 const INSPECT_LEN: usize = 60;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
 const SUMMARY_LEN: usize = 31;
+/// history_sample() が書き込む配列の要素数
+const HISTORY_LEN: usize = 21 + SIZE_HIST_BINS * 2;
 
 thread_local! {
     static WORLD: RefCell<Option<World>> = const { RefCell::new(None) };
@@ -30,6 +32,7 @@ thread_local! {
     /// 選択中の個体の情報。id が f32 の精度を超えうるので f64 で持つ
     static INSPECT: RefCell<[f64; INSPECT_LEN]> = const { RefCell::new([0.0; INSPECT_LEN]) };
     static SUMMARY: RefCell<[f64; SUMMARY_LEN]> = const { RefCell::new([0.0; SUMMARY_LEN]) };
+    static HISTORY: RefCell<[f64; HISTORY_LEN]> = const { RefCell::new([0.0; HISTORY_LEN]) };
     /// 系統の統計（選んだ系統と種類全体の 2 組）
     static LINEAGE: RefCell<[f64; LINEAGE_STATS * 2]> = const { RefCell::new([0.0; LINEAGE_STATS * 2]) };
     /// 選択中の個体の脳の入力と出力を JS に渡すための作業領域
@@ -428,6 +431,42 @@ pub extern "C" fn summary() -> *const f64 {
         });
         out.as_ptr()
     })
+}
+
+/// 長期の統計の記録に使う値を書き込み、その先頭アドレスを返す（f64 × history_len()）。
+///  0: 大きさの分布の段階の数 B   1, 2: 分布の大きさの範囲（下限, 上限。この間を対数で等間隔に B 段階に分ける）
+///  3, 4: これまでに生まれた草食・肉食の数（累計）
+///  5〜20: これまでの死亡数（累計）。[種類 × 8 + 死因]（死因の番号は world::death、0 は使わない）
+///  21〜: 草食の大人の大きさの分布（B 段階）、続けて肉食の分布（B 段階）
+#[unsafe(no_mangle)]
+pub extern "C" fn history_sample() -> *const f64 {
+    HISTORY.with(|buf| {
+        let mut out = buf.borrow_mut();
+        with_world(|w| {
+            out[0] = SIZE_HIST_BINS as f64;
+            out[1] = genome::SIZE_RANGE.0 as f64;
+            out[2] = genome::SIZE_RANGE.1 as f64;
+            out[3] = w.census.births[HERBIVORE as usize] as f64;
+            out[4] = w.census.births[CARNIVORE as usize] as f64;
+            for kind in 0..2 {
+                for cause in 0..8 {
+                    out[5 + kind * 8 + cause] = w.census.deaths[kind][cause] as f64;
+                }
+            }
+            for (k, kind) in [HERBIVORE, CARNIVORE].into_iter().enumerate() {
+                let hist = w.adult_size_histogram(kind);
+                for (b, &n) in hist.iter().enumerate() {
+                    out[21 + k * SIZE_HIST_BINS + b] = n as f64;
+                }
+            }
+        });
+        out.as_ptr()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn history_len() -> u32 {
+    HISTORY_LEN as u32
 }
 
 /// 系統の統計を書き込み、その先頭アドレスを返す（f64 × lineage_len()）。
