@@ -1,6 +1,8 @@
 //! 草食が小さくなっていく理由を調べるための、画面なしの実行。草食を大人の大きさで段階に分け、
 //! 区間ごとに段階ごとの生まれた数・襲われた数・死因を、1 体・1,000 tick あたりに直して表示する。
 //!
+//! 保存ファイルの続きを回すときは load=ファイル（画面なしの実行器で書き出した圧縮なしの .lifesim）を付ける。
+//!
 //! 使い方（引数は headless と同じ）:
 //!   cargo run --release --features parallel --example herb_size --manifest-path sim/Cargo.toml -- 120000 seed=3 every=8000
 //!
@@ -21,9 +23,16 @@ fn main() {
     let mut every: u64 = 8_000;
     let mut params = Params::default();
     let mut seed = 1;
+    let mut load: Option<String> = None;
+    let mut overrides: Vec<(String, f32)> = Vec::new();
     for arg in std::env::args().skip(1) {
         if let Some((name, value)) = arg.split_once('=') {
+            if name == "load" {
+                load = Some(value.to_string());
+                continue;
+            }
             let value: f32 = value.parse().expect("値が数値ではない");
+            overrides.push((name.to_string(), value));
             match name {
                 "seed" => seed = value as u64,
                 "every" => every = value as u64,
@@ -35,8 +44,23 @@ fn main() {
         }
     }
 
-    let mut w = World::new(seed, params);
-    let mut last = Census::default();
+    // load=保存ファイル（圧縮なしの .lifesim）を付けると、その世界の続きを回す。パラメータの指定は読み込んだ世界に上書きする
+    let mut w = match &load {
+        Some(path) => {
+            let data = std::fs::read(path).expect("保存ファイルを読めない");
+            let (mut w, _) = sim::world::load_file(&data).unwrap_or_else(|e| panic!("読み込めない: {e}"));
+            for (name, value) in &overrides {
+                if name != "seed" && name != "every" {
+                    w.params.set(name, *value);
+                }
+            }
+            println!("{path} の tick {} から続ける", w.tick);
+            w
+        }
+        None => World::new(seed, params),
+    };
+    // 累計の基準（読み込んだ世界は累計が 0 から始まらない）
+    let mut last = w.census.clone();
     let mut last_pop = population(&w);
     for tick in 1..=ticks {
         w.step();

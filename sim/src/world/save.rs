@@ -473,6 +473,17 @@ pub fn save_file(world: &World, commit: &str, saved_at: &str) -> Vec<u8> {
     out
 }
 
+/// save_file() の入れ物（圧縮なし）から世界を読み込む。戻り値の 2 つ目は、今のコードが知らないパラメータの名前
+pub fn load_file(data: &[u8]) -> Result<(World, Vec<String>), String> {
+    if !data.starts_with(b"LIFESIM
+") || data.len() < 12 {
+        return Err("life-sim の保存ファイル（圧縮なし）ではない".into());
+    }
+    let len = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+    let payload = data.get(12 + len..).ok_or("保存ファイルの見出しが壊れている")?;
+    World::load(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
