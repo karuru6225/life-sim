@@ -39,6 +39,8 @@ type Stats = Extract<FromWorker, { type: 'stats' }>;
 
 export interface HudHandlers {
   onTogglePause(): void;
+  /** 統計のウインドウを開く・閉じる */
+  onToggleStats(): void;
   onReset(): void;
   onSpeed(speed: number): void;
   onSunlight(value: number): void;
@@ -150,6 +152,7 @@ export class Hud {
           <button type="button" data-k="reset">リセット</button>
           <button type="button" data-k="save" title="今の世界をファイルに保存する（乱数の状態も含むので、読み込むと同じ歴史が続く）">保存</button>
           <button type="button" data-k="load" title="保存したファイル（.lifesim.gz）から世界を読み込む">読み込み</button>
+          <button type="button" data-k="stats" title="長期の統計（大きさの分布・個体数と形質・死因と出生）のウインドウを開く・閉じる（G キー）">統計</button>
           <input type="file" data-k="loadFile" accept=".gz,.lifesim.gz,.lifesim" hidden />
         </div>
         <div class="group" data-k="sizes"><span class="group-label">世界の広さ（選ぶと作り直す）</span></div>
@@ -206,6 +209,7 @@ export class Hud {
     this.el.pause.addEventListener('click', handlers.onTogglePause);
     this.el.reset.addEventListener('click', handlers.onReset);
     this.el.save.addEventListener('click', handlers.onSave);
+    this.el.stats.addEventListener('click', handlers.onToggleStats);
     const loadFile = this.el.loadFile as HTMLInputElement;
     this.el.load.addEventListener('click', () => loadFile.click());
     loadFile.addEventListener('change', () => {
@@ -394,6 +398,12 @@ export class Hud {
   setTempRange([min, max]: [number, number]): void {
     this.el.tempMin.textContent = `${min.toFixed(0)}°`;
     this.el.tempMax.textContent = `${max.toFixed(0)}°`;
+  }
+
+  /** 統計のウインドウが開いているかを、ボタンの見た目に反映する */
+  setStatsOpen(open: boolean): void {
+    this.el.stats.classList.toggle('active', open);
+    this.el.stats.setAttribute('aria-pressed', String(open));
   }
 
   setPaused(paused: boolean): void {

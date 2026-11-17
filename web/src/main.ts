@@ -23,6 +23,7 @@ import { SelectionMarker } from './render/selection';
 import { Hud, type Highlight, type HighlightStyle, type Layers } from './ui/hud';
 import { Inspector, Toast } from './ui/inspector';
 import { LineageHistogram, LineagePanel } from './ui/lineage';
+import { StatsWindow } from './ui/stats';
 import './style.css';
 
 type Frame = Extract<FromWorker, { type: 'frame' }>;
@@ -322,8 +323,14 @@ function deselect(): void {
   setFollowing(false);
 }
 
+const stats = new StatsWindow(document.getElementById('stats')!, (open) => hud.setStatsOpen(open));
+function toggleStats(): void {
+  stats.toggle();
+}
+
 const hud = new Hud(document.getElementById('hud')!, {
   onTogglePause: () => setPaused(!paused),
+  onToggleStats: toggleStats,
   onReset: () => start(),
   onSpeed: (s) => {
     speed = s;
@@ -419,8 +426,12 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
   switch (msg.type) {
     case 'ready':
       generation = msg.generation;
+      stats.clear();
       terrain.setData(new Float32Array(msg.terrain), new Float32Array(msg.temperature), msg.terrainCols, msg.terrainRows);
       hud.setTempRange(terrain.currentMode === 'tempNow' ? terrain.tempNowRange : terrain.tempRange);
+      break;
+    case 'history':
+      if (msg.generation === generation) stats.add(msg.sample);
       break;
     case 'selected':
       selectedId = msg.id;
@@ -579,6 +590,7 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     setPaused(!paused);
   }
+  if (e.code === 'KeyG' && !e.ctrlKey && !e.metaKey && !e.altKey && !(e.target instanceof HTMLInputElement)) toggleStats();
 });
 
 hud.setSpeed(speed);

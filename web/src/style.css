@@ -688,3 +688,236 @@ button:disabled {
 .trait-table th.lin-top {
   color: var(--text);
 }
+
+/* ---- 統計のウインドウ ---- */
+
+.stats-win {
+  position: fixed;
+  top: 16px;
+  left: 332px;
+  width: 640px;
+  height: 560px;
+  min-width: 420px;
+  min-height: 320px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 12px;
+  resize: both;
+  overflow: hidden;
+  z-index: 5;
+}
+
+.stats-win[hidden] {
+  display: none;
+}
+
+.stats-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 14px;
+  border-bottom: 1px solid var(--line);
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.stats-title {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.stats-tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.stats-close {
+  min-width: 32px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.stats-when {
+  padding: 6px 14px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.stats-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px 10px;
+  overflow-y: auto;
+}
+
+.stats-pane[hidden] {
+  display: none;
+}
+
+.stats-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.stats-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 8px;
+}
+
+.seg {
+  display: flex;
+  gap: 4px;
+}
+
+.size-summary {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.size-plot {
+  flex: 1;
+  min-height: 160px;
+  display: flex;
+  gap: 6px;
+}
+
+.size-heat {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  cursor: crosshair;
+}
+
+.size-hist {
+  width: 110px;
+  height: 100%;
+}
+
+.stats-tip {
+  position: absolute;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.trait-grid {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.trait-kind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.trait-name {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.trait-cell {
+  display: grid;
+  grid-template-columns: 68px 1fr;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.trait-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.trait-spark {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  cursor: crosshair;
+}
+
+.death-block + .death-block {
+  margin-top: 12px;
+}
+
+.death-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.death-chart {
+  display: block;
+  width: 100%;
+  height: 130px;
+  cursor: crosshair;
+}
+
+.death-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.death-legend li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.death-legend b {
+  font-family: var(--mono);
+  font-weight: normal;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.death-legend .swatch {
+  width: 10px;
+  height: 10px;
+}
+
+.death-legend .swatch-line {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+}
+
+.death-legend .total i {
+  display: none;
+}

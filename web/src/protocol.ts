@@ -49,6 +49,8 @@ export type FromWorker =
   | { type: 'loaded'; ok: boolean; message: string; params: Record<string, number> | null; tick: number }
   /** 季節で変わる地図のデータ（今の気温と、今の植物の育ちやすさ。Float32、cols × rows）。約 1 秒ごとに届く */
   | { type: 'climate'; generation: number; temperature: ArrayBuffer; fertility: ArrayBuffer }
+  /** 長期の統計の記録（HISTORY_EVERY tick ごとに 1 つ） */
+  | { type: 'history'; generation: number; sample: HistorySample }
   /** select の結果。id が 0 なら近くに個体がいなかった */
   | { type: 'selected'; id: number }
   | {
@@ -126,6 +128,41 @@ export const LINEAGE = {
   deaths: 18,
 } as const;
 export const LINEAGE_LEN = 25;
+/** 長期の統計を記録する間隔（tick） */
+export const HISTORY_EVERY = 200;
+
+/** 長期の統計の記録の、種類ごとの値。形質は記録した瞬間の平均、出生と死亡は区間内の数 */
+export interface HistoryKind {
+  count: number;
+  /** 大人の大きさの平均 */
+  size: number;
+  speed: number;
+  vision: number;
+  /** 視野角（度） */
+  fov: number;
+  tempPref: number;
+  invest: number;
+  litter: number;
+  generation: number;
+  /** 使っている中間ニューロンの数（1 層目 + 2 層目） */
+  brain: number;
+  births: number;
+  /** 死因ごとの死亡数（添字は DEATH の番号。0 は使わない） */
+  deaths: number[];
+  /** 大人の大きさの分布（sizeRange を対数で等間隔に分けた段階ごとの個体数） */
+  sizeHist: number[];
+}
+
+/** 長期の統計の記録 1 つ。span は前の記録からの tick 数 */
+export interface HistorySample {
+  tick: number;
+  span: number;
+  /** 大きさの分布の範囲（下限, 上限） */
+  sizeRange: [number, number];
+  herb: HistoryKind;
+  carn: HistoryKind;
+}
+
 /** 保存ファイルの見出し（JSON）。ファイルは gzip で、中身は SAVE_MAGIC・見出しの長さ（u32）・見出し・世界のバイト列 */
 export interface SaveHeader {
   /** 世界のバイト列の形式の番号（sim/src/world/save.rs の FORMAT_VERSION） */
