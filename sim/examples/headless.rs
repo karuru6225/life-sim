@@ -9,6 +9,9 @@
 //! 例: ... -- 50000 seed=3 save=world.lifesim  → ブラウザの「読み込み」で world.lifesim を選ぶと、5 万 tick から続きを見られる。
 //! パラメータは保存ファイルに入るので、ブラウザでも同じ設定で続く
 //!
+//! 肉食が絶滅したら、その時点で打ち切る（検証では絶滅した時点で結論が出るので、残りを回さない）。
+//! 肉食のいない世界を見たいときは stop_extinct=0 を付ける。初めから肉食がいない設定では打ち切らない
+//!
 //! 列の意味:
 //!   量比: 肉食の量 ÷ 草食の量（量 = 体の大きさの合計）。現実の哺乳類では約 1/111
 //!   植→草, 草→肉: 区間内の栄養段階の受け渡し効率（草食が得た量 ÷ 植物が日射から得た量、
@@ -37,6 +40,7 @@ fn main() {
     let mut params = Params::default();
     let mut seed = 1;
     let mut save_path: Option<String> = None;
+    let mut stop_extinct = true;
     for arg in std::env::args().skip(1) {
         if let Some((name, value)) = arg.split_once('=') {
             if name == "save" {
@@ -46,6 +50,7 @@ fn main() {
             let value: f32 = value.parse().expect("値が数値ではない");
             match name {
                 "seed" => seed = value as u64,
+                "stop_extinct" => stop_extinct = value != 0.0,
                 "every" => report_every = value as u64,
                 _ if !params.set(name, value) => panic!("知らないパラメータ: {name}"),
                 _ => {}
@@ -65,9 +70,14 @@ fn main() {
     let (mut last_matings, mut last_failed) = (0u64, 0u64);
     // 交配が日射の多い半年に行われた回数と、全体の回数（区間内）
     let (mut in_season, mut all_season, mut prev_matings) = (0u64, 0u64, 0u64);
+    let had_carnivores = w.count_kind(CARNIVORE) > 0;
     for tick in 1..=ticks {
         let summer = w.season() > 0.0;
         w.step();
+        if stop_extinct && had_carnivores && tick % 100 == 0 && w.count_kind(CARNIVORE) == 0 {
+            println!("肉食が絶滅した（tick {tick}、草食 {}）。打ち切る（続けるときは stop_extinct=0）", w.count_kind(HERBIVORE));
+            break;
+        }
         let d = w.matings - prev_matings;
         prev_matings = w.matings;
         all_season += d;
