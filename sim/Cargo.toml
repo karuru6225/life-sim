@@ -17,6 +17,8 @@ panic = "abort"
 # 知覚と脳の判断を rayon で並列に計算する（ネイティブの画面なし実行・テスト用）。
 # ブラウザ（WASM）はスレッドが使えないので有効にしない。並列でも順番でも結果は同じ
 parallel = ["dep:rayon"]
+# 1 tick の段ごとの時間を測る（ネイティブの画面なし実行用。WASM では使えない）
+profile = []
 
 [dependencies]
 rayon = { version = "1.10", optional = true }

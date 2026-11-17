@@ -149,6 +149,15 @@ fn main() {
         }
     }
     let err = w.ledger.expected_total() - w.total_energy();
+    #[cfg(feature = "profile")]
+    {
+        let totals = sim::world::profile::totals();
+        let sum: f64 = totals.iter().sum();
+        println!("段ごとの時間（合計 {sum:.1} 秒）:");
+        for (name, t) in sim::world::profile::NAMES.iter().zip(totals) {
+            println!("  {name}: {t:.1} 秒（{:.0}%）", t / sum.max(1e-9) * 100.0);
+        }
+    }
     println!("エネルギー帳尻の誤差: {err:.4}（帳簿 {:.1}）", w.ledger.expected_total());
     if let Some(path) = save_path {
         let data = sim::world::save_file(&w, &commit_hash(), &now_iso());

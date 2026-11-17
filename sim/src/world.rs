@@ -22,6 +22,8 @@ use crate::terrain::{Terrain, TerrainSpec};
 use std::collections::VecDeque;
 
 pub mod history;
+#[cfg(feature = "profile")]
+pub mod profile;
 mod save;
 pub use history::History;
 pub use save::FORMAT_VERSION as SAVE_FORMAT_VERSION;
@@ -1067,6 +1069,15 @@ impl World {
 
     /// 1 tick 進める
     pub fn step(&mut self) {
+        #[cfg(feature = "profile")]
+        let mut laps = profile::Laps::start();
+        // profile 機能のときだけ、前の区切りからの時間を段 k に足す
+        macro_rules! lap {
+            ($k:expr) => {
+                #[cfg(feature = "profile")]
+                laps.lap($k);
+            };
+        }
         // 季節で今の気温と植物の育ちやすさが変わる。変化はゆっくりなので、更新は CLIMATE_EVERY tick ごと
         if self.tick % CLIMATE_EVERY == 0 {
             self.update_climate();
@@ -1074,14 +1085,18 @@ impl World {
         let sunlight = self.params.sunlight * (1.0 + self.params.season_amplitude * self.season());
         self.plants.share = self.params.plant_shares();
         self.ledger.sunlight_in += self.plants.grow(sunlight, self.params.plant_capacity);
+        lap!(0);
 
         self.decay_carrion();
         let cap = self.params.plant_capacity;
         for i in 0..self.count() {
             self.cover[i] = self.plants.ratio_at(self.xs[i], self.ys[i], cap);
         }
+        lap!(1);
+        lap!(2);
         self.build_grid();
         self.build_calls();
+        lap!(3);
 
         // 1 段目: 全個体が tick の始めの世界を見て、知覚と脳の判断をする（互いに書き込まないので並列にできる）。
         // セル順に並べる（近くの個体を続けて処理するとキャッシュに乗って速い）
@@ -1090,20 +1105,43 @@ impl World {
         order.extend((0..self.count()).map(|k| self.grid.entry(k).0));
         let mut plans = std::mem::take(&mut self.plans);
         self.make_plans(&order, &mut plans);
+        lap!(4);
         // 2 段目: 判断に従って、1 体ずつ順番に行動する（移動・食べる・狩る・争う・繁殖）
+        #[cfg(feature = "profile")]
+        let mut part = [0.0f64; 3];
+        // profile 機能のときだけ、式の時間を part[k] に足す
+        macro_rules! timed {
+            ($k:expr, $e:expr) => {{
+                #[cfg(feature = "profile")]
+                let t = std::time::Instant::now();
+                let r = $e;
+                #[cfg(feature = "profile")]
+                {
+                    part[$k] += t.elapsed().as_secs_f64();
+                }
+                r
+            }};
+        }
         for (k, &i) in order.iter().enumerate() {
             if !self.alive[i] {
                 continue; // この tick ですでに食べられた
             }
-            let (speed, wants_child, mate) = self.act(i, &plans[k]);
+            let (speed, wants_child, mate) = timed!(0, self.act(i, &plans[k]));
             if !self.alive[i] {
                 continue; // 行動の途中で死んだ（反撃や病気）
             }
-            self.move_agent(i, speed);
-            self.live(i, speed, wants_child, mate);
+            timed!(1, self.move_agent(i, speed));
+            timed!(2, self.live(i, speed, wants_child, mate));
         }
         self.order = order;
         self.plans = plans;
+        #[cfg(feature = "profile")]
+        {
+            for (k, t) in part.into_iter().enumerate() {
+                profile::Laps::add(5 + k, t);
+            }
+            laps.reset();
+        }
 
         self.apply_births();
         self.remove_dead();
@@ -1113,6 +1151,7 @@ impl World {
         }
         self.tick += 1;
         self.sample_history();
+        lap!(8);
     }
 
     /// 視野の中で最も近い天敵・獲物・仲間を探す。
