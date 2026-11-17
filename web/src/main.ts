@@ -24,6 +24,7 @@ import { Hud, type Highlight, type HighlightStyle, type Layers } from './ui/hud'
 import { Inspector, Toast } from './ui/inspector';
 import { LineageHistogram, LineagePanel } from './ui/lineage';
 import { StatsWindow } from './ui/stats';
+import { BrainWindow } from './ui/brain';
 import './style.css';
 
 type Frame = Extract<FromWorker, { type: 'frame' }>;
@@ -327,10 +328,12 @@ const stats = new StatsWindow(document.getElementById('stats')!, (open) => hud.s
 function toggleStats(): void {
   stats.toggle();
 }
+const brainWin = new BrainWindow(document.getElementById('brain')!, (open) => hud.setBrainOpen(open));
 
 const hud = new Hud(document.getElementById('hud')!, {
   onTogglePause: () => setPaused(!paused),
   onToggleStats: toggleStats,
+  onToggleBrain: () => brainWin.toggle(),
   onReset: () => start(),
   onSpeed: (s) => {
     speed = s;
@@ -451,6 +454,12 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
     case 'frame':
       if (msg.generation !== generation) return returnBuffer(msg); // リセット前の古いフレーム
       // まだ描画していない古いフレームは飛ばして、すぐ Worker に返す
+      // 脳の重みは選んだ個体が変わったときの 1 フレームにしか入らないので、描画で飛ばされる前に取り込む
+      if (msg.brainNet && msg.brainNetId !== undefined) {
+        const b = msg.brain;
+        const h1 = b?.h1 ?? 0;
+        brainWin.setNet(msg.brainNetId, msg.brainNet, b?.input.length ?? 0, h1, (b?.hidden.length ?? 0) - h1, b?.output.length ?? 0);
+      }
       if (latest) returnBuffer(latest);
       latest = msg;
       break;
@@ -516,6 +525,7 @@ app.ticker.add(() => {
     lastLineage = now;
   }
   hud.setTick(f.tick);
+  brainWin.update(f.brain, f.inspect, f.tick);
   if (f.inspect) {
     showSelection(f.inspect);
     if (f.inspect[INSPECT.status] === 1 && f.inspect[INSPECT.id] === selectedId) {
@@ -591,6 +601,7 @@ window.addEventListener('keydown', (e) => {
     setPaused(!paused);
   }
   if (e.code === 'KeyG' && !e.ctrlKey && !e.metaKey && !e.altKey && !(e.target instanceof HTMLInputElement)) toggleStats();
+  if (e.code === 'KeyB' && !e.ctrlKey && !e.metaKey && !e.altKey && !(e.target instanceof HTMLInputElement)) brainWin.toggle();
 });
 
 hud.setSpeed(speed);

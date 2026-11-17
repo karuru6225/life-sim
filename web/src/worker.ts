@@ -35,6 +35,10 @@ interface SimExports {
   brain_ptr(): number;
   brain_inputs(): number;
   brain_outputs(): number;
+  brain_hidden(): number;
+  brain_h1(): number;
+  brain_net_ptr(): number;
+  brain_net_len(): number;
   energy_history_ptr(): number;
   energy_history_len(): number;
   lineage_stats(kind: number, from: number, width: number): number;
@@ -81,6 +85,8 @@ let speed = 1;
 let paused = false;
 /** 個体を選択中か（選択中ならフレームごとに個体の情報を添える） */
 let watching = false;
+/** 脳の重みを最後に送った個体の id（選んだ個体が変わったら送り直す） */
+let netSentId = -1;
 
 // 日射量の自動調整（config.ts の AUTO_SUNLIGHT を参照）
 let autoSunlight = AUTO_SUNLIGHT.enabledByDefault;
@@ -154,6 +160,7 @@ function onNewWorld(s: SimExports): void {
   sim = s;
   generation++;
   watching = false;
+  netSentId = -1;
   pool = [];
   allocated = 0;
   accumulator = 0;
@@ -317,6 +324,7 @@ function handle(s: SimExports, msg: ToWorker): void {
       if (!sim) break;
       s.deselect();
       watching = false;
+      netSentId = -1;
       dirty = true;
       break;
     case 'setLineage':
@@ -420,17 +428,28 @@ function publish(s: SimExports, now: number): void {
   out.set(new Float32Array(s.memory.buffer, s.carrion_ptr(), plantFloats), agentFloats + plantFloats);
 
   const inspect = watching ? Array.from(new Float64Array(s.memory.buffer, s.inspect(), s.inspect_len())) : null;
-  let brain: { input: number[]; output: number[] } | null = null;
+  let brain: { input: number[]; output: number[]; hidden: number[]; h1: number } | null = null;
   let energyHistory: number[] | null = null;
+  let brainNet: number[] | undefined;
+  let brainNetId: number | undefined;
   if (watching) {
     const nIn = s.brain_inputs();
-    const io = Array.from(new Float32Array(s.memory.buffer, s.brain_ptr(), nIn + s.brain_outputs()));
-    brain = { input: io.slice(0, nIn), output: io.slice(nIn) };
+    const nOut = s.brain_outputs();
+    const io = Array.from(new Float32Array(s.memory.buffer, s.brain_ptr(), nIn + nOut + s.brain_hidden()));
+    brain = { input: io.slice(0, nIn), output: io.slice(nIn, nIn + nOut), hidden: io.slice(nIn + nOut), h1: s.brain_h1() };
+    // 重みは生涯変わらないので、選んだ個体が変わったときだけ送る
+    const id = inspect ? inspect[1] : 0;
+    if (id !== netSentId) {
+      const ptr = s.brain_net_ptr();
+      brainNet = Array.from(new Float32Array(s.memory.buffer, ptr, s.brain_net_len()));
+      brainNetId = id;
+      netSentId = id;
+    }
     energyHistory = Array.from(new Float32Array(s.memory.buffer, s.energy_history_ptr(), s.energy_history_len()));
   }
 
   post(
-    { type: 'frame', generation, buffer, agentCount, stride, plantCols, plantRows, tick: s.current_tick(), inspect, brain, energyHistory },
+    { type: 'frame', generation, buffer, agentCount, stride, plantCols, plantRows, tick: s.current_tick(), inspect, brain, energyHistory, brainNet, brainNetId },
     [buffer],
   );
   dirty = false;

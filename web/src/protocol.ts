@@ -84,8 +84,15 @@ export type FromWorker =
       tick: number;
       /** 選択中の個体の情報（INSPECT の並び）。選択していなければ null */
       inspect: number[] | null;
-      /** 選択中の個体の脳の入力と出力（直前の tick）。選択していなければ null */
-      brain: { input: number[]; output: number[] } | null;
+      /** 選択中の個体の脳の入力・出力・中間ニューロンの出力（直前の tick。中間は 1 層目のあとに 2 層目）。選択していなければ null */
+      brain: { input: number[]; output: number[]; hidden: number[]; h1: number } | null;
+      /**
+       * 選択中の個体の脳の重み（sim/src/genome.rs の brain_part() の並び）。選択した個体が変わったときだけ入る。
+       * 個体がいない（死んだ）ときは空の配列
+       */
+      brainNet?: number[];
+      /** brainNet の個体の id */
+      brainNetId?: number;
       /** 選択中の個体の直近のエネルギー（古い順）。選択していなければ null */
       energyHistory: number[] | null;
     }

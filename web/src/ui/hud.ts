@@ -41,6 +41,8 @@ export interface HudHandlers {
   onTogglePause(): void;
   /** 統計のウインドウを開く・閉じる */
   onToggleStats(): void;
+  /** 脳のウインドウを開く・閉じる */
+  onToggleBrain(): void;
   onReset(): void;
   onSpeed(speed: number): void;
   onSunlight(value: number): void;
@@ -153,6 +155,7 @@ export class Hud {
           <button type="button" data-k="save" title="今の世界をファイルに保存する（乱数の状態も含むので、読み込むと同じ歴史が続く）">保存</button>
           <button type="button" data-k="load" title="保存したファイル（.lifesim.gz）から世界を読み込む">読み込み</button>
           <button type="button" data-k="stats" title="長期の統計（大きさの分布・個体数と形質・死因と出生）のウインドウを開く・閉じる（G キー）">統計</button>
+          <button type="button" data-k="brain" title="選択中の個体の脳（すべてのニューロンとつながり、今の活動）のウインドウを開く・閉じる（B キー）">脳</button>
           <input type="file" data-k="loadFile" accept=".gz,.lifesim.gz,.lifesim" hidden />
         </div>
         <div class="group" data-k="sizes"><span class="group-label">世界の広さ（選ぶと作り直す）</span></div>
@@ -210,6 +213,7 @@ export class Hud {
     this.el.reset.addEventListener('click', handlers.onReset);
     this.el.save.addEventListener('click', handlers.onSave);
     this.el.stats.addEventListener('click', handlers.onToggleStats);
+    this.el.brain.addEventListener('click', handlers.onToggleBrain);
     const loadFile = this.el.loadFile as HTMLInputElement;
     this.el.load.addEventListener('click', () => loadFile.click());
     loadFile.addEventListener('change', () => {
@@ -404,6 +408,12 @@ export class Hud {
   setStatsOpen(open: boolean): void {
     this.el.stats.classList.toggle('active', open);
     this.el.stats.setAttribute('aria-pressed', String(open));
+  }
+
+  /** 脳のウインドウが開いているかを、ボタンの見た目に反映する */
+  setBrainOpen(open: boolean): void {
+    this.el.brain.classList.toggle('active', open);
+    this.el.brain.setAttribute('aria-pressed', String(open));
   }
 
   setPaused(paused: boolean): void {
