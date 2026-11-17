@@ -8,6 +8,7 @@
 // グラフにマウスを乗せると、その時点の値を表示する（どのタブでも同じ時点を指す）。
 
 import { COLORS } from '../config';
+import { makeFloating } from './floating';
 import { DEATH, HISTORY_FIELD as F, type FromWorker, type HistoryKind, type HistorySample } from '../protocol';
 
 type HistoryMessage = Extract<FromWorker, { type: 'history' }>;
@@ -344,12 +345,7 @@ export class StatsWindow {
     heat.addEventListener('mousemove', (e) => this.showHeatTip(e));
     heat.addEventListener('mouseleave', () => (this.el.tip.hidden = true));
 
-    this.makeDraggable();
-    this.restoreGeometry();
-    new ResizeObserver(() => {
-      this.saveGeometry();
-      this.draw();
-    }).observe(root);
+    makeFloating(root, this.el.head, GEOMETRY_KEY, () => this.draw());
     this.syncButtons();
   }
 
@@ -882,57 +878,6 @@ export class StatsWindow {
           .map(([cause, label, color]) => `<li><i class="swatch" style="background:${color}"></i>${label}<b>${fmtRate(per(r[key].deaths[cause] ?? 0, r))}</b></li>`),
       ];
       legend.innerHTML = items.join('');
-    }
-  }
-
-  // ---- ウインドウの移動と位置の記憶 ----
-
-  private makeDraggable(): void {
-    const head = this.el.head;
-    head.addEventListener('pointerdown', (e) => {
-      if ((e.target as HTMLElement).closest('button')) return;
-      const rect = this.root.getBoundingClientRect();
-      const dx = e.clientX - rect.left;
-      const dy = e.clientY - rect.top;
-      head.setPointerCapture(e.pointerId);
-      const move = (ev: PointerEvent) => {
-        const x = Math.min(Math.max(0, ev.clientX - dx), window.innerWidth - 80);
-        const y = Math.min(Math.max(0, ev.clientY - dy), window.innerHeight - 40);
-        this.root.style.left = `${x}px`;
-        this.root.style.top = `${y}px`;
-      };
-      const up = () => {
-        head.removeEventListener('pointermove', move);
-        head.removeEventListener('pointerup', up);
-        this.saveGeometry();
-      };
-      head.addEventListener('pointermove', move);
-      head.addEventListener('pointerup', up);
-    });
-  }
-
-  private saveGeometry(): void {
-    if (this.root.hidden) return;
-    const r = this.root.getBoundingClientRect();
-    try {
-      localStorage.setItem(GEOMETRY_KEY, JSON.stringify({ left: r.left, top: r.top, width: r.width, height: r.height }));
-    } catch {
-      // 覚えておけなくても使える
-    }
-  }
-
-  private restoreGeometry(): void {
-    try {
-      const g = JSON.parse(localStorage.getItem(GEOMETRY_KEY) ?? 'null') as Record<string, number> | null;
-      if (!g) return;
-      const width = Math.min(g.width, window.innerWidth - 16);
-      const height = Math.min(g.height, window.innerHeight - 16);
-      this.root.style.width = `${width}px`;
-      this.root.style.height = `${height}px`;
-      this.root.style.left = `${Math.min(Math.max(0, g.left), window.innerWidth - width)}px`;
-      this.root.style.top = `${Math.min(Math.max(0, g.top), window.innerHeight - height)}px`;
-    } catch {
-      // 既定の位置のまま
     }
   }
 }
