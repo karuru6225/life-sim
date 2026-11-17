@@ -301,6 +301,36 @@ pub fn think(genome: &[f32], input: &[f32; N_IN]) -> [f32; N_OUT] {
     output
 }
 
+/// 中間ニューロンの出力（表示用）。think() と同じ計算で、使っていないニューロンは 0。並びは 1 層目 0..H1、2 層目 H1..N_HIDDEN
+pub fn hidden_values(genome: &[f32], input: &[f32; N_IN]) -> [f32; N_HIDDEN] {
+    let mut val = [0.0f32; N_HIDDEN];
+    for h in 0..H1 {
+        if genome[ACT + h] > 0.0 {
+            let w = &genome[W1 + h * W1_ROW..W1 + (h + 1) * W1_ROW];
+            val[h] = softsign(w[N_IN] + dot(&w[..N_IN], input));
+        }
+    }
+    for h in 0..H2 {
+        if genome[ACT + H1 + h] > 0.0 {
+            let w = &genome[W2 + h * W2_ROW..W2 + (h + 1) * W2_ROW];
+            let mut sum = w[H1];
+            for k in 0..H1 {
+                if genome[ACT + k] > 0.0 {
+                    sum += w[k] * val[k];
+                }
+            }
+            val[H1 + h] = softsign(sum);
+        }
+    }
+    val
+}
+
+/// 遺伝子のうち脳の部分（表示用）: [中間を使うか N_HIDDEN][1 層目 H1 × (N_IN + 1)][2 層目 H2 × (H1 + 1)][出力 N_OUT × (N_HIDDEN + 1)]。
+/// 各行の最後はバイアス。中間を使うかは正なら使う
+pub fn brain_part(genome: &[f32]) -> &[f32] {
+    &genome[ACT..GENOME_LEN]
+}
+
 /// 体の形質を範囲内に収めて読み出したもの。
 /// 大きさは「遺伝子が決める大人の大きさ」と「成長度を掛けたいまの大きさ」に分けて持つ
 #[derive(Clone, Copy, Debug)]
@@ -732,6 +762,33 @@ mod tests {
     /// 欲求ごとの方向 [食べる, 繁殖, 逃げる, 仲間, 追い払う, (自由)]
     fn drives(food: (f32, f32), mate: (f32, f32), flee: (f32, f32)) -> [(f32, f32); N_DRIVES] {
         [food, mate, flee, (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
+    }
+
+    #[test]
+    fn 中間ニューロンの表示用の値から出力を計算し直すと脳の出力と一致する() {
+        let mut rng = crate::rng::Rng::new(5);
+        let mut g = initial(true, 1.0, 1.3, 30.0, 0.3);
+        for v in g[ACT..].iter_mut() {
+            *v += rng.range(-0.5, 0.5);
+        }
+        let mut x = input();
+        for v in x.iter_mut() {
+            *v = rng.range(-1.0, 1.0);
+        }
+        let hidden = hidden_values(&g, &x);
+        let net = brain_part(&g);
+        let out = think(&g, &x);
+        let w3 = N_HIDDEN + H1 * (N_IN + 1) + H2 * (H1 + 1);
+        for o in 0..N_OUT {
+            let row = &net[w3 + o * (N_HIDDEN + 1)..w3 + (o + 1) * (N_HIDDEN + 1)];
+            let sum: f32 = row[N_HIDDEN] + (0..N_HIDDEN).filter(|&h| net[h] > 0.0).map(|h| row[h] * hidden[h]).sum::<f32>();
+            assert!((sum - out[o]).abs() < 1e-4, "出力 {o}: {sum} / {}", out[o]);
+        }
+        for h in 0..N_HIDDEN {
+            if net[h] <= 0.0 {
+                assert_eq!(hidden[h], 0.0, "使っていないニューロンは 0");
+            }
+        }
     }
 
     #[test]

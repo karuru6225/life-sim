@@ -39,6 +39,8 @@ thread_local! {
     static LINEAGE: RefCell<[f64; LINEAGE_STATS * 2]> = const { RefCell::new([0.0; LINEAGE_STATS * 2]) };
     /// 選択中の個体の脳の入力と出力を JS に渡すための作業領域
     static BRAIN: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+    /// 選択中の個体の脳の重みを JS に渡すための作業領域
+    static BRAIN_NET: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
     /// 保存した世界のバイト列（save_world で作り、読み込みでは JS がここに書き込む）
     static SAVE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// 読み込みに失敗したときの理由
@@ -239,20 +241,59 @@ pub extern "C" fn select_random_in_lineage(kind: u32, hue_from: f32, hue_width: 
     })
 }
 
-/// 選択中の個体の脳の入力と出力（f32 × (brain_inputs() + brain_outputs())）の先頭アドレス。直前の tick の値
+/// 選択中の個体の脳の入力・出力・中間ニューロンの出力（f32 × (brain_inputs() + brain_outputs() + brain_hidden())）の先頭アドレス。
+/// 直前の tick の値。中間ニューロンは、直前の tick の入力で脳を計算し直して求める（使っていないものと、個体が死んでいるときは 0）
 #[unsafe(no_mangle)]
 pub extern "C" fn brain_ptr() -> *const f32 {
     BRAIN.with(|buf| {
         let mut out = buf.borrow_mut();
         with_world(|w| {
+            let (n_in, n_out) = (genome::N_IN, genome::N_OUT);
             out.clear();
-            out.resize(genome::N_IN + genome::N_OUT, 0.0);
-            let n = w.watch.input.len().min(genome::N_IN);
+            out.resize(n_in + n_out + genome::N_HIDDEN, 0.0);
+            let n = w.watch.input.len().min(n_in);
             out[..n].copy_from_slice(&w.watch.input[..n]);
-            out[genome::N_IN..].copy_from_slice(&w.watch.output);
+            out[n_in..n_in + n_out].copy_from_slice(&w.watch.output);
+            if let (Some(i), Ok(input)) = (w.index_of(w.watch.id), <[f32; genome::N_IN]>::try_from(&w.watch.input[..])) {
+                out[n_in + n_out..].copy_from_slice(&genome::hidden_values(w.genome(i), &input));
+            }
         });
         out.as_ptr()
     })
+}
+
+/// 中間ニューロンの数（1 層目 + 2 層目）
+#[unsafe(no_mangle)]
+pub extern "C" fn brain_hidden() -> u32 {
+    genome::N_HIDDEN as u32
+}
+
+/// 中間ニューロンの 1 層目の数
+#[unsafe(no_mangle)]
+pub extern "C" fn brain_h1() -> u32 {
+    genome::H1 as u32
+}
+
+/// 選択中の個体の脳の重みを書き込み、その先頭アドレスを返す（f32 × brain_net_len()。個体がいなければ長さ 0）。
+/// 並びは genome::brain_part()
+#[unsafe(no_mangle)]
+pub extern "C" fn brain_net_ptr() -> *const f32 {
+    BRAIN_NET.with(|buf| {
+        let mut out = buf.borrow_mut();
+        out.clear();
+        with_world(|w| {
+            if let Some(i) = w.index_of(w.watch.id) {
+                out.extend_from_slice(genome::brain_part(w.genome(i)));
+            }
+        });
+        out.as_ptr()
+    })
+}
+
+/// brain_net_ptr() が書き込んだ値の数
+#[unsafe(no_mangle)]
+pub extern "C" fn brain_net_len() -> u32 {
+    BRAIN_NET.with(|buf| buf.borrow().len() as u32)
 }
 
 #[unsafe(no_mangle)]
