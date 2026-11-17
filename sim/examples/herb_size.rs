@@ -16,7 +16,7 @@
 //!   取得: 実際に食べた量 ÷ 食べようとした一口の量（大きさに比例する一口のうち、どれだけ取れたか）
 
 use sim::params::Params;
-use sim::world::{Census, HERB_SIZE_BINS, HERB_SIZE_EDGES, HERBIVORE, World, death, herb_size_bin};
+use sim::world::{HERB_SIZE_BINS, HERB_SIZE_EDGES, HERBIVORE, World, death, herb_size_bin};
 
 fn main() {
     let mut ticks: u64 = 120_000;

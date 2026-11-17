@@ -16,7 +16,7 @@
 //!   得/大: 得 ÷ 段階の大人の大きさの平均（体重あたりの収入）
 
 use sim::params::Params;
-use sim::world::{CARN_SIZE_BINS, CARN_SIZE_EDGES, CARNIVORE, Census, HERBIVORE, World, carn_size_bin, death};
+use sim::world::{CARN_SIZE_BINS, CARN_SIZE_EDGES, CARNIVORE, HERBIVORE, World, carn_size_bin, death};
 
 fn main() {
     let mut ticks: u64 = 120_000;
