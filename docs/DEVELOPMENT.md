@@ -10,6 +10,7 @@ sim/                       Rust クレート（WASM とネイティブの両方�
   src/lib.rs               JS との境界。extern "C" の関数と、JS に渡す並び（INSPECT / SUMMARY / 系統の統計 / 長期の統計）
   src/world.rs             世界と個体（SoA）。1 tick の処理、狩り・争い・繁殖・死、集計
   src/world/save.rs        世界の保存と読み込み（バイナリ）、保存ファイルの入れ物
+  src/world/history.rs     長期の統計の記録（200 tick ごと。600 を超えたら隣どうしをまとめる。保存ファイルにも入る）
   src/genome.rs            遺伝子の並び、脳（入力・中間 2 層・出力）、初期配線、交叉と変異
   src/params.rs            調整用パラメータ（名前で設定できる。既定値はここ）
   src/grid.rs              近傍探索の一様グリッド
@@ -23,7 +24,7 @@ sim/                       Rust クレート（WASM とネイティブの両方�
   examples/resume.rs       保存ファイルから画面なしで続きを進める
 web/src/
   main.ts                  エントリ。描画ループ、選択、世界の広さ、保存と読み込み
-  worker.ts                WASM を読み込んで sim を回す Web Worker。200 tick ごとに長期の統計の標本を取って送る
+  worker.ts                WASM を読み込んで sim を回す Web Worker。長期の統計の記録に新しい標本が入るたびに差分を送る
   protocol.ts              メインと Worker の間のメッセージ型、INSPECT / LINEAGE / DEATH の並び
   config.ts                パラメータ（SIM_PARAMS）、色、世界の広さの選択肢、表示の設定
   render/                  PixiJS の描画（個体・植物・地形・カメラ・選択の印）
@@ -99,7 +100,7 @@ config.ts の SIM_PARAMS ──(名前と値)──▶ worker ──set_param─
 | 個体の詳細 | `lib.rs` の `inspect()` と `INSPECT_LEN` | `protocol.ts` の `INSPECT`、`ui/inspector.ts` |
 | 全体の集計 | `lib.rs` の `summary()` と `SUMMARY_LEN` | `worker.ts`、`ui/hud.ts` |
 | 系統の統計 | `world.rs` の `lineage_stats()` と `LINEAGE_STATS` | `protocol.ts` の `LINEAGE` と `LINEAGE_LEN`、`ui/lineage.ts` |
-| 長期の統計 | `lib.rs` の `history_sample()` と `HISTORY_LEN`（大きさの分布の段階は `world.rs` の `SIZE_HIST_BINS`） | `worker.ts` の `sampleHistory()`、`protocol.ts` の `HistorySample`、`ui/stats.ts` |
+| 長期の統計 | `world/history.rs` の `field` と `KIND_LEN`、`lib.rs` の `history_export()`（大きさの分布の段階は `world.rs` の `SIZE_HIST_BINS`） | `protocol.ts` の `HISTORY_FIELD`、`worker.ts` の `syncHistory()`、`ui/stats.ts` |
 
 長さの定数は Rust と JS の両方にあるので、そろえて変える。WASM を作り直さずに画面だけ更新すると、
 読む位置がずれて NaN が出る（`npm run build:sim` を忘れない）。
@@ -122,7 +123,9 @@ config.ts の SIM_PARAMS ──(名前と値)──▶ worker ──set_param─
 
 ## 6. 保存形式
 
-- 中身: `"LSIMWRLD"` ＋ 形式の番号（`FORMAT_VERSION`）＋ 構造の見出し（形質の数・入力の数・出力の数・中間 1・中間 2・遺伝子の長さ・死因の数）＋ 世界
+- 中身: `"LSIMWRLD"` ＋ 形式の番号（`FORMAT_VERSION`）＋ 構造の見出し（形質の数・入力の数・出力の数・中間 1・中間 2・遺伝子の長さ・死因の数）＋ 世界 ＋ 長期の統計の記録
+- 長期の統計の記録は末尾に、バイト数を先に書いて置く（形式 3 から）。記録の並び（`KIND_LEN`）が今のコードと違えば読み飛ばし、記録を空から始める。
+  記録は世界の進み方に関わらないので、なくても歴史は同じに続く。形式 2（記録なし）も読める
 - 入れ物: `"LIFESIM\n"` ＋ 見出しの長さ（u32）＋ JSON の見出し（形式、コミット、保存した日時、tick、個体数）＋ 中身。
   ブラウザは gzip で圧縮して `.lifesim.gz`、画面なしの実行器は圧縮なしの `.lifesim` を書く。ブラウザはどちらも読める
 - 構造の見出しが違えば読み込みを断る。個体の持つ値の並びを変えたら `FORMAT_VERSION` を上げる。
