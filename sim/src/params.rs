@@ -91,6 +91,17 @@ params! {
     sunlight = 0.08,
     /// 1 マスに溜まる植物量の上限。満杯に近いほど日射を受け取れなくなる
     plant_capacity = 10.0,
+    /// 植物の高さの層（地面の草・低い茂み・高い枝）のうち、茂みと枝が受け取る日射と上限の割合。残りが地面の草。
+    /// 高い層は大きい体だけが届く（採食の高さの住み分け。du Toit 1990）。両方 0 なら層のない今までの植物と同じ
+    plant_share_shrub = 0.3,
+    plant_share_tree = 0.2,
+    /// 茂みと枝の質（消化の効率に掛ける。地面の草は 1）。硬い枝葉ほど身になる割合が低い
+    shrub_quality = 0.85,
+    tree_quality = 0.7,
+    /// 茂みと枝に届き始める体長（今の大きさの 1/3 乗）。ここから reach_width の幅で届く割合が 0 から 1 に増える
+    reach_shrub = 0.85,
+    reach_tree = 1.05,
+    reach_width = 0.15,
 
     // ---- 共通 ----
     /// 移動のエネルギー消費（大きさの move_size_power 乗 × 速度の 2 乗に掛ける）
@@ -325,4 +336,18 @@ params! {
     carn_maturity = 900.0,
     /// 初期個体のエネルギー
     carn_initial_energy = 8.0,
+}
+
+impl Params {
+    /// 植物の層（地面の草・低い茂み・高い枝）ごとの、日射と上限の割合
+    pub fn plant_shares(&self) -> [f32; crate::plants::LAYERS] {
+        let shrub = self.plant_share_shrub.clamp(0.0, 1.0);
+        let tree = self.plant_share_tree.clamp(0.0, 1.0 - shrub);
+        [1.0 - shrub - tree, shrub, tree]
+    }
+
+    /// 植物の層ごとの質（消化の効率に掛ける）
+    pub fn plant_qualities(&self) -> [f32; crate::plants::LAYERS] {
+        [1.0, self.shrub_quality, self.tree_quality]
+    }
 }

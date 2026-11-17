@@ -38,6 +38,13 @@ export const SIM_PARAMS = {
   // 植物
   sunlight: 0.08,
   plant_capacity: 10,
+  plant_share_shrub: 0.3,
+  plant_share_tree: 0.2,
+  shrub_quality: 0.85,
+  tree_quality: 0.7,
+  reach_shrub: 0.85,
+  reach_tree: 1.05,
+  reach_width: 0.15,
 
   // 共通
   move_cost: 0.006,

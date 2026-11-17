@@ -16,7 +16,7 @@
 use crate::genome::{self, GENOME_LEN, Mutation, N_IN, Traits, softsign};
 use crate::grid::Grid;
 use crate::params::Params;
-use crate::plants::PlantField;
+use crate::plants::{LAYERS, PlantField};
 use crate::rng::Rng;
 use crate::terrain::{Terrain, TerrainSpec};
 use std::collections::VecDeque;
@@ -512,6 +512,7 @@ impl World {
             params.plant_capacity * params.plant_initial_ratio,
             &terrain.fertility,
             &terrain.soil,
+            params.plant_shares(),
         );
         let grid = Grid::new(width, height, GRID_CELL);
         let mut world = World {
@@ -883,21 +884,38 @@ impl World {
         true
     }
 
-    /// (x, y) の周り 3 × 3 マスの草の量（上限に対する割合の合計、0〜9）
-    fn plants_around(&self, x: f32, y: f32) -> f32 {
+    /// 草食 i の周り 3 × 3 マスの、自分が届く草の量 × 質（上限に対する割合の合計、0〜9）
+    fn plants_around(&self, i: usize) -> f32 {
         let (cols, rows) = (self.plants.cols, self.plants.rows);
-        let c = ((x / self.plants.cell_size) as usize).min(cols - 1);
-        let r = ((y / self.plants.cell_size) as usize).min(rows - 1);
+        let c = ((self.xs[i] / self.plants.cell_size) as usize).min(cols - 1);
+        let r = ((self.ys[i] / self.plants.cell_size) as usize).min(rows - 1);
         let cap = self.params.plant_capacity;
+        let reach = self.reach(i);
         let mut sum = 0.0;
         for dr in -1i32..=1 {
             for dc in -1i32..=1 {
                 let rr = (r as i32 + dr).rem_euclid(rows as i32) as usize;
                 let cc = (c as i32 + dc).rem_euclid(cols as i32) as usize;
-                sum += (self.plants.biomass[rr * cols + cc] / cap).min(1.0);
+                sum += (self.food_value(&reach, rr * cols + cc) / cap).min(1.0);
             }
         }
         sum
+    }
+
+    /// 個体 i が植物の層ごとに届く割合（0〜1）。届く高さは体長（今の大きさの 1/3 乗）。
+    /// 層ごとに「届き始め」から reach_width の幅で、なめらかに 0 から 1 に増える。地面の草には誰でも届く
+    pub fn reach(&self, i: usize) -> [f32; LAYERS] {
+        let p = &self.params;
+        let length = self.traits[i].size.max(0.0).cbrt();
+        let w = p.reach_width.max(1e-6);
+        let reach_from = |start: f32| ((length - start) / w).clamp(0.0, 1.0);
+        [1.0, reach_from(p.reach_shrub), reach_from(p.reach_tree)]
+    }
+
+    /// マス c の植物の、届く割合が reach の個体にとっての価値（届く量 × 質 の合計。植物量と同じ尺度）
+    fn food_value(&self, reach: &[f32; LAYERS], c: usize) -> f32 {
+        let q = self.params.plant_qualities();
+        (0..LAYERS).map(|k| reach[k] * q[k] * self.plants.layer[k][c]).sum()
     }
 
     /// 個体 i の近く（coop_radius 以内）にいる、同じ種類で系統色の近い（同じ系統の）生きている個体の数
@@ -1022,6 +1040,7 @@ impl World {
             self.update_climate();
         }
         let sunlight = self.params.sunlight * (1.0 + self.params.season_amplitude * self.season());
+        self.plants.share = self.params.plant_shares();
         self.ledger.sunlight_in += self.plants.grow(sunlight, self.params.plant_capacity);
 
         self.decay_carrion();
@@ -1246,9 +1265,11 @@ impl World {
         let gradient = if self.kind[i] == HERBIVORE {
             let (natal, p) = (self.natal[i], &self.params);
             let (tol, lim) = (p.habitat_tolerance, p.habitat_limit);
-            self.plants.richer_direction_for(x, y, |f| {
+            let reach = self.reach(i);
+            self.plants.richer_direction_by(x, y, |k| {
+                let f = self.plants.vegetation[k];
                 let t = (((f - natal).abs() - tol) / (lim - tol).max(1e-6)).clamp(0.0, 1.0);
-                1.0 - t * t * (3.0 - 2.0 * t)
+                self.food_value(&reach, k) * (1.0 - t * t * (3.0 - 2.0 * t))
             })
         } else {
             None
@@ -1302,7 +1323,7 @@ impl World {
         input[genome::IN_ALONE] = softsign(alone as f32 / 150.0);
         // 周りの食べ物の乏しさ: 仲間が多く、食べ物が少ないほど 1 に近い
         if senses.kin_count > 0 {
-            let food = if self.kind[i] == HERBIVORE { self.plants_around(x, y) } else { senses.prey_count as f32 };
+            let food = if self.kind[i] == HERBIVORE { self.plants_around(i) } else { senses.prey_count as f32 };
             let n = senses.kin_count as f32;
             input[genome::IN_SCARCITY] = n / (n + 4.0 * food);
         }
@@ -1602,19 +1623,29 @@ impl World {
             * self.traits[i].size
             * (1.0 - self.params.vigilance_bite_cost * self.vigilance[i])
             * fit;
-        let take = bite
-            .min(self.plants.biomass[c])
-            .min(room / eff);
+        // 届く層のうち、届く量 × 質 が最も大きい層から食べる。硬い層ほど身になる割合が低い
+        let reach = self.reach(i);
+        let quality = self.params.plant_qualities();
+        let (mut layer, mut best) = (0, -1.0);
+        for k in 0..LAYERS {
+            let v = reach[k] * quality[k] * self.plants.layer[k][c];
+            if v > best {
+                (layer, best) = (k, v);
+            }
+        }
+        let available = reach[layer] * self.plants.layer[layer][c];
+        let eff = eff * quality[layer];
+        let take = bite.min(available).min(room / eff.max(1e-6));
         let b = herb_size_bin(self.traits[i].adult_size);
         let cs = &mut self.census;
         cs.herb_size_grazes[b] += 1;
-        cs.herb_size_graze_short[b] += (self.plants.biomass[c] < bite.min(room / eff)) as u64;
+        cs.herb_size_graze_short[b] += (available < bite.min(room / eff.max(1e-6))) as u64;
         cs.herb_size_bite[b] += bite as f64;
         cs.herb_size_take[b] += take.max(0.0) as f64;
         if take <= 0.0 {
             return false;
         }
-        self.plants.biomass[c] -= take;
+        self.plants.take(c, layer, take);
         let gain = take * eff;
         self.energy[i] += gain;
         self.ledger.herb_gain += gain as f64;
@@ -2660,7 +2691,7 @@ mod tests {
     fn 繁殖できる個体は相手へ近づく() {
         let mut w = empty_world();
         // 草があると隠れの効果で相手が見えなくなるので、取り除く
-        w.plants.biomass.fill(0.0);
+        w.plants.fill(0.0);
         let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
         // 相手は繁殖できる距離（12px）の外、視野（30px）の内側
         w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &g);
@@ -2711,7 +2742,7 @@ mod tests {
         let distance = |weight: f32| {
             let mut w = empty_world();
             w.params.separation_weight = weight;
-            w.plants.biomass.fill(0.0);
+            w.plants.fill(0.0);
             let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
             w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
             w.spawn(101.5, 100.0, HERBIVORE, 5.0, 0, &g);
@@ -2842,7 +2873,7 @@ mod tests {
     #[test]
     fn 肉食は好みの大きさの獲物だけを狙う() {
         let mut w = empty_world();
-        w.plants.biomass.fill(0.0);
+        w.plants.fill(0.0);
         // 好みの下限は 0.25 なので、肉食を 2.0 にして小さい獲物（0.2）との比を範囲外（0.1）にする
         let carn = genome::initial(false, 2.0, 1.0, 40.0, 0.0);
         w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &carn);
@@ -3352,7 +3383,7 @@ mod tests {
     #[test]
     fn 系統ごとに直近の死因を数える() {
         let mut w = empty_world();
-        w.plants.biomass.fill(0.0);
+        w.plants.fill(0.0);
         let mut g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
         g[genome::G_HUE] = 0.1;
         w.spawn(100.0, 100.0, HERBIVORE, 0.001, 0, &g);
@@ -3423,13 +3454,53 @@ mod tests {
     }
 
     #[test]
-    fn 周りの草の量を数える() {
+    fn 周りの草の量を届く層の量と質で数える() {
         let mut w = empty_world();
-        w.plants.biomass.fill(0.0);
-        assert_eq!(w.plants_around(100.0, 100.0), 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 1.0, 1.0, 30.0, 0.0));
+        w.plants.fill(0.0);
+        assert_eq!(w.plants_around(0), 0.0);
         let cap = w.params.plant_capacity;
-        w.plants.biomass.fill(cap);
-        assert!((w.plants_around(100.0, 100.0) - 9.0).abs() < 1e-5);
+        w.plants.fill(cap);
+        // 大きさ 1 は地面の草（50%）と茂み（30%、質 0.85）に届き、枝には届かない
+        let p = &w.params;
+        let expect = 9.0 * ((1.0 - p.plant_share_shrub - p.plant_share_tree) + p.plant_share_shrub * p.shrub_quality);
+        assert!((w.plants_around(0) - expect).abs() < 1e-4, "{} / {expect}", w.plants_around(0));
+    }
+
+    #[test]
+    fn 高い層ほど大きい体でないと届かない() {
+        let mut w = empty_world();
+        for (k, size) in [0.3f32, 1.0, 3.0].iter().enumerate() {
+            w.spawn(100.0 * (k + 1) as f32, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, *size, 1.0, 30.0, 0.0));
+        }
+        let near = |a: [f32; LAYERS], b: [f32; LAYERS]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-4);
+        assert!(near(w.reach(0), [1.0, 0.0, 0.0]), "小さい体は地面の草だけ");
+        assert!(near(w.reach(1), [1.0, 1.0, 0.0]), "大きさ 1 は茂みまで");
+        assert!(near(w.reach(2), [1.0, 1.0, 1.0]), "大きい体は枝まで");
+    }
+
+    #[test]
+    fn 届く層のうち量と質の大きい層から食べ届かない層は減らない() {
+        let mut w = empty_world();
+        w.params.herb_metabolism = 0.0;
+        w.spawn(100.0, 100.0, HERBIVORE, 1.0, 0, &genome::initial(true, 0.3, 1.0, 30.0, 0.0));
+        w.spawn(200.0, 100.0, HERBIVORE, 1.0, 0, &genome::initial(true, 3.0, 1.0, 30.0, 0.0));
+        let (small, big) = (w.plants.cell_index(100.0, 100.0), w.plants.cell_index(200.0, 100.0));
+        // 地面の草はわずか、枝はたっぷり
+        for c in [small, big] {
+            w.plants.layer[0][c] = 0.01;
+            w.plants.layer[1][c] = 0.0;
+            w.plants.layer[2][c] = 5.0;
+        }
+        w.plants.sum_layers();
+        assert!(w.graze(0));
+        assert!(w.graze(1));
+        assert_eq!(w.plants.layer[2][small], 5.0, "小さい体は枝に届かない");
+        assert!(w.plants.layer[0][small] < 0.01, "小さい体は地面の草を食べる");
+        assert!(w.plants.layer[2][big] < 5.0, "大きい体は量の多い枝を食べる");
+        assert_eq!(w.plants.layer[0][big], 0.01);
+        let sum: f32 = (0..LAYERS).map(|k| w.plants.layer[k][big]).sum();
+        assert!((w.plants.biomass[big] - sum).abs() < 1e-6, "合計は層の和のまま");
     }
 
     #[test]

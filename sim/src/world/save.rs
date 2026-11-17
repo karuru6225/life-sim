@@ -17,7 +17,7 @@ use crate::genome::{H1, H2, N_OUT, N_TRAITS};
 /// ファイルの先頭の印
 const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 /// 死因の数（Census の配列の長さ）
 const N_CAUSES: usize = 8;
 
@@ -159,7 +159,11 @@ impl World {
             w.f32(d.hue);
         }
 
+        // 合計は層の和を足し込んで保っているので、和を取り直すと丸めが変わる。そのまま書く
         w.f32s(&self.plants.biomass);
+        for layer in &self.plants.layer {
+            w.f32s(layer);
+        }
         w.f32s(&self.carrion);
         w.f32s(&self.carrion_age);
 
@@ -287,6 +291,9 @@ impl World {
 
         let cells = world.plants.biomass.len();
         world.plants.biomass = r.f32s(cells, "植物のマス")?;
+        for k in 0..crate::plants::LAYERS {
+            world.plants.layer[k] = r.f32s(cells, "植物の層のマス")?;
+        }
         world.carrion = r.f32s(cells, "死体のマス")?;
         world.carrion_age = r.f32s(cells, "死体の古さのマス")?;
 
