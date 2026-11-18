@@ -180,16 +180,24 @@ cargo run --release --features parallel --example diagnose --manifest-path sim/C
 ### Runpod の CPU Pod で回す
 
 手元の CPU を空けておきたいときは、画面なしの実行を Runpod の CPU Pod に任せられる。
-Claude Code に Runpod の MCP サーバーがつながっていれば、SSH や `runpodctl` なしで、作成・ビルド・実行・結果の回収・削除まで完結する（2026-11-18 に試した）。
+Claude Code に Runpod の MCP サーバーがつながっていれば、作成・ビルド・実行・結果の回収・削除まで Claude Code だけで完結する（2026-11-18 に試した）。
+
+コードの送り方は 2 通りある。**ふだんは SSH で作業ツリーを送る**（コミットしていない変更も含めて、そのまま回せる）。
+
+| 送り方 | 回せるもの | 要るもの |
+|---|---|---|
+| SSH で作業ツリーを送る | 手元のそのままの状態（未 push・未コミットも） | 登録済みの SSH 鍵、起動時に sshd を入れる |
+| Pod の中で GitHub から clone する | push 済みのコードだけ | なし（`exec-pod` だけで済む） |
 
 #### 前提と制約
 
-- Pod は GitHub から clone するので、**push 済みのコードしか回せない**。手元の未 push の変更は届かない。
-  main への push は公開（GitHub Pages）も動かすので、検証のためでも push は明示的に頼まれたときだけ。
-  公開を動かしたくなければ検証用のブランチを push して `git clone --branch` で取る
-- Pod で回した版を手元と取り違えないよう、Pod の中で `git rev-parse --short HEAD` を記録する
-  （2026-11-18 の試行では、手元が 10 コミット先にあることに気づかず、古い版を比べていた）
 - 料金は作成から削除まで秒単位でかかる。止める（stop）ではなく、用が済んだら削除する。削除のあと Pod の一覧を読み直して 0 件を確かめる
+- **同じシードでも、手元（Windows）と Pod（Linux）では結果が少しずれる**。
+  2026-11-18 に同じ版・seed=1 で回すと、tick 1000 の草食は手元 11397、Pod 11245 だった（数学関数の実装の違いと思われる。未確認）。
+  既定値と変更後を比べるときは、両方を同じ環境で回す
+- clone する方法では、Pod で回した版を手元と取り違えないよう `git rev-parse --short HEAD` を記録する
+  （2026-11-18 の試行では、手元が 10 コミット先にあることに気づかず、古い版を比べていた）。
+  main への push は公開（GitHub Pages）も動かすので、検証のためでも push は明示的に頼まれたときだけ
 
 #### 使う種類
 
@@ -205,19 +213,63 @@ vCPU 数は 2 の累乗で、最大 32。料金は vCPU 1 個あたりの時給�
 
 #### 速さの目安
 
-2000 tick、seed=1、並列あり。Pod 側は 10 コミット古い版なので大まかな比較。
+2000 tick、seed=1、並列あり（2026-11-18）。
 
-| 環境 | 2000 tick | 1 tick（tick 1000〜1500） |
-|---|---|---|
-| 手元（16 スレッド） | 10.4 秒 | 4.2〜4.6 ms |
-| `cpu3c` 2 vCPU | 26.7 秒 | 10.7〜11.2 ms |
+| 環境 | 版 | 2000 tick | 1 tick（tick 1000〜1500） |
+|---|---|---|---|
+| 手元（16 スレッド） | 42f5d06 | 10.4 秒 | 4.2〜4.6 ms |
+| `cpu3c` 2 vCPU（EU-CZ-1） | 10 コミット前 | 26.7 秒 | 10.7〜11.2 ms |
+| `cpu3c` 2 vCPU（EUR-IS-1） | 42f5d06 | 48.0 秒 | 20.8〜22.1 ms |
 
+同じ `cpu3c` 2 vCPU でも、拠点（ホスト）によって 2 倍近く違った（版の違いだけでは説明しにくい）。2 vCPU は他の利用者の負荷を受けやすいので、本番の検証では vCPU を多めにとる。
 1 本の中には順番に処理する行動の段が残るので、vCPU を増やしても 1 本の速さは頭打ちになる。
 Pod の vCPU は、シードやパラメータごとのプロセスを並べるのに使う。シード 1〜3 なら 3 本同時に流せる vCPU 数（8〜16）にする。
 
-#### 手順
+#### 手順: SSH で作業ツリーを送る
 
-MCP のツール名で書く。
+アカウントには手元の `~/.ssh/id_ed25519_runpod`（コメント `runpod-mnemosyne`）の公開鍵が登録済み（`get-ssh-keys` で確かめられる）。
+`startSsh: true` で作ると、その公開鍵が環境変数 `PUBLIC_KEY` に入る。公式の `rust:1` には sshd がないので、起動時に入れて鍵を置く。
+
+1. `create-pod`（`args` は JSON の文字列。entrypoint を `bash -c` にして、apt で sshd を入れてから前面で起動する）
+
+   ```json
+   {"name": "life-sim-verify", "cloud": "SECURE", "cpu": {"id": "cpu3c", "vcpuCount": 16},
+    "image": "rust:1", "startSsh": true, "ports": ["22/tcp"], "disk": 20,
+    "args": "{\"entrypoint\":[\"bash\",\"-c\"],\"cmd\":[\"apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server && mkdir -p /run/sshd /root/.ssh && echo \\\"$PUBLIC_KEY\\\" > /root/.ssh/authorized_keys && chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys && exec /usr/sbin/sshd -D -e\"]}"}
+   ```
+
+2. `get-pod` で `ssh.direct` の IP とポートを読む（起動して数秒で出る）。sshd が入るまで 30 秒〜1 分ほど、つながるまで再試行する
+
+   ```sh
+   S="ssh -i $HOME/.ssh/id_ed25519_runpod -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p <port> root@<ip>"
+   for i in $(seq 1 20); do $S 'echo ok' && break; sleep 6; done
+   ```
+
+   Pod ごとにホスト鍵が変わるので、`known_hosts` には書かない（`UserKnownHostsFile=/dev/null`）
+
+3. 作業ツリーを tar で流し込む（git 管理下と未追加の新しいファイル。.gitignore のものは除く。約 1 MB、8 秒）
+
+   ```sh
+   git ls-files -co --exclude-standard -z | tar -czf - --null -T - | $S 'mkdir -p /root/life-sim && tar -xzf - -C /root/life-sim'
+   ```
+
+4. ビルドして裏で回す。SSH のセッションには Docker の環境変数が引き継がれないので、cargo のパスを自分で通す
+
+   ```sh
+   $S 'export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+       cd /root/life-sim && cargo build -q --release --features parallel --example headless --manifest-path sim/Cargo.toml &&
+       for s in 1 2 3; do
+         nohup bash -c "time ./sim/target/release/examples/headless 120000 seed=$s every=8000" > /tmp/seed$s.log 2>&1 &
+       done'
+   ```
+
+5. 進み具合は `$S 'tail -n 3 /tmp/seed*.log'`、回収は `$S 'cat /tmp/seed1.log' > seed1.log`。
+   終わった印は最後の「エネルギー帳尻の誤差」の行と `real` の行
+6. `delete-pod` で削除し、`list-pods` で 0 件を確かめる
+
+#### 手順: GitHub から clone する
+
+push 済みの版を回すだけなら SSH は要らない。MCP の `exec-pod` でコマンドを流す。
 
 1. `create-pod`: CPU を指定し、公式の `rust:1` イメージ（cargo と git 入り）を眠らせたまま起動する
 
@@ -248,7 +300,8 @@ MCP のツール名で書く。
 - `exec-pod` の 1 回の呼び出しで待てるのは最大 25 秒。ビルドや実行は `nohup … &` で裏に回し、ログを後から読む（呼び出しが時間切れになってもコマンドは止まらない）
 - `exec-pod` はシェルを通さない。パイプやリダイレクトには `["bash", "-c", "…"]` を渡す。
   `sh` は dash なので `time` が使えず、黙ってビルドが始まらなかった。`bash` を使う
-- 手元の未 push の変更は Pod に届かない（前提を参照）
+- SSH でログインすると `cargo: command not found` になる。イメージの `ENV`（PATH など）は sshd のセッションに引き継がれない。
+  `RUSTUP_HOME` `CARGO_HOME` `PATH` を自分で設定する（`exec-pod` では引き継がれるので要らない）
 
 ## 8. 落とし穴
 
