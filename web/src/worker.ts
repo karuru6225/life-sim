@@ -23,6 +23,7 @@ interface SimExports {
   wood_ptr(): number;
   elevation_ptr(): number;
   carrion_ptr(): number;
+  nest_ptr(): number;
   select_id(id: number): number;
   save_world(): number;
   save_len(): number;
@@ -437,7 +438,7 @@ function publish(s: SimExports, now: number): void {
   const plantRows = s.plant_rows();
   const agentFloats = agentCount * stride;
   const plantFloats = plantCols * plantRows;
-  const bytes = (agentFloats + plantFloats * 2) * 4;
+  const bytes = (agentFloats + plantFloats * 3) * 4;
   if (buffer.byteLength < bytes) {
     buffer = new ArrayBuffer(Math.ceil((bytes * BUFFER_HEADROOM) / 4) * 4);
   }
@@ -449,6 +450,7 @@ function publish(s: SimExports, now: number): void {
   const plantsPtr = plantLayer < 0 ? s.plant_ptr() : s.plant_layer_ptr(plantLayer);
   out.set(new Float32Array(s.memory.buffer, plantsPtr, plantFloats), agentFloats);
   out.set(new Float32Array(s.memory.buffer, s.carrion_ptr(), plantFloats), agentFloats + plantFloats);
+  out.set(new Float32Array(s.memory.buffer, s.nest_ptr(), plantFloats), agentFloats + plantFloats * 2);
 
   const inspect = watching ? Array.from(new Float64Array(s.memory.buffer, s.inspect(), s.inspect_len())) : null;
   let brain: { input: number[]; output: number[]; hidden: number[]; h1: number } | null = null;

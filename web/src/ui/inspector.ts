@@ -23,11 +23,12 @@ export const INPUT_LABELS = [
   '足元の死体', '死体の方向・前', '死体の方向・右', '死体の新しさ',
   '敵・前', '敵・右', '敵の近さ', '敵の大きさ比', '敵の数', '攻撃された', '一人の時間', '食べ物の乏しさ', '遠くの食べ物・前', '遠くの食べ物・右',
   '覚えた場所・前', '覚えた場所・右', '覚えた場所の良さ',
+  '巣・前', '巣・右', '足元の巣の出来', '巣から離れている',
 ];
 /** 脳の出力の名前（sim/src/genome.rs の OUT_* の並び） */
 export const OUTPUT_LABELS = [
   '優先: 食べる', '優先: 繁殖', '優先: 逃げる', '優先: 仲間', '優先: 自由', '自由な方向・前', '自由な方向・右',
-  '速さ', '繁殖する', '食べる', '警戒', 'シグナル', '優先: 追い払う', '攻撃する', '仲間を攻撃',
+  '速さ', '繁殖する', '食べる', '警戒', 'シグナル', '優先: 追い払う', '攻撃する', '仲間を攻撃', '巣を作る',
 ];
 
 const fmtInt = new Intl.NumberFormat('ja-JP');
@@ -43,6 +44,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.WANDER]: '歩き回っている',
     [STATE.FIGHT]: '敵（別の系統）を攻撃した',
     [STATE.FIGHT_KIN]: '仲間（同じ系統）を攻撃した',
+    [STATE.BUILD]: '巣を作っている',
   },
   [CARNIVORE]: {
     [STATE.WANDER]: '獲物が見えない',
@@ -53,6 +55,7 @@ const STATE_LABEL: Record<number, Record<number, string>> = {
     [STATE.SCAVENGE]: '死体を食べている',
     [STATE.FIGHT]: '敵（別の系統）を攻撃した',
     [STATE.FIGHT_KIN]: '仲間（同じ系統）を攻撃した',
+    [STATE.BUILD]: '巣を作っている',
   },
 };
 
@@ -124,6 +127,7 @@ export class Inspector {
           <dt title="繁殖のとき、手持ちのエネルギーのうち子に渡す割合。渡した量が多いほど、次の繁殖までの休みが長い">子への投資</dt><dd data-k="invest">–</dd>
           <dt title="一度に産む子の数。子に渡すエネルギーを等分するので、多く産むほど 1 体は小さく生まれる">一度に産む数</dt><dd data-k="litter">–</dd>
           <dt title="覚えた食べ物の場所の良さが 1/e に薄れるまでの時間。長いほど維持費がかかる。覚えた場所の方向を脳が使うかどうかは進化しだい">記憶の長さ</dt><dd data-k="memory">–</dd>
+          <dt title="覚えている巣までの距離と、今いるマスの巣の出来の良さ。巣は茂みと枝で作り、中では体温を保ちやすく見つかりにくい。巣へ戻るかどうかは進化しだい">巣</dt><dd data-k="nest">–</dd>
           <dt title="使っている中間ニューロンの数（1 層目は最大 16、2 層目は最大 16）。多いほど複雑な判断ができるが、維持費がかかる">脳</dt><dd data-k="brain">–</dd>
           <dt title="肉食は、自分の大きさに対してこの範囲の大きさの獲物だけを狙う">好みの獲物</dt><dd data-k="preyRange">–</dd>
           <dt title="生存に影響しない遺伝子。系統の見分けに使う">標識色</dt><dd><i class="dot" data-k="hue"></i> <button type="button" class="link-button" data-k="lineage">この系統を見る</button></dd>
@@ -354,6 +358,14 @@ export class Inspector {
       const dist = v[INSPECT.memoryDistance];
       const recalled = dist < 0 ? '何も覚えていない' : `良さ ${Math.round(v[INSPECT.recalled] * 100)}% の場所が ${Math.round(dist)} px 先`;
       this.el.memory.textContent = `${Math.round(memory)} tick（${recalled}）`;
+    }
+    const nestDist = v[INSPECT.nestDistance];
+    if (nestDist === undefined) {
+      this.el.nest.textContent = '–';
+    } else {
+      const home = nestDist < 0 ? '巣を覚えていない' : nestDist < 16 ? '自分の巣にいる' : `自分の巣が ${Math.round(nestDist)} px 先`;
+      const here = v[INSPECT.nestHere] > 0 ? `、足元の巣の出来 ${Math.round(v[INSPECT.nestHere] * 100)}%` : '';
+      this.el.nest.textContent = home + here;
     }
     this.el.hue.style.background = HUE_PALETTE[hueIndex(v[INSPECT.hue])];
     this.el.brain.textContent = `1 層目 ${v[INSPECT.brain1]}・2 層目 ${v[INSPECT.brain2]} ニューロン`;

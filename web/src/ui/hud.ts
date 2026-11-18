@@ -10,6 +10,7 @@ export interface Layers {
   terrain: boolean;
   plants: boolean;
   carrion: boolean;
+  nest: boolean;
   herbivores: boolean;
   carnivores: boolean;
   border: boolean;
@@ -30,6 +31,7 @@ const LAYER_LABELS: [keyof Layers, string, string][] = [
   ['terrain', '地形', '水域・陸の色（地図の表示方法で変わる）'],
   ['plants', '植物', '植物量'],
   ['carrion', '死体', '死体の量'],
+  ['nest', '巣', '巣の出来の良さ'],
   ['herbivores', '草食', '草食の個体'],
   ['carnivores', '肉食', '肉食の個体'],
   ['border', '枠', '世界の外枠'],
@@ -223,6 +225,7 @@ export class Hud {
         <div class="swatch-scale"><span>なし</span><span>上限</span></div>
         <div class="terrain-legend">
           <span><i class="swatch" style="background:${COLORS.carrion}"></i>死体（肉食が食べられる。少しずつ腐って減る）</span>
+          <span><i class="swatch" style="background:${COLORS.nest}"></i>巣（茂みと枝で作る。出来が良いほど濃い。中では体温を保ちやすく見つかりにくい。手入れしないと崩れる）</span>
         </div>
         <p class="legend-note">草食は丸、肉食は進行方向を指す三角。大きさは個体のいまの大きさに比例（肉食は見やすさのため 1.5 倍で表示）</p>
         <p class="legend-note">集まり具合: 最寄りの仲間までの距離 ÷ ランダムに散らばった場合の期待値（1 でランダム、小さいほど集まっている）。向きのそろい: 近くの仲間との向きの一致度（0 でばらばら、1 で同じ向き）。同じ系統どうしだけ高ければ、系統ごとの群れができている</p>

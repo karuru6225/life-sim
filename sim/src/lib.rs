@@ -18,7 +18,7 @@ use world::history::KIND_LEN;
 use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, SIZE_HIST_BINS, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 63;
+const INSPECT_LEN: usize = 65;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
 const SUMMARY_LEN: usize = 31;
 /// history_export() が書き込む記録 1 つの要素数: tick, 区間の長さ, 草食の値, 肉食の値
@@ -423,6 +423,20 @@ pub extern "C" fn inspect() -> *const f64 {
                     -1.0
                 }
             };
+            // 今いるマスの巣の出来の良さと、覚えている巣までの距離（覚えていなければ −1）
+            out[63] = w.nest[w.plants.cell_index(w.xs[i], w.ys[i])] as f64;
+            out[64] = {
+                let home = w.home[i];
+                if home == world::NO_HOME {
+                    -1.0
+                } else {
+                    let cs = w.plants.cell_size;
+                    let (hc, hr) = (home as usize % w.plants.cols, home as usize / w.plants.cols);
+                    let dx = world::torus_delta((hc as f32 + 0.5) * cs - w.xs[i], w.width);
+                    let dy = world::torus_delta((hr as f32 + 0.5) * cs - w.ys[i], w.height);
+                    (dx * dx + dy * dy).sqrt() as f64
+                }
+            };
             out[35] = w.vigilance[i] as f64;
             out[36] = w.natal[i] as f64;
             out[37] = w.habitat_fit(i, w.terrain.soil_at(w.xs[i], w.ys[i])) as f64;
@@ -623,6 +637,12 @@ pub extern "C" fn fertility_now_ptr() -> *const f32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn carrion_ptr() -> *const f32 {
     with_world(|w| w.carrion.as_ptr())
+}
+
+/// 巣の出来の良さの配列（plant_cols() × plant_rows() の f32、行優先、0〜1）の先頭アドレス
+#[unsafe(no_mangle)]
+pub extern "C" fn nest_ptr() -> *const f32 {
+    with_world(|w| w.nest.as_ptr())
 }
 
 /// 層 k（0: 地面の草、1: 茂み、2: 枝）の植物量の配列（plant_cols() × plant_rows() の f32、行優先）の先頭アドレス。

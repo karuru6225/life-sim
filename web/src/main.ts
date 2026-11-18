@@ -68,7 +68,9 @@ const terrain = new TerrainLayer(params.plant_cell);
 const plants = new PlantLayer(params.plant_cell, params.plant_capacity);
 // 死体は 8 で最も濃く、0.2 以上あれば 25% の濃さで見えるようにする（それ未満は描かない）
 const carrion = new PlantLayer(params.plant_cell, 8, COLORS.carrion, 0.25, 0.2);
-world.addChild(terrain.sprite, plants.sprite, carrion.sprite);
+// 巣は出来の良さ 0〜1。0.05 以上を、出来が良いほど濃く描く
+const nests = new PlantLayer(params.plant_cell, 1, COLORS.nest, 0.3, 0.05);
+world.addChild(terrain.sprite, plants.sprite, carrion.sprite, nests.sprite);
 
 // 世界の外枠。トーラスなので端はつながっているが、どこまでが世界かは見せておく
 const border = new Graphics();
@@ -184,6 +186,7 @@ const layers: Layers = {
   terrain: true,
   plants: true,
   carrion: true,
+  nest: true,
   herbivores: true,
   carnivores: true,
   border: true,
@@ -201,6 +204,7 @@ function applyLayers(): void {
   terrain.sprite.visible = layers.terrain;
   plants.sprite.visible = layers.plants;
   carrion.sprite.visible = layers.carrion;
+  nests.sprite.visible = layers.nest;
   herbivores.container.visible = layers.herbivores;
   carnivores.container.visible = layers.carnivores;
   border.visible = layers.border;
@@ -547,6 +551,7 @@ app.ticker.add(() => {
   const cells = f.plantCols * f.plantRows;
   plants.apply(new Float32Array(f.buffer, agentFloats * 4, cells), f.plantCols, f.plantRows);
   carrion.apply(new Float32Array(f.buffer, (agentFloats + cells) * 4, cells), f.plantCols, f.plantRows);
+  nests.apply(new Float32Array(f.buffer, (agentFloats + cells * 2) * 4, cells), f.plantCols, f.plantRows);
   const now = performance.now();
   if (now - lastLineage > LINEAGE_INTERVAL_MS) {
     lineageHist.update(agents, f.agentCount, f.stride);
