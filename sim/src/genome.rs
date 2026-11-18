@@ -594,6 +594,19 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
     }
 }
 
+/// 覚えた食べ物の場所への初期配線: 中間ニューロン 8, 9 を使い始め、覚えた場所の方向（前・右）を
+/// 自由な移動の方向に重み weight でつなぐ。覚えた場所へ寄っていく向きを最初に与えるだけで、
+/// 強めるか、弱めるか、ニューロンごと捨てるか（維持費がかかる）は進化に任せる
+pub fn add_memory_wiring(g: &mut [f32], weight: f32) {
+    let (h_fwd, h_right) = (8, 9);
+    g[ACT + h_fwd] = 1.0;
+    g[ACT + h_right] = 1.0;
+    wire_hidden(g, h_fwd, IN_MEM_FWD, 4.0);
+    wire_hidden(g, h_right, IN_MEM_RIGHT, 4.0);
+    wire_out(g, OUT_DIR_FWD, h_fwd, weight);
+    wire_out(g, OUT_DIR_RIGHT, h_right, weight);
+}
+
 /// 2 つの遺伝子の違い（遺伝的距離）。標識色を除く形質と、脳の重みの差を、変異 1 回の大きさを単位にして
 /// 二乗平均の平方根を取る。形質は比（対数）で、脳の重みは差で測る。
 /// 脳は、どちらかが使っているニューロンだけを比べる（使っていないニューロンの重みは全員 0 なので、数えると距離が薄まる）。
@@ -779,6 +792,22 @@ mod tests {
 
     fn input() -> [f32; N_IN] {
         [0.0; N_IN]
+    }
+
+    #[test]
+    fn 記憶の初期配線は覚えた場所の方へ自由な移動を向ける() {
+        let mut g = initial(true, 1.0, 1.3, 60.0, 0.0);
+        let mut i = input();
+        i[IN_MEM_RIGHT] = 1.0;
+        let before = think(&g, &i);
+        add_memory_wiring(&mut g, 1.0);
+        let after = think(&g, &i);
+        assert!(after[OUT_DIR_RIGHT] > before[OUT_DIR_RIGHT] + 0.5, "{} → {}", before[OUT_DIR_RIGHT], after[OUT_DIR_RIGHT]);
+        // 覚えた場所にいれば（入力 0）向きは変わらない
+        let none = think(&g, &input());
+        let base = think(&initial(true, 1.0, 1.3, 60.0, 0.0), &input());
+        assert!((none[OUT_DIR_RIGHT] - base[OUT_DIR_RIGHT]).abs() < 1e-6);
+        assert_eq!(active_neurons(&g).0 as usize, INITIAL_H1 + 2, "中間ニューロン 2 個分の維持費がかかる");
     }
 
     /// 欲求ごとの方向 [食べる, 繁殖, 逃げる, 仲間, 追い払う, (自由)]

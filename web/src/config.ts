@@ -71,6 +71,7 @@ export const SIM_PARAMS = {
   brain_cost: 0.0001,
   memory_cost: 0.0001,
   memory_initial: 300,
+  memory_wiring: 0,
   energy_cap_ratio: 2,
   birth_spread: 6,
   rest_metabolism: 0.5,

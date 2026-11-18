@@ -494,6 +494,9 @@ impl World {
             g[genome::G_FOV] = fov.to_radians();
             g[genome::G_MEMORY] = p.memory_initial;
             genome::add_kin_wiring(&mut g, &mut world.rng);
+            if p.memory_wiring != 0.0 {
+                genome::add_memory_wiring(&mut g, p.memory_wiring);
+            }
             for _ in 0..count as usize {
                 let (x, y) = world.random_position();
                 // 初期個体は 1 体ずつ違う標識色にする。系統の広がりが色で見える
