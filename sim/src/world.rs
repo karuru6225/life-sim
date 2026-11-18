@@ -350,6 +350,17 @@ pub struct Life {
     pub failed: u32,
 }
 
+/// 個体が覚えている食べ物の場所（1 か所）
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Memory {
+    pub x: f32,
+    pub y: f32,
+    /// 覚えたときの良さ（0〜1）。0 なら何も覚えていない
+    pub value: f32,
+    /// 覚えた tick
+    pub tick: u64,
+}
+
 /// 選択中の個体のエネルギーの履歴に残す tick 数
 pub const ENERGY_HISTORY: usize = 300;
 
@@ -415,6 +426,8 @@ pub struct World {
     pub parents: Vec<[u32; 2]>,
     /// 生涯の記録
     pub life: Vec<Life>,
+    /// 覚えている食べ物の場所
+    pub memory: Vec<Memory>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
     alive: Vec<bool>,
 
@@ -554,6 +567,7 @@ impl World {
             rest: Vec::new(),
             attacked: Vec::new(),
             alone: Vec::new(),
+            memory: Vec::new(),
             vigilance: Vec::new(),
             natal: Vec::new(),
             cover: Vec::new(),
@@ -646,6 +660,7 @@ impl World {
         self.rest.push(0);
         self.attacked.push(0);
         self.alone.push(0);
+        self.memory.push(Memory::default());
         self.vigilance.push(0.5);
         self.natal.push(self.terrain.soil_at(x, y));
         self.cover.push(0.0);
@@ -997,6 +1012,38 @@ impl World {
         (0..LAYERS).map(|k| q[k] * self.layer_available(reach, floor, k, c)).sum()
     }
 
+    /// 個体 i が覚えている場所の今の良さ（覚えたときの良さ × 薄れ具合 exp(−経過 / 記憶の長さ)）
+    pub fn recalled_value(&self, i: usize) -> f32 {
+        let m = self.memory[i];
+        if m.value <= 0.0 {
+            return 0.0;
+        }
+        let elapsed = self.tick.saturating_sub(m.tick) as f32;
+        m.value * (-elapsed / self.traits[i].memory).exp()
+    }
+
+    /// 全個体の脳への入力（観察用）。tick の始めと同じ下ごしらえ（足元の草・遠くの景色・近傍探索・呼び声）をしてから知覚する。
+    /// 世界の歴史は変えない（下ごしらえは次の step でも同じ値に作り直される）
+    pub fn brain_inputs(&mut self) -> Vec<[f32; N_IN]> {
+        let cap = self.params.plant_capacity;
+        for i in 0..self.count() {
+            self.cover[i] = self.plants.ratio_at(self.xs[i], self.ys[i], cap);
+        }
+        self.plants.update_landscape();
+        self.build_grid();
+        self.build_calls();
+        (0..self.count()).map(|i| self.plan(i).input).collect()
+    }
+
+    /// 行動の段の後に、今いる場所の良さ value（0〜1）を記憶と比べる。覚えている場所の今の良さ以上なら、今いる場所を覚え直す。
+    /// 食べて減っていく場所では今の良さが記憶より下がるので覚え直さず、来たときの良さが残る。
+    /// 戻って来て悪くなっていても記憶は下げない（下げると、食べながら記憶が足元の減った値に追いつき、離れた場所を指さなくなる）
+    fn remember(&mut self, i: usize, value: f32) {
+        if value > 0.0 && value >= self.recalled_value(i) {
+            self.memory[i] = Memory { x: self.xs[i], y: self.ys[i], value, tick: self.tick };
+        }
+    }
+
     /// 個体 i の近く（coop_radius 以内）にいる、同じ種類で系統色の近い（同じ系統の）生きている個体の数
     fn allies_of(&self, i: usize) -> u32 {
         let p = &self.params;
@@ -1173,10 +1220,19 @@ impl World {
             if !self.alive[i] {
                 continue; // この tick ですでに食べられた
             }
+            let eaten = self.life[i].eaten;
             let (speed, wants_child, mate) = timed!(0, self.act(i, &plans[k]));
             if !self.alive[i] {
                 continue; // 行動の途中で死んだ（反撃や病気）
             }
+            // 食べ物の場所の記憶: 草食は今いる場所の食べられる量 × 植生の合い具合、肉食はこの tick に食べた量
+            let value = if self.kind[i] == HERBIVORE {
+                let input = &plans[k].input;
+                input[genome::IN_PLANT_HERE] * input[genome::IN_HABITAT_FIT]
+            } else {
+                ((self.life[i].eaten - eaten) / self.repro_threshold(i)).min(1.0)
+            };
+            self.remember(i, value);
             timed!(1, self.move_agent(i, speed));
             timed!(2, self.live(i, speed, wants_child, mate));
         }
@@ -1514,6 +1570,21 @@ impl World {
         input[genome::IN_READY] = ready as u8 as f32;
         if let Some((_, _, _, d2)) = senses.mate {
             input[genome::IN_MATE_NEAR] = 1.0 - 0.5 * (d2.sqrt() / t.vision).min(1.0);
+        }
+
+        // 覚えている食べ物の場所: 良さは記憶の長さで薄れる。その場所にいれば方向は 0
+        let mem = self.memory[i];
+        let recalled = self.recalled_value(i);
+        if recalled > 0.0 {
+            input[genome::IN_MEM_VALUE] = recalled;
+            let dx = torus_delta(mem.x - x, self.width);
+            let dy = torus_delta(mem.y - y, self.height);
+            let d = (dx * dx + dy * dy).sqrt();
+            if d > self.plants.cell_size {
+                let (f, r) = to_local(dx / d, dy / d);
+                input[genome::IN_MEM_FWD] = f;
+                input[genome::IN_MEM_RIGHT] = r;
+            }
         }
 
         lap!(2);
@@ -2036,9 +2107,11 @@ impl World {
         let eye = p.vision_cost * EYE_REF_RANGE * (0.5 * t.fov * t.vision * t.vision) / EYE_REF_AREA * t.size_pow075;
         // 脳の維持費は、使っている中間ニューロンの数に比例
         let brain = p.brain_cost * (t.brain.0 + t.brain.1) as f32 * t.size_pow075;
+        // 記憶の維持費は記憶の長さに比例
+        let memory = p.memory_cost * t.memory / 1000.0 * t.size_pow075;
         // 移動は大きさの move_size_power 乗（約 0.7 乗。体重あたりは大きいほど割安）と速度の 2 乗に比例する
         let movement = p.move_cost * t.size.max(0.01).powf(p.move_size_power) * speed * speed;
-        let cost = (basal + upkeep + thermal + signal + eye + brain + movement)
+        let cost = (basal + upkeep + thermal + signal + eye + brain + memory + movement)
             .min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
@@ -2261,6 +2334,7 @@ impl World {
             self.rest.swap_remove(i);
             self.attacked.swap_remove(i);
             self.alone.swap_remove(i);
+            self.memory.swap_remove(i);
             self.vigilance.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
@@ -3423,6 +3497,63 @@ mod tests {
         let before = w.growth[0];
         w.grow(0, 600.0);
         assert_eq!(w.growth[0], before);
+    }
+
+    #[test]
+    fn 食べ物の場所を覚えて方向を入力に渡し記憶は薄れる() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        face(&mut w, 0, 1.0, 0.0);
+        w.cover = vec![0.0; 1];
+        w.build_grid();
+        assert_eq!(w.plan(0).input[genome::IN_MEM_VALUE], 0.0, "生まれたときは何も覚えていない");
+
+        w.remember(0, 0.6);
+        assert_eq!(w.memory[0].value, 0.6);
+        // 覚えた場所にいれば方向は 0
+        let input = w.plan(0).input;
+        assert!((input[genome::IN_MEM_VALUE] - 0.6).abs() < 1e-6);
+        assert_eq!((input[genome::IN_MEM_FWD], input[genome::IN_MEM_RIGHT]), (0.0, 0.0));
+
+        // 離れると、覚えた場所（後ろ）の方向を指す
+        w.xs[0] = 200.0;
+        let input = w.plan(0).input;
+        assert!(input[genome::IN_MEM_FWD] < -0.99, "後ろを指す: {}", input[genome::IN_MEM_FWD]);
+        // 今いる場所が悪ければ覚え直さない
+        w.remember(0, 0.3);
+        assert_eq!(w.memory[0].x, 100.0);
+
+        // 記憶の長さだけ経つと 1/e に薄れ、今の場所のほうが良ければ覚え直す
+        w.tick += w.traits[0].memory as u64;
+        let faded = w.recalled_value(0);
+        assert!((faded - 0.6 / std::f32::consts::E).abs() < 1e-3, "薄れる: {faded}");
+        w.remember(0, 0.3);
+        assert_eq!((w.memory[0].x, w.memory[0].value), (200.0, 0.3));
+
+        // 覚えた場所で食べて悪くなっても、来たときの良さを覚えたまま（記憶が足元についてこない）
+        w.xs[0] = 203.0;
+        w.remember(0, 0.1);
+        assert_eq!((w.memory[0].x, w.memory[0].value), (200.0, 0.3));
+        w.xs[0] = 300.0;
+        assert!(w.plan(0).input[genome::IN_MEM_FWD] < -0.99, "食べ終えて離れると、来た場所を指す");
+    }
+
+    #[test]
+    fn 記憶が長いほど維持費がかかる() {
+        let cost = |memory: f32| {
+            let mut w = empty_world();
+            let mut g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+            g[genome::G_MEMORY] = memory;
+            w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+            w.cover = vec![0.0; 1];
+            let before = w.energy[0];
+            w.live(0, 0.0, false, Mate::Missing);
+            before - w.energy[0]
+        };
+        let (short, long) = (cost(100.0), cost(5100.0));
+        let expected = empty_world().params.memory_cost * 5.0;
+        assert!((long - short - expected).abs() < 1e-6, "差 {} / 期待 {expected}", long - short);
     }
 
     #[test]

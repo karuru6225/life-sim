@@ -29,7 +29,9 @@ pub const G_FOV: usize = 8;
 /// 子に渡すエネルギーを等分するので、多く産むほど 1 体は小さい。
 /// 四捨五入にすると、途中の値（1.1〜1.4 など）が何も変えず、選択が後押しできないので確率にしている
 pub const G_LITTER: usize = 9;
-pub const N_TRAITS: usize = 10;
+/// 記憶の長さ（tick）。覚えた食べ物の場所の良さが、この時間で 1/e に薄れる。長いほど維持費がかかる
+pub const G_MEMORY: usize = 10;
+pub const N_TRAITS: usize = 11;
 
 /// 形質が取りうる範囲（変異でこの外に出たら切り詰める）
 /// 大きさは体重にあたる（代謝が 0.75 乗に比例するため）。ネズミ型からシカ型くらいまでの差（40 倍）を許す
@@ -42,6 +44,7 @@ pub const PREY_MAX_RANGE: (f32, f32) = (0.2, 4.0);
 pub const TEMP_PREF_RANGE: (f32, f32) = (-30.0, 50.0);
 pub const FOV_RANGE: (f32, f32) = (0.5, std::f32::consts::TAU);
 pub const LITTER_RANGE: (f32, f32) = (1.0, 6.0);
+pub const MEMORY_RANGE: (f32, f32) = (20.0, 20_000.0);
 /// 視野の上限。近傍探索のグリッドのセルはこれ以上の大きさにする
 pub const VISION_MAX: f32 = 64.0;
 
@@ -131,7 +134,12 @@ pub const IN_SCARCITY: usize = 44;
 /// 今いる場所より十分に多い場所がなければ 0。草食のみ）
 pub const IN_FAR_FWD: usize = 45;
 pub const IN_FAR_RIGHT: usize = 46;
-pub const N_IN: usize = 47;
+/// 覚えている食べ物の場所の方向（前・右）。覚えていないか、その場所にいれば 0
+pub const IN_MEM_FWD: usize = 47;
+pub const IN_MEM_RIGHT: usize = 48;
+/// 覚えている場所の良さ（覚えたときの良さ × 薄れ具合、0〜1）。覚えていなければ 0
+pub const IN_MEM_VALUE: usize = 49;
+pub const N_IN: usize = 50;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -370,6 +378,8 @@ pub struct Traits {
     pub brain: (u32, u32),
     /// 一度に産む子の数の平均（端数は確率）
     pub litter: f32,
+    /// 記憶の長さ（tick）
+    pub memory: f32,
 }
 
 impl Traits {
@@ -411,6 +421,7 @@ pub fn traits(genome: &[f32], max_turn: f32) -> Traits {
         fov_cos: 0.0,
         brain: active_neurons(genome),
         litter: genome[G_LITTER].clamp(LITTER_RANGE.0, LITTER_RANGE.1),
+        memory: genome[G_MEMORY].clamp(MEMORY_RANGE.0, MEMORY_RANGE.1),
     };
     t.fov = genome[G_FOV].clamp(FOV_RANGE.0, FOV_RANGE.1);
     t.fov_cos = (t.fov * 0.5).cos();
@@ -460,6 +471,8 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     g[G_FOV] = if herbivore { 300f32.to_radians() } else { 120f32.to_radians() };
     // 一度に 1 体ずつ産む（多く産むかどうかは進化に任せる）
     g[G_LITTER] = 1.0;
+    // 記憶は短めから始める（長くするかどうか、使うかどうかは進化に任せる）
+    g[G_MEMORY] = 300.0;
 
     // 自由な移動は、ゆるく前へ
     out_bias(&mut g, OUT_DIR_FWD, 0.3);
@@ -567,6 +580,9 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         IN_SCARCITY,
         IN_FAR_FWD,
         IN_FAR_RIGHT,
+        IN_MEM_FWD,
+        IN_MEM_RIGHT,
+        IN_MEM_VALUE,
     ];
     for h in [6, 7] {
         for &k in &kin_inputs {

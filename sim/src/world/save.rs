@@ -20,9 +20,9 @@ use crate::genome::{H1, H2, N_OUT, N_TRAITS};
 /// ファイルの先頭の印
 const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
-pub const FORMAT_VERSION: u32 = 3;
-/// 読み込める最も古い形式の番号（形式 2 は長期の統計の記録がない）
-const OLDEST_FORMAT: u32 = 2;
+pub const FORMAT_VERSION: u32 = 4;
+/// 読み込める最も古い形式の番号（形式 3 までは食べ物の場所の記憶がない。遺伝子の並びも違うので読めない）
+const OLDEST_FORMAT: u32 = 4;
 /// 死因の数（Census の配列の長さ）
 const N_CAUSES: usize = 8;
 
@@ -206,6 +206,11 @@ impl World {
             w.f32(life.distance);
             w.u32(life.matings);
             w.u32(life.failed);
+            let m = &self.memory[i];
+            w.f32(m.x);
+            w.f32(m.y);
+            w.f32(m.value);
+            w.u64(m.tick);
             // 遺伝子: 0 でない値の位置のビット列と、その値
             let g = self.genome(i);
             let mut bits = vec![0u8; GENOME_LEN.div_ceil(8)];
@@ -328,6 +333,7 @@ impl World {
                 matings: r.u32()?,
                 failed: r.u32()?,
             };
+            let memory = Memory { x: r.f32()?, y: r.f32()?, value: r.f32()?, tick: r.u64()? };
             let bits = r.take(GENOME_LEN.div_ceil(8))?.to_vec();
             for (k, v) in genome.iter_mut().enumerate() {
                 *v = if bits[k / 8] & (1 << (k % 8)) != 0 { r.f32()? } else { 0.0 };
@@ -356,6 +362,7 @@ impl World {
             world.rest.push(rest);
             world.attacked.push(attacked);
             world.alone.push(alone);
+            world.memory.push(memory);
             world.vigilance.push(vigilance);
             world.natal.push(natal);
             world.cover.push(cover);
@@ -364,16 +371,12 @@ impl World {
             world.life.push(life);
             world.alive.push(true);
         }
-        if version >= 3 {
-            let len = r.u32()? as usize;
-            let bytes = r.take(len)?;
-            match read_history(&mut Reader { data: bytes, at: 0 }) {
-                Ok(Some(h)) => world.history = h,
-                // 記録の並びが違う、または壊れている: 記録は空から始める
-                _ => world.rebase_history(),
-            }
-        } else {
-            world.rebase_history();
+        let len = r.u32()? as usize;
+        let bytes = r.take(len)?;
+        match read_history(&mut Reader { data: bytes, at: 0 }) {
+            Ok(Some(h)) => world.history = h,
+            // 記録の並びが違う、または壊れている: 記録は空から始める
+            _ => world.rebase_history(),
         }
         if r.at != data.len() {
             return Err(format!("データの末尾に余分なバイトがある（{} バイト）", data.len() - r.at));
@@ -520,35 +523,6 @@ mod tests {
         assert_eq!(a.ledger.expected_total(), b.ledger.expected_total());
         assert!(a.history.len() > 0, "記録が溜まっている");
         assert_eq!(a.history, b.history, "長期の統計の記録も続く");
-    }
-
-    #[test]
-    fn 記録のない形式2のデータも読み込め記録はそこから始まる() {
-        let mut a = World::new(11, params());
-        for _ in 0..450 {
-            a.step();
-        }
-        let mut data = a.save();
-        // 形式 3 の末尾の記録（バイト数 + 中身）を取り除き、形式の番号を 2 にする
-        let len = a.history_bytes_len();
-        data.truncate(data.len() - 4 - len);
-        data[8..12].copy_from_slice(&2u32.to_le_bytes());
-        let (mut b, _) = World::load(&data).expect("形式 2 も読める");
-        assert_eq!(b.history.len(), 0);
-        assert_eq!(b.history.last_tick, 450);
-        for _ in 0..200 {
-            b.step();
-        }
-        assert_eq!(b.history.len(), 1);
-        assert_eq!(b.history.get(0).unwrap().span, 200);
-    }
-
-    impl World {
-        fn history_bytes_len(&self) -> usize {
-            let mut h = Writer(Vec::new());
-            write_history(&mut h, &self.history);
-            h.0.len()
-        }
     }
 
     #[test]

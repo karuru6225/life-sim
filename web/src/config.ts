@@ -65,6 +65,7 @@ export const SIM_PARAMS = {
   conceal_size_power: 0.3333,
   body_energy: 3,
   brain_cost: 0.0001,
+  memory_cost: 0.0001,
   energy_cap_ratio: 2,
   birth_spread: 6,
   rest_metabolism: 0.5,
