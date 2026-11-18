@@ -99,6 +99,12 @@ export const SIM_PARAMS = {
   min_birth_growth: 0.2,
   juvenile_speed: 0.6,
 
+  // 持久力
+  herb_cruise: 0.7,
+  carn_cruise: 0.7,
+  stamina_sprint: 40,
+  stamina_recover: 120,
+
   // 狩り
   hunt_success: 0.9,
   escape_strength: 0.15,

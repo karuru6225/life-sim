@@ -342,6 +342,8 @@ export const INSPECT = {
   nestHere: 63,
   /** 覚えている巣までの距離（px。覚えていなければ −1） */
   nestDistance: 64,
+  /** 体力（0〜1） */
+  stamina: 65,
 } as const;
 
 export const HERBIVORE = 0;

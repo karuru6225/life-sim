@@ -23,7 +23,7 @@ export const INPUT_LABELS = [
   '足元の死体', '死体の方向・前', '死体の方向・右', '死体の新しさ',
   '敵・前', '敵・右', '敵の近さ', '敵の大きさ比', '敵の数', '攻撃された', '一人の時間', '食べ物の乏しさ', '遠くの食べ物・前', '遠くの食べ物・右',
   '覚えた場所・前', '覚えた場所・右', '覚えた場所の良さ',
-  '巣・前', '巣・右', '足元の巣の出来', '巣から離れている',
+  '巣・前', '巣・右', '足元の巣の出来', '巣から離れている', '体力',
 ];
 /** 脳の出力の名前（sim/src/genome.rs の OUT_* の並び） */
 export const OUTPUT_LABELS = [
@@ -127,6 +127,7 @@ export class Inspector {
           <dt title="繁殖のとき、手持ちのエネルギーのうち子に渡す割合。渡した量が多いほど、次の繁殖までの休みが長い">子への投資</dt><dd data-k="invest">–</dd>
           <dt title="一度に産む子の数。子に渡すエネルギーを等分するので、多く産むほど 1 体は小さく生まれる">一度に産む数</dt><dd data-k="litter">–</dd>
           <dt title="覚えた食べ物の場所の良さが 1/e に薄れるまでの時間。長いほど維持費がかかる。覚えた場所の方向を脳が使うかどうかは進化しだい">記憶の長さ</dt><dd data-k="memory">–</dd>
+          <dt title="全力で走れる余力。巡航の速さ（最高速度の 7 割）を超えて走ると減り、それより遅ければ戻る。2 割を切ると速さの上限が巡航の速さまで下がっていく">体力</dt><dd data-k="stamina">–</dd>
           <dt title="覚えている巣までの距離と、今いるマスの巣の出来の良さ。巣は茂みと枝で作り、中では体温を保ちやすく見つかりにくい。巣へ戻るかどうかは進化しだい">巣</dt><dd data-k="nest">–</dd>
           <dt title="使っている中間ニューロンの数（1 層目は最大 16、2 層目は最大 16）。多いほど複雑な判断ができるが、維持費がかかる">脳</dt><dd data-k="brain">–</dd>
           <dt title="肉食は、自分の大きさに対してこの範囲の大きさの獲物だけを狙う">好みの獲物</dt><dd data-k="preyRange">–</dd>
@@ -359,6 +360,8 @@ export class Inspector {
       const recalled = dist < 0 ? '何も覚えていない' : `良さ ${Math.round(v[INSPECT.recalled] * 100)}% の場所が ${Math.round(dist)} px 先`;
       this.el.memory.textContent = `${Math.round(memory)} tick（${recalled}）`;
     }
+    const stamina = v[INSPECT.stamina];
+    this.el.stamina.textContent = stamina === undefined ? '–' : `${Math.round(stamina * 100)}%`;
     const nestDist = v[INSPECT.nestDistance];
     if (nestDist === undefined) {
       this.el.nest.textContent = '–';
