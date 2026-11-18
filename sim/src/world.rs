@@ -272,7 +272,12 @@ pub struct Census {
     pub herb_size_bite: [f64; HERB_SIZE_BINS],
     /// 実際に食べた量の合計 [段階]
     pub herb_size_take: [f64; HERB_SIZE_BINS],
+    /// 生きる費用の内訳の合計 [種類][COST_NAMES の順]。観察用で、保存ファイルには入れない（読み込むと 0 から数え直す）
+    pub costs: [[f64; 8]; 2],
 }
+
+/// census.costs の項目の名前
+pub const COST_NAMES: [&str; 8] = ["基礎代謝", "速さの維持", "体温", "シグナル", "目", "脳", "記憶", "移動"];
 
 /// 欲求の番号（genome::mix_drives の並び）
 const DRIVE_MATE: usize = 1;
@@ -2308,8 +2313,13 @@ impl World {
         let memory = p.memory_cost * t.memory / 1000.0 * t.size_pow075;
         // 移動は大きさの move_size_power 乗（約 0.7 乗。体重あたりは大きいほど割安）と速度の 2 乗に比例する
         let movement = p.move_cost * t.size.max(0.01).powf(p.move_size_power) * speed * speed;
-        let cost = (basal + upkeep + thermal + signal + eye + brain + memory + movement)
-            .min(self.energy[i]);
+        let parts = [basal, upkeep, thermal, signal, eye, brain, memory, movement];
+        let cost = parts.iter().sum::<f32>().min(self.energy[i]);
+        // 内訳は、持っている分で頭打ちになったときは同じ割合で縮めて数える
+        let scale = cost / parts.iter().sum::<f32>().max(1e-12);
+        for (sum, part) in self.census.costs[self.kind[i] as usize].iter_mut().zip(parts) {
+            *sum += (part * scale) as f64;
+        }
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
         self.age[i] += 1;
