@@ -34,6 +34,16 @@ fn main() {
         }
     }
 
+    // 狩りの集計（世界を作ってからの累計）
+    let c = &w.census;
+    let hunts = c.hunts.max(1) as f64;
+    println!(
+        "
+狩り: 成功 {:.1}%、襲われた獲物が遠ざかっていた速さ ÷ 肉食の最高速度 の平均 {:.3}",
+        c.kills as f64 / hunts * 100.0,
+        c.hunt_escape / hunts
+    );
+
     // 天敵への反応
     let inputs = w.brain_inputs();
     let herbs: Vec<usize> = (0..w.count()).filter(|&i| w.kind[i] == HERBIVORE).collect();
