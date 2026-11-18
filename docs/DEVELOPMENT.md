@@ -177,6 +177,79 @@ cargo run --release --features parallel --example diagnose --manifest-path sim/C
 3. 結果を [PLAN.md](PLAN.md) に日付付きで記録し、仕様が変わったら [ECOSYSTEM.md](ECOSYSTEM.md) を直す
 4. ブラウザでも開いて、表示が壊れていないか（NaN が出ていないか）を見る
 
+### Runpod の CPU Pod で回す
+
+手元の CPU を空けておきたいときは、画面なしの実行を Runpod の CPU Pod に任せられる。
+Claude Code に Runpod の MCP サーバーがつながっていれば、SSH や `runpodctl` なしで、作成・ビルド・実行・結果の回収・削除まで完結する（2026-11-18 に試した）。
+
+#### 前提と制約
+
+- Pod は GitHub から clone するので、**push 済みのコードしか回せない**。手元の未 push の変更は届かない。
+  main への push は公開（GitHub Pages）も動かすので、検証のためでも push は明示的に頼まれたときだけ。
+  公開を動かしたくなければ検証用のブランチを push して `git clone --branch` で取る
+- Pod で回した版を手元と取り違えないよう、Pod の中で `git rev-parse --short HEAD` を記録する
+  （2026-11-18 の試行では、手元が 10 コミット先にあることに気づかず、古い版を比べていた）
+- 料金は作成から削除まで秒単位でかかる。止める（stop）ではなく、用が済んだら削除する。削除のあと Pod の一覧を読み直して 0 件を確かめる
+
+#### 使う種類
+
+GPU は使わないので CPU Pod にする。メモリは 2 GB / vCPU で足りるので、Compute-Optimized の `cpu3c` か `cpu5c` を選ぶ。
+vCPU 数は 2 の累乗で、最大 32。料金は vCPU 1 個あたりの時給（2026-11-18 のカタログ）:
+
+| 種類 | 1 vCPU の時給 | 例 |
+|---|---|---|
+| `cpu3c`（第 3 世代、米欧の 14 拠点） | $0.03 | 2 vCPU $0.06/時、16 vCPU $0.48/時、32 vCPU $0.96/時 |
+| `cpu5c`（第 5 世代、EU-RO-1・EUR-IS-1 だけ） | $0.035 | 32 vCPU $1.12/時 |
+
+料金と在庫は変わるので、作る前に `list-cpu-types`（`include=AVAILABILITY`, `product=POD`）で読み直す。
+
+#### 速さの目安
+
+2000 tick、seed=1、並列あり。Pod 側は 10 コミット古い版なので大まかな比較。
+
+| 環境 | 2000 tick | 1 tick（tick 1000〜1500） |
+|---|---|---|
+| 手元（16 スレッド） | 10.4 秒 | 4.2〜4.6 ms |
+| `cpu3c` 2 vCPU | 26.7 秒 | 10.7〜11.2 ms |
+
+1 本の中には順番に処理する行動の段が残るので、vCPU を増やしても 1 本の速さは頭打ちになる。
+Pod の vCPU は、シードやパラメータごとのプロセスを並べるのに使う。シード 1〜3 なら 3 本同時に流せる vCPU 数（8〜16）にする。
+
+#### 手順
+
+MCP のツール名で書く。
+
+1. `create-pod`: CPU を指定し、公式の `rust:1` イメージ（cargo と git 入り）を眠らせたまま起動する
+
+   ```json
+   {"name": "life-sim-verify", "cloud": "SECURE", "cpu": {"id": "cpu3c", "vcpuCount": 16},
+    "image": "rust:1", "args": "sleep infinity", "disk": 20}
+   ```
+
+2. `exec-pod` でコマンドを流す。起動直後の 1 分ほどはイメージの取得中で 409（starting）が返るので、少し待ってやり直す
+3. clone して一度だけビルドし、できた実行ファイルをシードの数だけ裏で起動する。
+   `cargo run` を並べるとビルド先のロック待ちになるので、実行ファイルを直接呼ぶ
+
+   ```sh
+   cd /root && git clone --depth 1 https://github.com/karuru6225/life-sim.git && cd life-sim
+   git rev-parse --short HEAD
+   cargo build --release --features parallel --example headless --manifest-path sim/Cargo.toml
+   for s in 1 2 3; do
+     nohup bash -c "time ./sim/target/release/examples/headless 120000 seed=$s every=8000" > /tmp/seed$s.log 2>&1 &
+   done
+   ```
+
+4. 進み具合は `tail /tmp/seed*.log` で見る。終わった印は最後の「エネルギー帳尻の誤差」の行と `real` の行
+5. 結果を回収する。`exec-pod` の出力は 1 MiB までなので、表のログはそのまま `cat` で読める
+6. `delete-pod` で削除し、`list-pods` で 0 件を確かめる
+
+#### つまずいたところ
+
+- `exec-pod` の 1 回の呼び出しで待てるのは最大 25 秒。ビルドや実行は `nohup … &` で裏に回し、ログを後から読む（呼び出しが時間切れになってもコマンドは止まらない）
+- `exec-pod` はシェルを通さない。パイプやリダイレクトには `["bash", "-c", "…"]` を渡す。
+  `sh` は dash なので `time` が使えず、黙ってビルドが始まらなかった。`bash` を使う
+- 手元の未 push の変更は Pod に届かない（前提を参照）
+
 ## 8. 落とし穴
 
 - **Rust を変えたのに `npm run build:sim` を忘れる**: 画面は古い WASM のまま動き、並びの長さがずれて NaN が出る。
