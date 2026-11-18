@@ -89,6 +89,8 @@ const CARRION_MIN: f32 = 0.1;
 const NEST_MIN: f32 = 0.01;
 
 /// 巣を覚えていないときの home の値
+/// 体力がこれを切ると、出せる速さの上限が下がり始める
+const STAMINA_FADE: f32 = 0.2;
 pub const NO_HOME: u32 = u32::MAX;
 
 /// 気温と植物の育ちやすさを更新する間隔（tick）
@@ -451,6 +453,8 @@ pub struct World {
     pub home: Vec<u32>,
     /// 最後の tick に実際に動いた量（世界の向きの (dx, dy)。動かなければ 0）
     pub vel: Vec<(f32, f32)>,
+    /// 体力（0〜1）。巡航の速さを超えて走ると減り、それより遅ければ戻る
+    pub stamina: Vec<f32>,
     /// tick の始めに写した vel（前の tick の動き）。狩りで獲物が逃げていたかを見るのに使う（行動の順番で結果が変わらないように）
     prev_vel: Vec<(f32, f32)>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
@@ -606,6 +610,7 @@ impl World {
             memory: Vec::new(),
             home: Vec::new(),
             vel: Vec::new(),
+            stamina: Vec::new(),
             prev_vel: Vec::new(),
             vigilance: Vec::new(),
             natal: Vec::new(),
@@ -704,6 +709,7 @@ impl World {
         self.memory.push(Memory::default());
         self.home.push(NO_HOME);
         self.vel.push((0.0, 0.0));
+        self.stamina.push(1.0);
         self.vigilance.push(0.5);
         self.natal.push(self.terrain.soil_at(x, y));
         self.cover.push(0.0);
@@ -856,6 +862,31 @@ impl World {
         h ^= h >> 29;
         let u = (h >> 40) as f32 / (1u64 << 24) as f32;
         base * self.traits[i].adult_pow025 * (0.75 + 0.5 * u)
+    }
+
+    /// 巡航の速さ（最高速度に対する割合）
+    fn cruise(&self, i: usize) -> f32 {
+        if self.kind[i] == HERBIVORE { self.params.herb_cruise } else { self.params.carn_cruise }
+    }
+
+    /// 今の体力で出せる速さの上限（最高速度に対する割合）。体力が STAMINA_FADE 以上なら 1、0 で巡航の速さ
+    pub fn stamina_cap(&self, i: usize) -> f32 {
+        let cruise = self.cruise(i);
+        cruise + (1.0 - cruise) * (self.stamina[i] / STAMINA_FADE).min(1.0)
+    }
+
+    /// 動いた速さで体力を増減する。巡航の速さを超えた分だけ減り（全力なら stamina_sprint tick で尽きる）、
+    /// 巡航より遅ければ遅いほど早く戻る（止まっていれば stamina_recover tick で満ちる）
+    fn tire(&mut self, i: usize, speed: f32) {
+        let p = &self.params;
+        let cruise = self.cruise(i);
+        let effort = (speed / self.traits[i].max_speed.max(1e-6)).clamp(0.0, 1.0);
+        let change = if effort > cruise {
+            -(effort - cruise) / (1.0 - cruise).max(1e-6) / p.stamina_sprint.max(1.0)
+        } else {
+            (cruise - effort) / cruise.max(1e-6) / p.stamina_recover.max(1.0)
+        };
+        self.stamina[i] = (self.stamina[i] + change).clamp(0.0, 1.0);
     }
 
     /// 体の調子（最高速度に掛かる倍率、frail_speed〜1）。飢えているほど、寿命に近いほど遅くなり、弱いほうの値を使う
@@ -1699,6 +1730,7 @@ impl World {
             input[genome::IN_NEST_RIGHT] = r;
             input[genome::IN_NEST_AWAY] = 1.0;
         }
+        input[genome::IN_STAMINA] = self.stamina[i];
 
         lap!(2);
         let out = genome::think(self.genome(i), &input);
@@ -1782,7 +1814,8 @@ impl World {
             self.watch.priorities = genome::priorities(&out);
         }
 
-        let throttle = 0.5 + 0.5 * softsign(out[genome::OUT_THROTTLE]);
+        // 疲れていると（体力が STAMINA_FADE を切ると）、出せる速さの上限が巡航の速さまで下がっていく
+        let throttle = (0.5 + 0.5 * softsign(out[genome::OUT_THROTTLE])).min(self.stamina_cap(i));
         // 幼体は遅い。飢えた個体と老いた個体も遅い
         let jv = self.params.juvenile_speed;
         let vigor = self.vigor(i);
@@ -2217,6 +2250,7 @@ impl World {
 
     /// エネルギー消費・加齢・死亡・繁殖
     fn live(&mut self, i: usize, speed: f32, wants_child: bool, mate: Mate) {
+        self.tire(i, speed);
         let p = &self.params;
         let t = self.traits[i];
         let herb = self.kind[i] == HERBIVORE;
@@ -2480,6 +2514,7 @@ impl World {
             self.memory.swap_remove(i);
             self.home.swap_remove(i);
             self.vel.swap_remove(i);
+            self.stamina.swap_remove(i);
             self.vigilance.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
@@ -3290,6 +3325,57 @@ mod tests {
         w.live(1, 0.0, false, Mate::Missing);
         assert!(w.energy[0] > w.energy[1], "好みの気温と合わない個体のほうが消費が多い");
     }
+
+    #[test]
+    fn 全力で走ると体力が尽き_巡航の速さまでしか出せなくなる() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.3, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 1000.0, 0, &g);
+        let max = w.traits[0].max_speed;
+        assert_eq!(w.stamina[0], 1.0, "生まれたときは体力が満ちている");
+        assert_eq!(w.stamina_cap(0), 1.0);
+        let sprint = w.params.stamina_sprint as usize;
+        for _ in 0..sprint / 2 {
+            w.live(0, max, false, Mate::Missing);
+        }
+        assert!((w.stamina[0] - 0.5).abs() < 0.02, "全力なら stamina_sprint の半分で半分減る: {}", w.stamina[0]);
+        assert_eq!(w.stamina_cap(0), 1.0, "まだ全速が出る");
+        for _ in 0..sprint {
+            w.live(0, max, false, Mate::Missing);
+        }
+        assert_eq!(w.stamina[0], 0.0);
+        assert!((w.stamina_cap(0) - w.params.herb_cruise).abs() < 1e-6, "尽きると巡航の速さまで");
+        // 巡航の速さちょうどなら減りも戻りもしない
+        w.stamina[0] = 0.5;
+        w.live(0, max * w.params.herb_cruise, false, Mate::Missing);
+        assert!((w.stamina[0] - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn 止まっていれば体力が戻り_疲れると巡航の速さまで落ちる() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.3, 30.0, 0.0);
+        let c = genome::initial(false, 1.0, 1.8, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 1000.0, 0, &g);
+        w.spawn(300.0, 300.0, CARNIVORE, 1000.0, 0, &c);
+        w.stamina[0] = 0.0;
+        for _ in 0..(w.params.stamina_recover as usize / 2) {
+            w.live(0, 0.0, false, Mate::Missing);
+        }
+        assert!((w.stamina[0] - 0.5).abs() < 0.02, "止まっていれば stamina_recover の半分で半分戻る: {}", w.stamina[0]);
+        w.stamina[1] = 0.0;
+        let tired = w.stamina_cap(1) * w.traits[1].max_speed;
+        assert!((tired - w.params.carn_cruise * w.traits[1].max_speed).abs() < 1e-5);
+        // 疲れた肉食（最高速度 1.8）は、元気に逃げる草食（最高速度 1.3）より遅い
+        w.stamina[0] = 1.0;
+        assert!(tired < w.stamina_cap(0) * w.traits[0].max_speed);
+        // 体力は脳の入力に入る
+        w.stamina[0] = 0.3;
+        w.build_grid();
+        w.build_calls();
+        assert!((w.brain_inputs()[0][genome::IN_STAMINA] - 0.3).abs() < 1e-6);
+    }
+
 
     #[test]
     fn 飢えた個体と老いた個体は遅くなる() {

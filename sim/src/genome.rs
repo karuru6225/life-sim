@@ -146,7 +146,9 @@ pub const IN_NEST_RIGHT: usize = 51;
 pub const IN_NEST_HERE: usize = 52;
 /// 巣を覚えていて、そのマスにいなければ 1（巣から離れている）。覚えていないか巣にいれば 0
 pub const IN_NEST_AWAY: usize = 53;
-pub const N_IN: usize = 54;
+/// 自分の体力（0〜1）。巡航の速さを超えて走ると減り、0.2 を切ると速さの上限が巡航の速さまで下がっていく
+pub const IN_STAMINA: usize = 54;
+pub const N_IN: usize = 55;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -522,12 +524,20 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
         wire_out(&mut g, OUT_THROTTLE, h_plant, -2.5);
         wire_out(&mut g, OUT_THROTTLE, h_threat, 6.0);
     } else {
-        // 獲物が見えたら、相手探しより狩りを優先し、速く追う
+        // 獲物が見えたら、相手探しより狩りを優先する
         let h_prey = h_threat;
         wire_hidden(&mut g, h_prey, IN_PREY_NEAR, 4.0);
         wire_out(&mut g, OUT_PRI_FOOD, h_prey, 3.0);
-        out_bias(&mut g, OUT_THROTTLE, -0.5);
-        wire_out(&mut g, OUT_THROTTLE, h_prey, 6.0);
+        // 遠くの獲物にはゆっくり（巡航の速さ以下で）近づき、視野の 4 割ほどまで近づいたら全力で襲う（全力で走れる時間には限りがある）。
+        // 中間ニューロン 11 が「獲物が近い」を表す（見えていなければ −1 近く、視野の端で −0.8、真近くで +0.75）。
+        // 速さの目安: 獲物なし 0.26、視野の端 0.42、視野の 4 割 0.88、真近く 0.92
+        let h_close = 11;
+        g[ACT + h_close] = 1.0;
+        wire_hidden(&mut g, h_close, IN_PREY_NEAR, 16.0);
+        hidden_bias(&mut g, h_close, -13.0);
+        out_bias(&mut g, OUT_THROTTLE, 2.8);
+        wire_out(&mut g, OUT_THROTTLE, h_prey, 0.5);
+        wire_out(&mut g, OUT_THROTTLE, h_close, 4.0);
     }
     // 繁殖期: 日射の多い季節と、周りの仲間が繁殖シグナルを出しているときは、繁殖の欲求が強まる
     let h_mood = 5;
@@ -598,6 +608,7 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         IN_NEST_RIGHT,
         IN_NEST_HERE,
         IN_NEST_AWAY,
+        IN_STAMINA,
     ];
     for h in [6, 7] {
         for &k in &kin_inputs {
@@ -971,6 +982,20 @@ mod tests {
         let mut danger = calm;
         danger[IN_PRED_NEAR] = 0.8;
         assert!(think(&g, &danger)[OUT_THROTTLE] > think(&g, &calm)[OUT_THROTTLE]);
+    }
+
+    #[test]
+    fn 初期の肉食は遠くの獲物には巡航以下で近づき_近づいたら全力で襲う() {
+        let g = initial(false, 1.0, 1.8, 48.0, 0.0);
+        let throttle = |near: f32| {
+            let mut i = input();
+            i[IN_PREY_NEAR] = near;
+            0.5 + 0.5 * softsign(think(&g, &i)[OUT_THROTTLE])
+        };
+        assert!(throttle(0.0) < 0.35, "獲物がいなければゆっくり: {}", throttle(0.0));
+        assert!(throttle(0.5) < 0.5, "視野の端の獲物にはゆっくり近づく: {}", throttle(0.5));
+        assert!(throttle(0.8) > 0.85, "近づいたら全力: {}", throttle(0.8));
+        assert!(throttle(1.0) > 0.85);
     }
 
     #[test]
