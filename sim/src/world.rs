@@ -233,6 +233,8 @@ pub struct Census {
     pub hunt_allies: f64,
     pub hunt_rivals: f64,
     pub hunt_chance: f64,
+    /// 襲いかかったときの、獲物が遠ざかっていた速さ ÷ 肉食の最高速度（0〜1）の合計
+    pub hunt_escape: f64,
     /// 仕留めた獲物を分け合った人数の合計
     pub kill_eaters: f64,
     /// 草食の大人の大きさの段階ごとの記録（herb_size_bin）。生まれた数は親（産んだ側）の段階で数える
@@ -272,6 +274,8 @@ const DRIVE_MATE: usize = 1;
 /// 狩りの見込み。chance: 成功する確率、size_ratio: 獲物の大きさ ÷ 肉食の大きさ（協力込み）、guards: 獲物の近くの仲間の数
 struct HuntOdds {
     chance: f32,
+    /// 獲物が遠ざかっていた速さ ÷ 肉食の最高速度（0〜1）
+    escape: f32,
     size_ratio: f32,
     guards: u32,
     allies: u32,
@@ -445,6 +449,10 @@ pub struct World {
     pub memory: Vec<Memory>,
     /// 覚えている巣のマス（植物のマスの番号。NO_HOME なら覚えていない）
     pub home: Vec<u32>,
+    /// 最後の tick に実際に動いた量（世界の向きの (dx, dy)。動かなければ 0）
+    pub vel: Vec<(f32, f32)>,
+    /// tick の始めに写した vel（前の tick の動き）。狩りで獲物が逃げていたかを見るのに使う（行動の順番で結果が変わらないように）
+    prev_vel: Vec<(f32, f32)>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
     alive: Vec<bool>,
 
@@ -597,6 +605,8 @@ impl World {
             alone: Vec::new(),
             memory: Vec::new(),
             home: Vec::new(),
+            vel: Vec::new(),
+            prev_vel: Vec::new(),
             vigilance: Vec::new(),
             natal: Vec::new(),
             cover: Vec::new(),
@@ -693,6 +703,7 @@ impl World {
         self.alone.push(0);
         self.memory.push(Memory::default());
         self.home.push(NO_HOME);
+        self.vel.push((0.0, 0.0));
         self.vigilance.push(0.5);
         self.natal.push(self.terrain.soil_at(x, y));
         self.cover.push(0.0);
@@ -1274,6 +1285,8 @@ impl World {
         lap!(2);
         self.build_grid();
         self.build_calls();
+        self.prev_vel.clear();
+        self.prev_vel.extend_from_slice(&self.vel);
         lap!(3);
 
         // 1 段目: 全個体が tick の始めの世界を見て、知覚と脳の判断をする（互いに書き込まないので並列にできる）。
@@ -2008,6 +2021,7 @@ impl World {
         c.hunt_allies += odds.allies as f64;
         c.hunt_rivals += odds.rivals as f64;
         c.hunt_chance += odds.chance as f64;
+        c.hunt_escape += odds.escape as f64;
         if self.kind[j] == HERBIVORE {
             c.herb_size_attacked[herb_size_bin(self.traits[j].adult_size)] += 1;
         }
@@ -2127,13 +2141,23 @@ impl World {
             }
         });
         // 肉食どうしの干渉（獲物の横取りや縄張り争い）: 近くに系統の違う肉食が多いほど成功しにくい
-        let chance =
-            p.hunt_success * by_size / (1.0 + p.guard_strength * guards as f32) / (1.0 + p.carn_interference * rivals as f32);
-        HuntOdds { chance, size_ratio: ratio, guards, allies: helpers as u32, rivals }
+        // 逃げ: 獲物が前の tick に肉食から遠ざかっていた速さ（肉食から獲物への向きの成分）を、肉食の最高速度と比べる。
+        // 気づいて逃げている獲物ほど仕留めにくい。止まっている獲物や、肉食に向かってくる獲物には効かない
+        let (vx, vy) = self.prev_vel.get(j).copied().unwrap_or((0.0, 0.0));
+        let dx = torus_delta(x - self.xs[i], self.width);
+        let dy = torus_delta(y - self.ys[i], self.height);
+        let d = (dx * dx + dy * dy).sqrt().max(1e-3);
+        let away = ((vx * dx + vy * dy) / d).max(0.0);
+        let escape = (away / self.traits[i].max_speed.max(1e-3)).min(1.0);
+        let chance = p.hunt_success * by_size * (1.0 - p.escape_strength * escape)
+            / (1.0 + p.guard_strength * guards as f32)
+            / (1.0 + p.carn_interference * rivals as f32);
+        HuntOdds { chance, escape, size_ratio: ratio, guards, allies: helpers as u32, rivals }
     }
 
     fn move_agent(&mut self, i: usize, speed: f32) {
         if speed == 0.0 {
+            self.vel[i] = (0.0, 0.0);
             return;
         }
         self.life[i].distance += speed;
@@ -2153,6 +2177,7 @@ impl World {
             self.hy[i] = -self.hy[i];
             (x, y)
         };
+        self.vel[i] = (torus_delta(nx - x, self.width), torus_delta(ny - y, self.height));
         self.xs[i] = nx;
         self.ys[i] = ny;
     }
@@ -2454,6 +2479,7 @@ impl World {
             self.alone.swap_remove(i);
             self.memory.swap_remove(i);
             self.home.swap_remove(i);
+            self.vel.swap_remove(i);
             self.vigilance.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
@@ -4165,5 +4191,35 @@ mod tests {
         input[genome::IN_NEST_AWAY] = 0.0;
         input[genome::IN_READY] = 0.0;
         assert!(genome::think(&g, &input)[genome::OUT_BUILD] < 0.0, "繁殖できない状態なら作らない");
+    }
+
+    #[test]
+    fn 肉食から遠ざかっていた獲物ほど仕留めにくい() {
+        // 肉食は (100, 100)、獲物はその右 (104, 100)。前の tick の獲物の動きだけを変えて比べる
+        let chance = |vel: (f32, f32)| {
+            let mut w = hunting_world(0.5);
+            w.build_grid();
+            w.prev_vel = vec![(0.0, 0.0), vel];
+            w.hunt_chance(0, 1)
+        };
+        let still = chance((0.0, 0.0));
+        let max = hunting_world(0.5).traits[0].max_speed;
+        assert_eq!(still, chance((-1.0, 0.0)), "肉食に向かってくる獲物には効かない");
+        assert_eq!(still, chance((0.0, 1.0)), "横に動いている獲物には効かない");
+        let half = chance((0.5 * max, 0.0));
+        let p = hunting_world(0.5).params.escape_strength;
+        assert!((half - still * (1.0 - 0.5 * p)).abs() < 1e-6, "肉食の半分の速さで遠ざかる: {still} → {half}");
+        assert!((chance((2.0 * max, 0.0)) - still * (1.0 - p)).abs() < 1e-6, "肉食より速ければ下げ幅は上限");
+    }
+
+    #[test]
+    fn 動いた量を覚え次のtickの始めに写す() {
+        let mut w = hunting_world(0.5);
+        w.hx[1] = 1.0;
+        w.hy[1] = 0.0;
+        w.move_agent(1, 1.0);
+        assert!((w.vel[1].0 - 1.0).abs() < 1e-6 && w.vel[1].1.abs() < 1e-6);
+        w.move_agent(1, 0.0);
+        assert_eq!(w.vel[1], (0.0, 0.0), "止まれば 0");
     }
 }

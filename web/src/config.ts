@@ -101,6 +101,7 @@ export const SIM_PARAMS = {
 
   // 狩り
   hunt_success: 0.9,
+  escape_strength: 0.15,
   hunt_easy_ratio: 0.7,
   hunt_impossible_ratio: 1.5,
   guard_radius: 12,

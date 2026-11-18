@@ -20,8 +20,9 @@ use crate::genome::{H1, H2, N_OUT, N_TRAITS};
 /// ファイルの先頭の印
 const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
-pub const FORMAT_VERSION: u32 = 5;
-/// 読み込める最も古い形式の番号（形式 4 までは巣がない。遺伝子の並びも違うので読めない）
+pub const FORMAT_VERSION: u32 = 6;
+/// 読み込める最も古い形式の番号（形式 4 までは巣がない。遺伝子の並びも違うので読めない）。
+/// 形式 5 は、個体の動き（vel）と狩りの逃げの集計がない。読むときは 0 にする
 const OLDEST_FORMAT: u32 = 5;
 /// 死因の数（Census の配列の長さ）
 const N_CAUSES: usize = 8;
@@ -155,7 +156,7 @@ impl World {
         }
         w.u64(c.hunts);
         w.u64(c.kills);
-        for v in [c.hunt_ratio, c.hunt_guards, c.hunt_allies, c.hunt_rivals, c.hunt_chance, c.kill_eaters] {
+        for v in [c.hunt_ratio, c.hunt_guards, c.hunt_allies, c.hunt_rivals, c.hunt_chance, c.kill_eaters, c.hunt_escape] {
             w.f64(v);
         }
         w.u32(self.recent_deaths.len() as u32);
@@ -218,6 +219,8 @@ impl World {
             w.f32(m.value);
             w.u64(m.tick);
             w.u32(self.home[i]);
+            w.f32(self.vel[i].0);
+            w.f32(self.vel[i].1);
             // 遺伝子: 0 でない値の位置のビット列と、その値
             let g = self.genome(i);
             let mut bits = vec![0u8; GENOME_LEN.div_ceil(8)];
@@ -308,6 +311,9 @@ impl World {
         c.hunt_rivals = r.f64()?;
         c.hunt_chance = r.f64()?;
         c.kill_eaters = r.f64()?;
+        if version >= 6 {
+            c.hunt_escape = r.f64()?;
+        }
         for _ in 0..r.u32()? {
             let d = DeathRecord { tick: r.u64()?, kind: r.u8()?, cause: r.u8()?, hue: r.f32()? };
             world.recent_deaths.push_back(d);
@@ -348,6 +354,7 @@ impl World {
             };
             let memory = Memory { x: r.f32()?, y: r.f32()?, value: r.f32()?, tick: r.u64()? };
             let home = r.u32()?;
+            let vel = if version >= 6 { (r.f32()?, r.f32()?) } else { (0.0, 0.0) };
             if home != NO_HOME && home as usize >= cells {
                 return Err(format!("覚えている巣のマスが壊れている（{home}）"));
             }
@@ -381,6 +388,7 @@ impl World {
             world.alone.push(alone);
             world.memory.push(memory);
             world.home.push(home);
+            world.vel.push(vel);
             world.vigilance.push(vigilance);
             world.natal.push(natal);
             world.cover.push(cover);
@@ -543,6 +551,7 @@ mod tests {
         assert_eq!(a.nest, b.nest);
         assert_eq!(a.nest_owner, b.nest_owner);
         assert_eq!(a.home, b.home);
+        assert_eq!(a.vel, b.vel);
         assert_eq!(a.ledger.expected_total(), b.ledger.expected_total());
         assert!(a.history.len() > 0, "記録が溜まっている");
         assert_eq!(a.history, b.history, "長期の統計の記録も続く");
