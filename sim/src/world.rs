@@ -18,7 +18,7 @@ use crate::grid::Grid;
 use crate::params::Params;
 use crate::plants::{LAYERS, PlantField};
 use crate::rng::Rng;
-use crate::terrain::{Terrain, TerrainSpec};
+use crate::terrain::{RainSpec, Terrain, TerrainSpec};
 use std::collections::VecDeque;
 
 pub mod history;
@@ -777,6 +777,9 @@ impl World {
     fn update_climate(&mut self) {
         let season = self.season();
         self.terrain.set_season(season);
+        let p = &self.params;
+        let rain = RainSpec { dry: p.rain_dry, width: p.rain_width, center: p.rain_center, swing: p.rain_swing };
+        self.terrain.set_rain(season, &rain);
         self.terrain.productivity_into(&mut self.plants.fertility);
     }
 

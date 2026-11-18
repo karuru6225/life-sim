@@ -33,6 +33,10 @@ export const SIM_PARAMS = {
   // 季節
   season_length: 2400,
   season_temp: 10,
+  rain_dry: 0.3,
+  rain_width: 0.08,
+  rain_center: 0.5,
+  rain_swing: 0.08,
   season_amplitude: 0,
 
   // 植物

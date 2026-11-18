@@ -11,6 +11,11 @@
 //! 今の気温は、平均気温に季節の変化が乗ったもの。季節の振れ幅は中央でほぼ 0、上下の端ほど大きい（現実の高緯度と同じ）。
 //! 植物の育ちやすさ（肥沃度）は「土の肥えかた × 今の気温による育ちやすさ」で、季節とともに変わる。
 //! 土の肥えかたは季節で変わらず、これを「植生の種類」として扱う（草食が生まれた場所で覚えるのはこちら）。
+//!
+//! 雨の帯: 南北に伸びる雨の多い帯が 1 本あり、季節とともに東西に往復する（夏は東へ、冬は西へ）。
+//! 南北は気温で季節が変わるので、雨は東西の向きにして、気温と雨を別々の軸にする。
+//! 育ちやすさには、帯に近いほど大きい雨の倍率が掛かる。倍率は列（経度）の平均で 1 になるように割るので、
+//! 世界全体の育ちやすさは変わらず、どこでいつ育つかだけが動く。
 
 use crate::rng::Rng;
 
@@ -38,6 +43,21 @@ pub struct Terrain {
     /// 植物の適温と、育ちやすさが 1/e に落ちる適温からの差（度）
     pub plant_temp_opt: f32,
     pub plant_temp_width: f32,
+    /// 列（経度）ごとの今の雨の倍率（列の平均で 1）。set_rain で更新する
+    pub rain: Vec<f32>,
+}
+
+/// 雨の帯の設定
+#[derive(Clone, Copy)]
+pub struct RainSpec {
+    /// 帯から遠い乾いた所の雨（帯の中心を 1 とした割合、0〜1）。1 なら雨の帯なし
+    pub dry: f32,
+    /// 帯の幅（世界の幅に対する割合。帯の中心からこの距離で雨が 1/e に減る）
+    pub width: f32,
+    /// 帯の中心の東西の位置の 1 年の平均（世界の幅に対する割合、0〜1）
+    pub center: f32,
+    /// 帯の中心が季節で動く幅（世界の幅に対する割合。夏は東へ、冬は西へ）
+    pub swing: f32,
 }
 
 /// 地形を作るときの設定
@@ -121,6 +141,7 @@ impl Terrain {
             season_amp,
             plant_temp_opt: spec.plant_temp_opt,
             plant_temp_width: spec.plant_temp_width,
+            rain: vec![1.0; cols],
         };
         let mut fertility = vec![0.0; cols * rows];
         t.productivity_into(&mut fertility);
@@ -135,12 +156,34 @@ impl Terrain {
         }
     }
 
-    /// 今の気温での肥沃度（土の肥えかた × 気温による育ちやすさ）を out に書き込む。水は 0
+    /// 季節（−1〜1）に合わせて雨の帯を動かし、行ごとの雨の倍率を更新する
+    pub fn set_rain(&mut self, season: f32, spec: &RainSpec) {
+        if spec.dry >= 1.0 {
+            self.rain.fill(1.0);
+            return;
+        }
+        let cols = self.cols as f32;
+        let center = spec.center + spec.swing * season;
+        let width = spec.width.max(1e-3);
+        let dry = spec.dry.clamp(0.0, 1.0);
+        for (c, rain) in self.rain.iter_mut().enumerate() {
+            // 帯の中心からの東西の距離（世界の幅に対する割合。東西はつながっているので 0〜0.5）
+            let u = ((c as f32 + 0.5) / cols - center).rem_euclid(1.0);
+            let d = u.min(1.0 - u) / width;
+            *rain = dry + (1.0 - dry) * (-d * d).exp();
+        }
+        let mean = self.rain.iter().sum::<f32>() / cols;
+        for rain in &mut self.rain {
+            *rain /= mean.max(1e-6);
+        }
+    }
+
+    /// 今の気温と雨での肥沃度（土の肥えかた × 気温による育ちやすさ × 雨の倍率）を out に書き込む。水は 0
     pub fn productivity_into(&self, out: &mut [f32]) {
-        let (opt, width) = (self.plant_temp_opt, self.plant_temp_width);
-        for ((o, &soil), &temp) in out.iter_mut().zip(&self.soil).zip(&self.temp_now) {
+        let (opt, width, cols) = (self.plant_temp_opt, self.plant_temp_width, self.cols);
+        for (k, ((o, &soil), &temp)) in out.iter_mut().zip(&self.soil).zip(&self.temp_now).enumerate() {
             let t = (temp - opt) / width;
-            *o = soil * (-t * t).exp();
+            *o = soil * (-t * t).exp() * self.rain[k % cols];
         }
     }
 
@@ -164,6 +207,7 @@ impl Terrain {
             // 平らな世界では気温が植物の育ちやすさに影響しないよう、幅を十分に広くする
             plant_temp_opt: temp_mean,
             plant_temp_width: f32::INFINITY,
+            rain: vec![1.0; cols],
         }
     }
 
@@ -262,6 +306,33 @@ mod tests {
         let (edge_winter, mid_winter) = (row_mean(&t, 0), row_mean(&t, t.rows / 2));
         assert!(edge_summer - edge_winter > 15.0, "端の夏と冬の差 {}", edge_summer - edge_winter);
         assert!((mid_summer - mid_winter).abs() < 1.0, "中央の夏と冬の差 {}", mid_summer - mid_winter);
+    }
+
+    #[test]
+    fn 雨の帯は夏に東へ冬に西へ動き平均は変わらない() {
+        let mut t = Terrain::flat(4800.0, 3200.0, 32.0, 15.0);
+        let spec = RainSpec { dry: 0.3, width: 0.08, center: 0.5, swing: 0.08 };
+        // 雨の最も多い列の東西の位置（世界の幅に対する割合）
+        let peak = |t: &Terrain| {
+            let c = (0..t.cols).max_by(|&a, &b| t.rain[a].total_cmp(&t.rain[b])).unwrap();
+            (c as f32 + 0.5) / t.cols as f32
+        };
+        for season in [-1.0, 0.0, 1.0] {
+            t.set_rain(season, &spec);
+            let mean = t.rain.iter().sum::<f32>() / t.cols as f32;
+            assert!((mean - 1.0).abs() < 1e-4, "平均 {mean}");
+            assert!((peak(&t) - (0.5 + 0.08 * season)).abs() < 0.01, "季節 {season} の帯の位置 {}", peak(&t));
+        }
+        // 端をまたいでもつながる（中心が東の端なら、西の端も雨が多い）
+        t.set_rain(0.0, &RainSpec { center: 0.0, ..spec });
+        assert!((t.rain[0] - t.rain[t.cols - 1]).abs() < 0.05 && t.rain[0] > 2.0, "{} {}", t.rain[0], t.rain[t.cols - 1]);
+        t.set_rain(1.0, &spec);
+        // 乾いた所は帯の中心の 3 割
+        let (lo, hi) = t.rain.iter().fold((f32::MAX, 0.0f32), |(a, b), &v| (a.min(v), b.max(v)));
+        assert!((lo / hi - 0.3).abs() < 0.01, "{}", lo / hi);
+        // 雨の帯なし
+        t.set_rain(1.0, &RainSpec { dry: 1.0, ..spec });
+        assert!(t.rain.iter().all(|&v| v == 1.0));
     }
 
     #[test]
