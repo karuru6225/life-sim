@@ -237,6 +237,10 @@ pub struct Census {
     pub hunt_chance: f64,
     /// 襲いかかったときの、獲物が遠ざかっていた速さ ÷ 肉食の最高速度（0〜1）の合計
     pub hunt_escape: f64,
+    /// 襲われた獲物のうち、その tick の判断で天敵が見えていた数
+    pub hunt_noticed: u64,
+    /// 仕留められた獲物のうち、その tick の判断で天敵が見えていた数
+    pub kill_noticed: u64,
     /// 仕留めた獲物を分け合った人数の合計
     pub kill_eaters: f64,
     /// 草食の大人の大きさの段階ごとの記録（herb_size_bin）。生まれた数は親（産んだ側）の段階で数える
@@ -479,6 +483,10 @@ pub struct World {
     grid: Grid,
     /// 相手からの見えにくさ（足元の草から、繁殖シグナルで目立つ分を引いたもの）。グリッドに渡す作業用
     conceal: Vec<f32>,
+    /// 動きの度合い（前の tick に動いた量 ÷ 最高速度、0〜1）。build_grid で作る
+    motion: Vec<f32>,
+    /// この tick の判断で天敵が見えていたか（草食）。狩りの集計に使う
+    noticed: Vec<bool>,
     /// 呼び声の場: 成熟した個体の繁殖シグナルを、種類ごとに粗いマス目（call_cell 四方）に足し合わせたもの
     calls: [Vec<f32>; 2],
     call_cols: usize,
@@ -631,6 +639,8 @@ impl World {
             render: Vec::new(),
             grid,
             conceal: Vec::new(),
+            motion: Vec::new(),
+            noticed: Vec::new(),
             calls: [Vec::new(), Vec::new()],
             call_cols: 0,
             call_rows: 0,
@@ -1229,12 +1239,18 @@ impl World {
     fn build_grid(&mut self) {
         let (exposure, hide, power) = (self.params.signal_exposure, self.params.cover_strength, self.params.conceal_size_power);
         let nest_hide = self.params.nest_hide;
+        let reveal = self.params.motion_reveal;
         self.conceal.clear();
+        self.motion.clear();
         for i in 0..self.count() {
+            // 動いている相手ほど草に紛れない（前の tick に動いた量 ÷ 最高速度）
+            let (vx, vy) = self.vel[i];
+            let motion = ((vx * vx + vy * vy).sqrt() / self.traits[i].max_speed.max(1e-6)).min(1.0);
+            self.motion.push(motion);
             let by_size = self.traits[i].size.max(0.01).powf(power);
             // 巣の中では、巣の隠れと足元の草の隠れの大きい方を使う
             let nest = self.nest[self.plants.cell_index(self.xs[i], self.ys[i])];
-            let cover = self.cover[i].max(nest_hide * nest);
+            let cover = self.cover[i].max(nest_hide * nest) * (1.0 - reveal * motion);
             let by_cover = 1.0 - hide * cover * (1.0 - exposure * self.signal[i]);
             let visible = (by_size * by_cover).clamp(0.05, 1.0);
             self.conceal.push(1.0 - visible);
@@ -1327,6 +1343,11 @@ impl World {
         order.extend((0..self.count()).map(|k| self.grid.entry(k).0));
         let mut plans = std::mem::take(&mut self.plans);
         self.make_plans(&order, &mut plans);
+        self.noticed.clear();
+        self.noticed.resize(self.count(), false);
+        for (k, &i) in order.iter().enumerate() {
+            self.noticed[i] = plans[k].input[genome::IN_PRED_NEAR] > 0.0;
+        }
         lap!(4);
         // 2 段目: 判断に従って、1 体ずつ順番に行動する（移動・食べる・狩る・争う・繁殖）
         #[cfg(feature = "profile")]
@@ -1405,9 +1426,10 @@ impl World {
         // 近づきすぎない距離（体がぶつかる距離なので、草で隠れて見えなくても効く）
         let space = self.params.personal_space * self.traits[i].size;
         let space2 = space * space;
-        // 草食は警戒しているほど天敵に遠くから気づける（警戒 0 で視野の vigilance_min_range 倍）
+        // 草食は警戒しているほど天敵に遠くから気づける（警戒 0 で視野の vigilance_min_range 倍）。
+        // 動いている天敵には、警戒していなくても動きの度合いだけ注意が向く（警戒と動きの大きい方）
         let vmin = self.params.vigilance_min_range;
-        let threat_range = vision * (vmin + (1.0 - vmin) * self.vigilance[i]);
+        let vigilance = self.vigilance[i];
         let (mut similar, mut similar_d2, mut similar_count): (Seen, f32, u32) = (None, f32::MAX, 0);
         // 成熟した仲間の最寄り（[標識色が近い, 問わない]）
         let mut mate: [Seen; 2] = [None, None];
@@ -1442,7 +1464,8 @@ impl World {
             // 相手の見えにくさ（隠れの強さ・足元の草・シグナル・大きさを build_grid で掛け合わせたもの）
             let mut r = vision * (1.0 - cover_j);
             if my_kind == HERBIVORE && kind_j != my_kind {
-                r *= threat_range / vision;
+                let attention = vigilance.max(self.motion.get(j).copied().unwrap_or(0.0));
+                r *= vmin + (1.0 - vmin) * attention;
             }
             if d2 < r * r && j != i && self.alive[j] && in_view(dx, dy, d2) {
                 let rel = if kind_j == my_kind {
@@ -2055,6 +2078,8 @@ impl World {
         c.hunt_rivals += odds.rivals as f64;
         c.hunt_chance += odds.chance as f64;
         c.hunt_escape += odds.escape as f64;
+        let noticed = self.noticed.get(j).copied().unwrap_or(false);
+        c.hunt_noticed += noticed as u64;
         if self.kind[j] == HERBIVORE {
             c.herb_size_attacked[herb_size_bin(self.traits[j].adult_size)] += 1;
         }
@@ -2073,6 +2098,7 @@ impl World {
         let (_, mut eaters) = self.carnivore_neighbors(i);
         eaters.push(i);
         self.census.kills += 1;
+        self.census.kill_noticed += noticed as u64;
         self.census.carn_size_kills[carn_size_bin(self.traits[i].adult_size)] += 1;
         self.life[i].kills += 1;
         self.census.kill_eaters += eaters.len() as f64;
@@ -3529,6 +3555,39 @@ mod tests {
         assert!(w.sense(0).predator.is_some(), "真横の天敵は見える");
         face(&mut w, 0, -1.0, 0.0);
         assert!(w.sense(0).predator.is_none(), "真後ろの天敵は見えない");
+    }
+
+    #[test]
+    fn 動いている相手ほど草に紛れず_警戒していない草食も走ってくる天敵には気づく() {
+        // 草の満ちたマスにいる肉食: 止まっていれば隠れ、走っていれば見つかる
+        let carn = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        let herb = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        let mut w = empty_world();
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &herb);
+        w.spawn(118.0, 100.0, CARNIVORE, 5.0, 0, &carn);
+        w.hx[0] = 1.0;
+        w.hy[0] = 0.0;
+        w.vigilance[0] = 1.0;
+        w.cover = vec![0.0, 1.0];
+        w.build_grid();
+        let hidden = w.conceal[1];
+        assert!(w.sense(0).predator.is_none(), "草に紛れて止まっている天敵は 18 px 先でも見えない");
+        let max = w.traits[1].max_speed;
+        w.vel[1] = (0.0, max);
+        w.build_grid();
+        assert!((w.motion[1] - 1.0).abs() < 1e-6);
+        assert!(w.conceal[1] < hidden - 0.5, "全力で走ると草に紛れない: {hidden} → {}", w.conceal[1]);
+        assert!(w.sense(0).predator.is_some(), "走っている天敵は見える");
+        // 草のない場所: 警戒していない草食は、止まっている天敵には視野の半分までしか気づかないが、走ってくる天敵には視野いっぱいで気づく
+        w.cover = vec![0.0, 0.0];
+        w.vigilance[0] = 0.0;
+        w.xs[1] = 100.0 + 0.7 * w.traits[0].vision;
+        w.vel[1] = (0.0, 0.0);
+        w.build_grid();
+        assert!(w.sense(0).predator.is_none(), "止まっている天敵には気づかない");
+        w.vel[1] = (0.0, max);
+        w.build_grid();
+        assert!(w.sense(0).predator.is_some(), "走ってくる天敵には気づく");
     }
 
     #[test]

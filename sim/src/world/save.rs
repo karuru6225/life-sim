@@ -20,8 +20,9 @@ use crate::genome::{H1, H2, N_OUT, N_TRAITS};
 /// ファイルの先頭の印
 const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 /// 読み込める最も古い形式の番号（形式 6 までは脳の入力に体力がなく、遺伝子の並びが違うので読めない）
+/// 形式 7 は、狩りで獲物が天敵に気づいていたかの集計がない。読むときは 0 にする
 const OLDEST_FORMAT: u32 = 7;
 /// 死因の数（Census の配列の長さ）
 const N_CAUSES: usize = 8;
@@ -155,6 +156,8 @@ impl World {
         }
         w.u64(c.hunts);
         w.u64(c.kills);
+        w.u64(c.hunt_noticed);
+        w.u64(c.kill_noticed);
         for v in [c.hunt_ratio, c.hunt_guards, c.hunt_allies, c.hunt_rivals, c.hunt_chance, c.kill_eaters, c.hunt_escape] {
             w.f64(v);
         }
@@ -305,6 +308,10 @@ impl World {
         }
         c.hunts = r.u64()?;
         c.kills = r.u64()?;
+        if version >= 8 {
+            c.hunt_noticed = r.u64()?;
+            c.kill_noticed = r.u64()?;
+        }
         c.hunt_ratio = r.f64()?;
         c.hunt_guards = r.f64()?;
         c.hunt_allies = r.f64()?;
