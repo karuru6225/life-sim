@@ -139,7 +139,14 @@ pub const IN_MEM_FWD: usize = 47;
 pub const IN_MEM_RIGHT: usize = 48;
 /// 覚えている場所の良さ（覚えたときの良さ × 薄れ具合、0〜1）。覚えていなければ 0
 pub const IN_MEM_VALUE: usize = 49;
-pub const N_IN: usize = 50;
+/// 覚えている巣の方向（前・右）。覚えていないか、その巣のマスにいれば 0
+pub const IN_NEST_FWD: usize = 50;
+pub const IN_NEST_RIGHT: usize = 51;
+/// 今いるマスの巣の出来の良さ（0〜1、巣がなければ 0）
+pub const IN_NEST_HERE: usize = 52;
+/// 巣を覚えていて、そのマスにいなければ 1（巣から離れている）。覚えていないか巣にいれば 0
+pub const IN_NEST_AWAY: usize = 53;
+pub const N_IN: usize = 54;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -185,7 +192,9 @@ pub const OUT_PRI_FIGHT: usize = 12;
 pub const OUT_ATTACK: usize = 13;
 /// 正なら、届く距離の仲間（同じ種類で系統色の近い個体）を攻撃する
 pub const OUT_ATTACK_KIN: usize = 14;
-pub const N_OUT: usize = 15;
+/// 正なら、ほかに何もしなかった tick に、今いるマスで巣を作る（止まり、エネルギーと材料の茂み・枝を使う）
+pub const OUT_BUILD: usize = 15;
+pub const N_OUT: usize = 16;
 
 /// 欲求の数（食べる・繁殖・逃げる・仲間・追い払う・自由）。最後の「自由」の方向は脳の出力から取る
 pub const N_DRIVES: usize = 6;
@@ -476,6 +485,8 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
 
     // 自由な移動は、ゆるく前へ
     out_bias(&mut g, OUT_DIR_FWD, 0.3);
+    // 巣は作らない（作るかどうかは進化に任せる。add_nest_wiring で初期配線を入れられる）
+    out_bias(&mut g, OUT_BUILD, -1.0);
 
     // 優先度の基本: 普段は食べる、繁殖できる状態なら繁殖、天敵が見えたら逃げるを最優先。
     // 仲間に寄る欲求は弱くしておき、強めるかどうかは進化に任せる
@@ -583,6 +594,10 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         IN_MEM_FWD,
         IN_MEM_RIGHT,
         IN_MEM_VALUE,
+        IN_NEST_FWD,
+        IN_NEST_RIGHT,
+        IN_NEST_HERE,
+        IN_NEST_AWAY,
     ];
     for h in [6, 7] {
         for &k in &kin_inputs {
@@ -605,6 +620,18 @@ pub fn add_memory_wiring(g: &mut [f32], weight: f32) {
     wire_hidden(g, h_right, IN_MEM_RIGHT, 4.0);
     wire_out(g, OUT_DIR_FWD, h_fwd, weight);
     wire_out(g, OUT_DIR_RIGHT, h_right, weight);
+}
+
+/// 巣作りの初期配線: 中間ニューロン 10 を使い始め、繁殖できる状態で、巣から離れていなければ（巣にいるか、まだ巣がなければ）
+/// 巣を作る向きに、出力「作る」へ重み weight でつなぐ。巣を持つ個体は自分の巣でだけ作る（手入れする）ので、通りかかるマスごとに作り始めない。
+/// 初期の向きを与えるだけで、強めるか弱めるかは進化に任せる
+pub fn add_nest_wiring(g: &mut [f32], weight: f32) {
+    let h = 10;
+    g[ACT + h] = 1.0;
+    wire_hidden(g, h, IN_READY, 4.0);
+    wire_hidden(g, h, IN_NEST_AWAY, -8.0);
+    hidden_bias(g, h, -2.0);
+    wire_out(g, OUT_BUILD, h, weight);
 }
 
 /// 2 つの遺伝子の違い（遺伝的距離）。標識色を除く形質と、脳の重みの差を、変異 1 回の大きさを単位にして

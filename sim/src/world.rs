@@ -56,6 +56,8 @@ pub mod state {
     pub const FIGHT: u8 = 9;
     /// 仲間（同じ系統）を攻撃した
     pub const FIGHT_KIN: u8 = 10;
+    /// 巣を作った
+    pub const BUILD: u8 = 11;
 }
 
 /// 死因（観察用）
@@ -82,6 +84,12 @@ const ATTACKED_TICKS: u8 = 30;
 
 /// これより少なくなった死体は消す
 const CARRION_MIN: f32 = 0.1;
+
+/// これより出来の悪い巣は崩れて消える
+const NEST_MIN: f32 = 0.01;
+
+/// 巣を覚えていないときの home の値
+pub const NO_HOME: u32 = u32::MAX;
 
 /// 気温と植物の育ちやすさを更新する間隔（tick）
 const CLIMATE_EVERY: u64 = 30;
@@ -122,6 +130,8 @@ pub struct Ledger {
     pub carn_gain: f64,
     /// 死体が腐って失われた量
     pub lost_decay: f64,
+    /// 巣の材料にした植物の量（巣は熱を保つ構造物で、食べ物にはならない）
+    pub lost_build: f64,
 }
 
 impl Ledger {
@@ -133,6 +143,7 @@ impl Ledger {
             - self.lost_birth
             - self.lost_death
             - self.lost_decay
+            - self.lost_build
     }
 }
 
@@ -210,6 +221,8 @@ pub struct Census {
     pub kin_fights: [u64; 2],
     /// 生まれた数 [種類]
     pub births: [u64; 2],
+    /// 巣を作った回数（個体 × tick） [種類]
+    pub builds: [u64; 2],
     /// 襲いかかった回数と、仕留めた回数
     pub hunts: u64,
     pub kills: u64,
@@ -377,6 +390,8 @@ struct Birth {
     generation: u32,
     /// births_genomes の中の開始位置
     genome_at: usize,
+    /// 親が覚えている巣のマス（NO_HOME なら覚えていない）。子はこれを覚えて生まれる
+    home: u32,
 }
 
 pub struct World {
@@ -428,6 +443,8 @@ pub struct World {
     pub life: Vec<Life>,
     /// 覚えている食べ物の場所
     pub memory: Vec<Memory>,
+    /// 覚えている巣のマス（植物のマスの番号。NO_HOME なら覚えていない）
+    pub home: Vec<u32>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
     alive: Vec<bool>,
 
@@ -437,6 +454,10 @@ pub struct World {
     pub carrion: Vec<f32>,
     /// マスごとの死体の古さ（死んでからの tick 数。新しい死体が足されたら量で重み付けして平均する）
     pub carrion_age: Vec<f32>,
+    /// マスごとの巣の出来の良さ（0〜1、植物と同じマス目）。作ると上がり、時間とともに崩れる
+    pub nest: Vec<f32>,
+    /// マスごとの巣の持ち主（最後に手を入れた個体の id。0 なら誰も作っていない）。記録のみで、誰でも使える
+    pub nest_owner: Vec<u32>,
     pub ledger: Ledger,
     pub watch: Watch,
 
@@ -496,6 +517,9 @@ impl World {
             genome::add_kin_wiring(&mut g, &mut world.rng);
             if p.memory_wiring != 0.0 {
                 genome::add_memory_wiring(&mut g, p.memory_wiring);
+            }
+            if p.nest_wiring != 0.0 {
+                genome::add_nest_wiring(&mut g, p.nest_wiring);
             }
             for _ in 0..count as usize {
                 let (x, y) = world.random_position();
@@ -572,6 +596,7 @@ impl World {
             attacked: Vec::new(),
             alone: Vec::new(),
             memory: Vec::new(),
+            home: Vec::new(),
             vigilance: Vec::new(),
             natal: Vec::new(),
             cover: Vec::new(),
@@ -582,6 +607,8 @@ impl World {
             terrain,
             carrion: vec![0.0; plants.biomass.len()],
             carrion_age: vec![0.0; plants.biomass.len()],
+            nest: vec![0.0; plants.biomass.len()],
+            nest_owner: vec![0; plants.biomass.len()],
             plants,
             ledger: Ledger::default(),
             history: History::new(),
@@ -665,6 +692,7 @@ impl World {
         self.attacked.push(0);
         self.alone.push(0);
         self.memory.push(Memory::default());
+        self.home.push(NO_HOME);
         self.vigilance.push(0.5);
         self.natal.push(self.terrain.soil_at(x, y));
         self.cover.push(0.0);
@@ -859,6 +887,49 @@ impl World {
             *age = if *c > 0.0 { *age + 1.0 } else { 0.0 };
         }
         self.ledger.lost_decay += lost;
+    }
+
+    /// 巣を崩す（出来の良さを nest_decay の割合で下げ、NEST_MIN を切ったら消す）。巣はエネルギーを持たないので帳簿は動かない
+    fn decay_nests(&mut self) {
+        let keep = 1.0 - self.params.nest_decay;
+        for (q, owner) in self.nest.iter_mut().zip(self.nest_owner.iter_mut()) {
+            if *q <= 0.0 {
+                continue;
+            }
+            *q *= keep;
+            if *q < NEST_MIN {
+                *q = 0.0;
+                *owner = 0;
+            }
+        }
+    }
+
+    /// 個体 i が今いるマスで巣を作る。茂みと枝を材料にして出来の良さを上げ、エネルギーを使う。
+    /// 1 tick 分の材料がない、または巣がもう出来上がっていれば作らず false（わずかに残った材料を拾い続けて止まり続けることがないように）
+    fn build_nest(&mut self, i: usize) -> bool {
+        let c = self.plants.cell_index(self.xs[i], self.ys[i]);
+        let p = &self.params;
+        let room = 1.0 - self.nest[c];
+        let (bush, branch) = (self.plants.layer[1][c].max(0.0), self.plants.layer[2][c].max(0.0));
+        let size = self.traits[i].size;
+        let want = (p.nest_material * size).min(room * p.nest_material_need);
+        if want <= 1e-6 || bush + branch < want {
+            return false;
+        }
+        let take = want;
+        // 茂みと枝から、ある量に比例して取る
+        let from_bush = take * bush / (bush + branch);
+        self.plants.take(c, 1, from_bush);
+        self.plants.take(c, 2, take - from_bush);
+        self.ledger.lost_build += take as f64;
+        self.nest[c] = (self.nest[c] + take / p.nest_material_need).min(1.0);
+        self.nest_owner[c] = self.id[i];
+        self.home[i] = c as u32;
+        let cost = (p.nest_build_cost * self.traits[i].size_pow075).min(self.energy[i]);
+        self.energy[i] -= cost;
+        self.ledger.lost_metabolism += cost as f64;
+        self.census.builds[self.kind[i] as usize] += 1;
+        true
     }
 
     /// 周り 8 マスのうち、いまいるマスより死体が多いマスの方向（世界の向き、単位ベクトルでない）
@@ -1109,15 +1180,20 @@ impl World {
     }
 
     /// 近傍探索のグリッドを作り直す。相手からの見えにくさ（グリッドに渡す値）は 1 − 見つかりやすさ。
-    /// 見つかりやすさ = いまの大きさ^conceal_size_power × (1 − 隠れの強さ × 足元の草 × (1 − シグナルで目立つ分))。
+    /// 見つかりやすさ = いまの大きさ^conceal_size_power × (1 − 隠れの強さ × 足元の隠れ × (1 − シグナルで目立つ分))。
+    /// 足元の隠れは、足元の草の割合と、巣の出来の良さ × nest_hide の大きい方。
     /// 見つけられる距離は体長（大きさの 1/3 乗）に比例するので、小さいほど見つかりにくい。草の隠れは大きさによらない。
     /// 相手の見える距離は 視野 × 見つかりやすさ になる。視野を超えず、どれだけ隠れても視野の 5% までは見える
     fn build_grid(&mut self) {
         let (exposure, hide, power) = (self.params.signal_exposure, self.params.cover_strength, self.params.conceal_size_power);
+        let nest_hide = self.params.nest_hide;
         self.conceal.clear();
         for i in 0..self.count() {
             let by_size = self.traits[i].size.max(0.01).powf(power);
-            let by_cover = 1.0 - hide * self.cover[i] * (1.0 - exposure * self.signal[i]);
+            // 巣の中では、巣の隠れと足元の草の隠れの大きい方を使う
+            let nest = self.nest[self.plants.cell_index(self.xs[i], self.ys[i])];
+            let cover = self.cover[i].max(nest_hide * nest);
+            let by_cover = 1.0 - hide * cover * (1.0 - exposure * self.signal[i]);
             let visible = (by_size * by_cover).clamp(0.05, 1.0);
             self.conceal.push(1.0 - visible);
         }
@@ -1188,6 +1264,7 @@ impl World {
         lap!(0);
 
         self.decay_carrion();
+        self.decay_nests();
         let cap = self.params.plant_capacity;
         for i in 0..self.count() {
             self.cover[i] = self.plants.ratio_at(self.xs[i], self.ys[i], cap);
@@ -1594,6 +1671,22 @@ impl World {
             }
         }
 
+        // 巣: 今いるマスの出来の良さと、覚えている巣の方向（そのマスにいれば 0）
+        let here = self.plants.cell_index(x, y);
+        input[genome::IN_NEST_HERE] = self.nest[here];
+        let home = self.home[i];
+        if home != NO_HOME && home as usize != here {
+            let cs = self.plants.cell_size;
+            let (hc, hr) = (home as usize % self.plants.cols, home as usize / self.plants.cols);
+            let dx = torus_delta((hc as f32 + 0.5) * cs - x, self.width);
+            let dy = torus_delta((hr as f32 + 0.5) * cs - y, self.height);
+            let d = (dx * dx + dy * dy).sqrt().max(1e-3);
+            let (f, r) = to_local(dx / d, dy / d);
+            input[genome::IN_NEST_FWD] = f;
+            input[genome::IN_NEST_RIGHT] = r;
+            input[genome::IN_NEST_AWAY] = 1.0;
+        }
+
         lap!(2);
         let out = genome::think(self.genome(i), &input);
         lap!(3);
@@ -1745,8 +1838,14 @@ impl World {
             }
         }
 
+        let wants_build = out[genome::OUT_BUILD] > 0.0;
         if self.kind[i] == HERBIVORE {
             let ate = wants_eat && self.graze(i);
+            // 食べなかった tick に、作りたければ今いるマスで巣を作る（作る tick は動かない）
+            if !ate && wants_build && self.build_nest(i) {
+                self.state[i] = state::BUILD;
+                return (0.0, wants_child, mate);
+            }
             self.state[i] = if senses.predator.is_some() {
                 state::FLEE
             } else if dominant == DRIVE_MATE {
@@ -1777,6 +1876,11 @@ impl World {
             // 狩らなかったら、足元の死体を食べる（食べる tick は動かない）
             if wants_eat && self.scavenge(i) {
                 self.state[i] = state::SCAVENGE;
+                return (0.0, wants_child, mate);
+            }
+            // 何も食べなかった tick に、作りたければ今いるマスで巣を作る（作る tick は動かない）
+            if wants_build && self.build_nest(i) {
+                self.state[i] = state::BUILD;
                 return (0.0, wants_child, mate);
             }
             self.state[i] = if dominant == DRIVE_MATE {
@@ -2103,7 +2207,8 @@ impl World {
         let upkeep = p.speed_upkeep * t.max_speed * t.size_pow075;
         // 体温を保つ費用: 好みの気温との差に比例し、大きいほど体積あたりは割安
         let temp_here = self.terrain.temperature_at(self.xs[i], self.ys[i]);
-        let thermal = p.thermo_cost * (temp_here - t.temp_pref).abs() * t.thermal_scale;
+        let nest_here = self.nest[self.plants.cell_index(self.xs[i], self.ys[i])];
+        let thermal = p.thermo_cost * (temp_here - t.temp_pref).abs() * t.thermal_scale * (1.0 - p.nest_insulation * nest_here);
         // 基本の代謝は動いている度合いに応じて変わる（止まっていれば rest_metabolism 倍。待ち伏せや休息で消費を抑えられる）
         let activity = (speed / t.max_speed).clamp(0.0, 1.0);
         let basal = metabolism * t.size_pow075 * (p.rest_metabolism + (1.0 - p.rest_metabolism) * activity);
@@ -2126,6 +2231,10 @@ impl World {
         self.cooldown[i] = self.cooldown[i].saturating_sub(1);
         self.rest[i] = self.rest[i].saturating_sub(1);
         self.attacked[i] = self.attacked[i].saturating_sub(1);
+        // 覚えている巣が崩れて消えていたら忘れる
+        if self.home[i] != NO_HOME && self.nest[self.home[i] as usize] <= 0.0 {
+            self.home[i] = NO_HOME;
+        }
         // 成熟までの時間は大人の大きさの 0.25 乗に比例（小さい体ほど早く大人になる）
         let maturity = if herb { p.herb_maturity } else { p.carn_maturity } * t.adult_pow025;
         self.grow(i, maturity);
@@ -2281,6 +2390,7 @@ impl World {
                 energy: given / litter as f32,
                 generation: self.generation[i] + 1,
                 genome_at,
+                home: self.home[i],
             });
         }
     }
@@ -2308,6 +2418,7 @@ impl World {
             }
             self.spawn_grown(x, y, b.kind, reserve, b.generation, g, traits, growth);
             *self.parents.last_mut().unwrap() = b.parents;
+            *self.home.last_mut().unwrap() = b.home;
         }
         self.births = births;
         self.births.clear();
@@ -2342,6 +2453,7 @@ impl World {
             self.attacked.swap_remove(i);
             self.alone.swap_remove(i);
             self.memory.swap_remove(i);
+            self.home.swap_remove(i);
             self.vigilance.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
@@ -2652,7 +2764,10 @@ mod tests {
 
     #[test]
     fn エネルギーの帳尻が合う() {
-        let mut w = World::new(3, small_params());
+        // 巣の材料にした植物も帳簿に入ることを確かめるため、巣を作る初期配線を入れる
+        let mut p = small_params();
+        p.nest_wiring = 2.0;
+        let mut w = World::new(3, p);
         for _ in 0..2000 {
             w.step();
         }
@@ -3932,5 +4047,123 @@ mod tests {
         let id = w.id_near_kind(w.xs[i], w.ys[i], 1000.0, Some(HERBIVORE));
         assert_ne!(id, 0);
         assert_eq!(w.kind[w.index_of(id).unwrap()], HERBIVORE);
+    }
+
+    /// 茂みと枝のある平らなマスに草食を 1 体置いた世界
+    fn nest_world() -> World {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
+        let c = w.plants.cell_index(100.0, 100.0);
+        w.plants.layer[1][c] = 2.0;
+        w.plants.layer[2][c] = 1.0;
+        w.plants.sum_layers();
+        w
+    }
+
+    #[test]
+    fn 巣を作ると茂みと枝を材料にして出来が上がり帳尻は合う() {
+        let mut w = nest_world();
+        let c = w.plants.cell_index(100.0, 100.0);
+        let before = w.total_energy();
+        let expected_before = w.ledger.expected_total();
+        assert!(w.build_nest(0));
+        let p = &w.params;
+        let take = p.nest_material * w.traits[0].size;
+        assert!((w.nest[c] - take / p.nest_material_need).abs() < 1e-6, "出来の良さ {}", w.nest[c]);
+        assert!((w.plants.layer[1][c] + w.plants.layer[2][c] - (3.0 - take)).abs() < 1e-5, "材料の分だけ減る");
+        assert!((w.plants.layer[1][c] / w.plants.layer[2][c] - 2.0).abs() < 1e-4, "茂みと枝から、ある量に比例して取る");
+        assert_eq!((w.nest_owner[c], w.home[0]), (w.id[0], c as u32));
+        // 帳簿: 材料とエネルギーの分だけ減り、実際の量と合う
+        let spent = before - w.total_energy();
+        let booked = expected_before - w.ledger.expected_total();
+        assert!((spent - booked).abs() < 1e-5, "実際 {spent} 帳簿 {booked}");
+
+        // 出来上がったら作らない。材料がなければ作れない
+        w.nest[c] = 1.0;
+        assert!(!w.build_nest(0));
+        w.nest[c] = 0.0;
+        w.plants.layer[1][c] = 0.0;
+        w.plants.layer[2][c] = 0.0;
+        w.plants.sum_layers();
+        assert!(!w.build_nest(0), "草原の草だけでは作れない");
+    }
+
+    #[test]
+    fn 巣は崩れて消え覚えていた個体は忘れる() {
+        let mut w = nest_world();
+        let c = w.plants.cell_index(100.0, 100.0);
+        assert!(w.build_nest(0));
+        let q = w.nest[c];
+        w.decay_nests();
+        assert!((w.nest[c] - q * (1.0 - w.params.nest_decay)).abs() < 1e-7);
+        w.nest[c] = NEST_MIN * 1.0001;
+        w.decay_nests();
+        assert_eq!((w.nest[c], w.nest_owner[c]), (0.0, 0));
+        w.live(0, 0.0, false, Mate::Missing);
+        assert_eq!(w.home[0], NO_HOME, "崩れた巣は忘れる");
+    }
+
+    #[test]
+    fn 巣の中では体温の費用が下がり見つかりにくい() {
+        let cost_and_conceal = |nest: f32| {
+            let mut w = nest_world();
+            let c = w.plants.cell_index(100.0, 100.0);
+            w.nest[c] = nest;
+            w.traits[0].temp_pref = w.terrain.temperature_at(100.0, 100.0) - 10.0;
+            w.cover = vec![0.0];
+            w.build_grid();
+            let conceal = w.conceal[0];
+            let e = w.energy[0];
+            w.live(0, 0.0, false, Mate::Missing);
+            (e - w.energy[0], conceal)
+        };
+        let (cost_out, conceal_out) = cost_and_conceal(0.0);
+        let (cost_in, conceal_in) = cost_and_conceal(1.0);
+        let w = nest_world();
+        let thermal = w.params.thermo_cost * 10.0 * w.traits[0].thermal_scale;
+        let saved = cost_out - cost_in;
+        assert!((saved - w.params.nest_insulation * thermal).abs() < 1e-5, "体温の費用が減る: {cost_out} → {cost_in}");
+        assert!(conceal_in > conceal_out + 0.3, "巣の中は見つかりにくい: {conceal_out} → {conceal_in}");
+    }
+
+    #[test]
+    fn 巣の場所と出来を入力に渡し子は親の巣を覚えて生まれる() {
+        let mut w = nest_world();
+        face(&mut w, 0, 1.0, 0.0);
+        w.cover = vec![0.0];
+        w.build_grid();
+        assert_eq!(w.plan(0).input[genome::IN_NEST_HERE], 0.0);
+        assert!(w.build_nest(0));
+        let input = w.plan(0).input;
+        assert!(input[genome::IN_NEST_HERE] > 0.0);
+        assert_eq!((input[genome::IN_NEST_FWD], input[genome::IN_NEST_RIGHT]), (0.0, 0.0), "巣のマスにいれば方向は 0");
+        assert_eq!(input[genome::IN_NEST_AWAY], 0.0);
+        // 離れると、巣（後ろ）の方向を指す
+        w.xs[0] = 300.0;
+        let input = w.plan(0).input;
+        assert!(input[genome::IN_NEST_FWD] < -0.99);
+        assert_eq!(input[genome::IN_NEST_AWAY], 1.0, "巣から離れている");
+        // 子は親の巣を覚えて生まれる
+        w.energy[0] = 20.0;
+        w.reproduce(0, 0.0, None);
+        w.apply_births();
+        assert!(w.count() >= 2);
+        assert_eq!(w.home[1], w.home[0]);
+    }
+
+    #[test]
+    fn 巣作りの初期配線があれば繁殖できる状態で巣にいれば巣を作る() {
+        let mut g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        let mut input = [0.0; genome::N_IN];
+        input[genome::IN_READY] = 1.0;
+        assert!(genome::think(&g, &input)[genome::OUT_BUILD] < 0.0, "初期の脳は巣を作らない");
+        genome::add_nest_wiring(&mut g, 2.0);
+        assert!(genome::think(&g, &input)[genome::OUT_BUILD] > 0.0, "繁殖できる状態なら作る");
+        input[genome::IN_NEST_AWAY] = 1.0;
+        assert!(genome::think(&g, &input)[genome::OUT_BUILD] < 0.0, "巣から離れていれば作らない");
+        input[genome::IN_NEST_AWAY] = 0.0;
+        input[genome::IN_READY] = 0.0;
+        assert!(genome::think(&g, &input)[genome::OUT_BUILD] < 0.0, "繁殖できない状態なら作らない");
     }
 }

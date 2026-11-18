@@ -20,9 +20,9 @@ use crate::genome::{H1, H2, N_OUT, N_TRAITS};
 /// ファイルの先頭の印
 const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
-pub const FORMAT_VERSION: u32 = 4;
-/// 読み込める最も古い形式の番号（形式 3 までは食べ物の場所の記憶がない。遺伝子の並びも違うので読めない）
-const OLDEST_FORMAT: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
+/// 読み込める最も古い形式の番号（形式 4 までは巣がない。遺伝子の並びも違うので読めない）
+const OLDEST_FORMAT: u32 = 5;
 /// 死因の数（Census の配列の長さ）
 const N_CAUSES: usize = 8;
 
@@ -138,6 +138,7 @@ impl World {
             l.herb_gain,
             l.carn_gain,
             l.lost_decay,
+            l.lost_build,
         ] {
             w.f64(v);
         }
@@ -150,6 +151,7 @@ impl World {
             w.u64(c.births[k]);
             w.u64(c.fights[k]);
             w.u64(c.kin_fights[k]);
+            w.u64(c.builds[k]);
         }
         w.u64(c.hunts);
         w.u64(c.kills);
@@ -171,6 +173,10 @@ impl World {
         }
         w.f32s(&self.carrion);
         w.f32s(&self.carrion_age);
+        w.f32s(&self.nest);
+        for &o in &self.nest_owner {
+            w.u32(o);
+        }
 
         let n = self.count();
         w.u32(n as u32);
@@ -211,6 +217,7 @@ impl World {
             w.f32(m.y);
             w.f32(m.value);
             w.u64(m.tick);
+            w.u32(self.home[i]);
             // 遺伝子: 0 でない値の位置のビット列と、その値
             let g = self.genome(i);
             let mut bits = vec![0u8; GENOME_LEN.div_ceil(8)];
@@ -281,6 +288,7 @@ impl World {
         l.herb_gain = r.f64()?;
         l.carn_gain = r.f64()?;
         l.lost_decay = r.f64()?;
+        l.lost_build = r.f64()?;
         let c = &mut world.census;
         for k in 0..2 {
             for cause in 0..N_CAUSES {
@@ -290,6 +298,7 @@ impl World {
             c.births[k] = r.u64()?;
             c.fights[k] = r.u64()?;
             c.kin_fights[k] = r.u64()?;
+            c.builds[k] = r.u64()?;
         }
         c.hunts = r.u64()?;
         c.kills = r.u64()?;
@@ -311,6 +320,10 @@ impl World {
         }
         world.carrion = r.f32s(cells, "死体のマス")?;
         world.carrion_age = r.f32s(cells, "死体の古さのマス")?;
+        world.nest = r.f32s(cells, "巣のマス")?;
+        for o in world.nest_owner.iter_mut() {
+            *o = r.u32()?;
+        }
 
         let n = r.u32()? as usize;
         let max_turn = world.params.max_turn;
@@ -334,6 +347,10 @@ impl World {
                 failed: r.u32()?,
             };
             let memory = Memory { x: r.f32()?, y: r.f32()?, value: r.f32()?, tick: r.u64()? };
+            let home = r.u32()?;
+            if home != NO_HOME && home as usize >= cells {
+                return Err(format!("覚えている巣のマスが壊れている（{home}）"));
+            }
             let bits = r.take(GENOME_LEN.div_ceil(8))?.to_vec();
             for (k, v) in genome.iter_mut().enumerate() {
                 *v = if bits[k / 8] & (1 << (k % 8)) != 0 { r.f32()? } else { 0.0 };
@@ -363,6 +380,7 @@ impl World {
             world.attacked.push(attacked);
             world.alone.push(alone);
             world.memory.push(memory);
+            world.home.push(home);
             world.vigilance.push(vigilance);
             world.natal.push(natal);
             world.cover.push(cover);
@@ -497,6 +515,8 @@ mod tests {
         p.world_height = 640.0;
         p.herb_initial = 800.0;
         p.carn_initial = 60.0;
+        // 巣も保存と読み込みで続くことを確かめる
+        p.nest_wiring = 2.0;
         p
     }
 
@@ -520,6 +540,9 @@ mod tests {
         assert_eq!(a.genomes, b.genomes);
         assert_eq!(a.plants.biomass, b.plants.biomass);
         assert_eq!(a.carrion, b.carrion);
+        assert_eq!(a.nest, b.nest);
+        assert_eq!(a.nest_owner, b.nest_owner);
+        assert_eq!(a.home, b.home);
         assert_eq!(a.ledger.expected_total(), b.ledger.expected_total());
         assert!(a.history.len() > 0, "記録が溜まっている");
         assert_eq!(a.history, b.history, "長期の統計の記録も続く");
