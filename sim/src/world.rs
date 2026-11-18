@@ -492,6 +492,7 @@ impl World {
             // 個体ごとに引くと初期個体どうしの遺伝的距離が大きすぎて、最初から互いに繁殖できなくなる
             let mut g = genome::initial(kind == HERBIVORE, size, speed, vision, 0.0);
             g[genome::G_FOV] = fov.to_radians();
+            g[genome::G_MEMORY] = p.memory_initial;
             genome::add_kin_wiring(&mut g, &mut world.rng);
             for _ in 0..count as usize {
                 let (x, y) = world.random_position();
