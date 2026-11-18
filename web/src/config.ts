@@ -12,6 +12,7 @@ export const SIM_PARAMS = {
   plant_cell: 32,
   herb_initial: 25000,
   carn_initial: 1600,
+  initial_age_spread: 0,
   plant_initial_ratio: 0.5,
 
   // 地形（リセット時のみ反映）

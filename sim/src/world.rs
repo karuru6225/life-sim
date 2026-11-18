@@ -558,6 +558,13 @@ impl World {
                 let kin_bias = p.initial_kin_attack_bias + world.rng.gaussian() * p.initial_kin_attack_spread;
                 genome::set_kin_attack_bias(&mut g, kin_bias);
                 world.spawn(x, y, kind, energy, 0, &g);
+                // 初期の世代がそろって老いないよう、年齢をばらつかせる（大人として置くので成長度はそのまま）。
+                // 0 のときは乱数を引かない（乱数の流れを、この仕組みがなかったときと同じにする）
+                if p.initial_age_spread > 0.0 {
+                    let base_age = if kind == HERBIVORE { p.herb_max_age } else { p.carn_max_age };
+                    let last = world.count() - 1;
+                    world.age[last] = (world.rng.f32() * p.initial_age_spread * base_age) as u32;
+                }
             }
         }
         world.ledger.initial = world.total_energy();
@@ -2952,7 +2959,7 @@ mod tests {
         let mut w = World::new(11, small_params());
         let target = *w.id.last().unwrap();
         w.select(target);
-        let mut last_age = 0;
+        let mut last_age = *w.age.last().unwrap();
         for _ in 0..200 {
             w.step();
             let mut ids = w.id.clone();
