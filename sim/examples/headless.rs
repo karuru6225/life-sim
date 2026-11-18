@@ -62,8 +62,8 @@ fn main() {
 
     let mut w = World::new(seed, params);
     println!(
-        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} {:>5} {:>5} {:>5} | {:>5} | {:>9} {:>5} | {:>5} {:>9} {:>11} {:>21} {:>9} | {:>11} | {:>6}",
-        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "集まり", "そろい", "同系", "失敗", "寒/暖", "適温", "期内", "信号", "脳", "投資/産数", "大ばら", "記憶 草/肉", "ms/tick"
+        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} {:>5} {:>5} {:>5} | {:>5} | {:>9} {:>5} | {:>5} {:>9} {:>11} {:>21} {:>9} | {:>11} | {:>11} | {:>6}",
+        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "集まり", "そろい", "同系", "失敗", "寒/暖", "適温", "期内", "信号", "脳", "投資/産数", "大ばら", "記憶 草/肉", "帯/草食経度", "ms/tick"
     );
     let mut t = Instant::now();
     let mut last = w.ledger.clone();
@@ -133,17 +133,28 @@ fn main() {
                 let v: Vec<f32> = (0..w.count()).filter(|&i| w.kind[i] == kind).map(|i| w.signal[i]).collect();
                 v.iter().sum::<f32>() / v.len().max(1) as f32
             };
+            // 草食の東西の位置（世界の幅に対する割合）の円周平均。雨の帯の位置と比べる（東西はつながっているので角度で平均する）
+            let herb_lat = {
+                let (mut sx, mut sy) = (0.0f32, 0.0f32);
+                for i in (0..w.count()).filter(|&i| w.kind[i] == HERBIVORE) {
+                    let a = std::f32::consts::TAU * w.xs[i] / w.width;
+                    sx += a.cos();
+                    sy += a.sin();
+                }
+                (sy.atan2(sx) / std::f32::consts::TAU).rem_euclid(1.0)
+            };
             let memory = |kind: u8| {
                 let v: Vec<f32> = (0..w.count()).filter(|&i| w.kind[i] == kind).map(|i| w.traits[i].memory).collect();
                 v.iter().sum::<f32>() / v.len().max(1) as f32
             };
             println!(
-                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.3} | {:>4.2}/{:<4.2} {:>5.1} | {:>5.2} {:>4.2}/{:<4.2} {:>5.2}/{:<5.2} {:>4.2}/{:<4.2}; {:>4.2}/{:<4.2} {:>4.2}/{:<4.2} | {:>5.0}/{:<5.0} | {ms:>6.2}",
+                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.3} | {:>4.2}/{:<4.2} {:>5.1} | {:>5.2} {:>4.2}/{:<4.2} {:>5.2}/{:<5.2} {:>4.2}/{:<4.2}; {:>4.2}/{:<4.2} {:>4.2}/{:<4.2} | {:>5.0}/{:<5.0} | {:>5.2}/{:<5.2} | {ms:>6.2}",
                 h[0], c[0], w.plants.total(), 1.0 / ratio.max(1e-9), plant_to_herb, herb_to_carn,
                 h[1], h[2], h[3], h[5], vig, hh[0], hh[1], hh[2], hh[3], c[1], c[2], ch[0], ch[1], ch[2], fail, cold, warm, pref,
                 season_share, signal(HERBIVORE), signal(CARNIVORE), brain(HERBIVORE), brain(CARNIVORE),
                 h[4], litter(HERBIVORE), c[4], litter(CARNIVORE),
-                size_sd(HERBIVORE), size_sd(CARNIVORE), memory(HERBIVORE), memory(CARNIVORE)
+                size_sd(HERBIVORE), size_sd(CARNIVORE), memory(HERBIVORE), memory(CARNIVORE),
+                w.params.rain_center + w.params.rain_swing * w.season(), herb_lat
             );
             if w.count_kind(HERBIVORE) == 0 && w.count_kind(CARNIVORE) == 0 {
                 println!("全滅");
