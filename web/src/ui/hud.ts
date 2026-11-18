@@ -207,7 +207,7 @@ export class Hud {
           <div class="swatch-scale"><span>草原（地面の草が多い）</span><span>林（茂みと枝が多い）</span></div>
         </div>
         <div data-k="growthLegend" hidden>
-          <span class="group-label">今の育ちやすさ（土の肥えかた × 今の気温による育ちやすさ）</span>
+          <span class="group-label">今の育ちやすさ（土の肥えかた × 今の気温 × 雨の帯。今の最大を右端とする）</span>
           <div class="plant-bar" style="background:linear-gradient(to right, ${COLORS.landPoor}, ${COLORS.growthHigh})"></div>
           <div class="swatch-scale"><span>育たない</span><span>最も育つ</span></div>
         </div>
@@ -296,7 +296,7 @@ export class Hud {
       ['woodland', '林と草原', '植物の層の割合。草原は地面の草が多く、林は茂みと枝が多い。季節で変わらない'],
       ['temperature', '平均気温', '1 年を通した平均の気温'],
       ['tempNow', '今の気温', '季節の変化を含めた今の気温。寒い地域ほど季節で大きく変わる'],
-      ['growth', '育ちやすさ', '今の植物の育ちやすさ。冬は寒い地域で育たない'],
+      ['growth', '育ちやすさ', '今の植物の育ちやすさ。冬は寒い地域で育たない。雨の帯が季節で東西に動く（夏は東へ、冬は西へ）'],
     ] as const) {
       const b = button(label, () => handlers.onMapMode(mode));
       b.dataset.value = mode;

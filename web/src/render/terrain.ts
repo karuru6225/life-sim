@@ -109,6 +109,13 @@ export class TerrainLayer {
     const mild = rgb(COLORS.tempMild);
     const hot = rgb(COLORS.tempHot);
     const [tmin, tmax] = mode === 'tempNow' ? this.tempNowRange : this.tempRange;
+    // 育ちやすさは雨の帯の中で 1 を超えるので、今の陸の最大値で割って 0〜1 にする（帯の形が見えるように）
+    let growthMax = 1;
+    if (mode === 'growth') {
+      growthMax = 0;
+      for (const f of this.fertility!) growthMax = Math.max(growthMax, f);
+      growthMax = Math.max(growthMax, 1e-6);
+    }
     const mix = (a: Uint8ClampedArray | number[], b: Uint8ClampedArray | number[], t: number, ch: number) =>
       a[ch] + (b[ch] - a[ch]) * t;
     for (let i = 0; i < cols * rows; i++) {
@@ -124,7 +131,7 @@ export class TerrainLayer {
         } else if (mode === 'woodland') {
           v = mix(grassland, woodland, this.wood ? this.wood[i] : 0.5, ch);
         } else if (mode === 'growth') {
-          v = mix(poor, rich, Math.min(1, this.fertility![i]), ch);
+          v = mix(poor, rich, this.fertility![i] / growthMax, ch);
         } else {
           // 陸の最低気温〜最高気温を 0〜1 にして、寒色 → 中間 → 暖色
           const t = Math.min(1, Math.max(0, (temperature![i] - tmin) / Math.max(1e-6, tmax - tmin)));
