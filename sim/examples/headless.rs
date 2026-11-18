@@ -62,12 +62,13 @@ fn main() {
 
     let mut w = World::new(seed, params);
     println!(
-        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} {:>5} {:>5} {:>5} | {:>5} | {:>9} {:>5} | {:>5} {:>9} {:>11} {:>21} {:>9} | {:>11} | {:>11} | {:>6}",
-        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "集まり", "そろい", "同系", "失敗", "寒/暖", "適温", "期内", "信号", "脳", "投資/産数", "大ばら", "記憶 草/肉", "帯/草食経度", "ms/tick"
+        "{:>7} {:>6} {:>5} {:>7} | {:>6} {:>5} {:>5} | 草食: {:>5} {:>5} {:>5} {:>4} {:>5} | {:>5} {:>5} {:>5} {:>5} | 肉食: {:>5} {:>5} {:>5} {:>5} {:>5} | {:>5} | {:>9} {:>5} | {:>5} {:>9} {:>11} {:>21} {:>9} | {:>11} | {:>11} | {:>21} | {:>6}",
+        "tick", "草食", "肉食", "植物量", "量比", "植→草", "草→肉", "大きさ", "速度", "視野", "世代", "警戒", "集まり", "そろい", "同系", "他系", "大きさ", "速度", "集まり", "そろい", "同系", "失敗", "寒/暖", "適温", "期内", "信号", "脳", "投資/産数", "大ばら", "記憶 草/肉", "帯/草食経度", "巣 作る草/肉 マス 中草/肉", "ms/tick"
     );
     let mut t = Instant::now();
     let mut last = w.ledger.clone();
     let (mut last_matings, mut last_failed) = (0u64, 0u64);
+    let mut last_builds = [0u64; 2];
     // 交配が日射の多い半年に行われた回数と、全体の回数（区間内）
     let (mut in_season, mut all_season, mut prev_matings) = (0u64, 0u64, 0u64);
     let had_carnivores = w.count_kind(CARNIVORE) > 0;
@@ -147,14 +148,30 @@ fn main() {
                 let v: Vec<f32> = (0..w.count()).filter(|&i| w.kind[i] == kind).map(|i| w.traits[i].memory).collect();
                 v.iter().sum::<f32>() / v.len().max(1) as f32
             };
+            // 巣: 巣を作った個体 × tick の割合（種類ごと）、出来の良さが 0.1 を超えるマスの数、そうした巣の中にいる個体の割合（種類ごと）
+            let build_rate = |kind: usize| {
+                let n = w.count_kind(kind as u8).max(1) as f64;
+                (w.census.builds[kind] - last_builds[kind]) as f64 / (n * report_every as f64)
+            };
+            let (herb_build, carn_build) = (build_rate(0), build_rate(1));
+            last_builds = w.census.builds;
+            let nests = w.nest.iter().filter(|&&q| q > 0.1).count();
+            let in_nest = |kind: u8| {
+                let v: Vec<bool> = (0..w.count())
+                    .filter(|&i| w.kind[i] == kind)
+                    .map(|i| w.nest[w.plants.cell_index(w.xs[i], w.ys[i])] > 0.1)
+                    .collect();
+                v.iter().filter(|&&b| b).count() as f64 / v.len().max(1) as f64
+            };
             println!(
-                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.3} | {:>4.2}/{:<4.2} {:>5.1} | {:>5.2} {:>4.2}/{:<4.2} {:>5.2}/{:<5.2} {:>4.2}/{:<4.2}; {:>4.2}/{:<4.2} {:>4.2}/{:<4.2} | {:>5.0}/{:<5.0} | {:>5.2}/{:<5.2} | {ms:>6.2}",
+                "{tick:>7} {:>6} {:>5} {:>7.0} | 1/{:<4.0} {:>5.3} {:>5.3} |       {:>5.2} {:>5.2} {:>5.1} {:>4.0} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} |       {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.3} | {:>4.2}/{:<4.2} {:>5.1} | {:>5.2} {:>4.2}/{:<4.2} {:>5.2}/{:<5.2} {:>4.2}/{:<4.2}; {:>4.2}/{:<4.2} {:>4.2}/{:<4.2} | {:>5.0}/{:<5.0} | {:>5.2}/{:<5.2} | {:>5.3}/{:<5.3} {:>5} {:>4.2}/{:<4.2} | {ms:>6.2}",
                 h[0], c[0], w.plants.total(), 1.0 / ratio.max(1e-9), plant_to_herb, herb_to_carn,
                 h[1], h[2], h[3], h[5], vig, hh[0], hh[1], hh[2], hh[3], c[1], c[2], ch[0], ch[1], ch[2], fail, cold, warm, pref,
                 season_share, signal(HERBIVORE), signal(CARNIVORE), brain(HERBIVORE), brain(CARNIVORE),
                 h[4], litter(HERBIVORE), c[4], litter(CARNIVORE),
                 size_sd(HERBIVORE), size_sd(CARNIVORE), memory(HERBIVORE), memory(CARNIVORE),
-                w.params.rain_center + w.params.rain_swing * w.season(), herb_lat
+                w.params.rain_center + w.params.rain_swing * w.season(), herb_lat,
+                herb_build, carn_build, nests, in_nest(HERBIVORE), in_nest(CARNIVORE)
             );
             if w.count_kind(HERBIVORE) == 0 && w.count_kind(CARNIVORE) == 0 {
                 println!("全滅");
