@@ -20,9 +20,17 @@
 //!   系統: 系統色を 36 段階に分けたとき、3 体以上いる段階の数（肉食/草食）
 //!   争: 同じ種類の敵への攻撃の回数（肉食/草食）     争死: 敵との争いで死んだ数（肉食/草食）
 //!   仲争: 仲間（同じ系統）への攻撃の回数（肉食/草食）   仲死: 仲間との争いで死んだ数（肉食/草食）
+//!   幼餓: 餓死した肉食のうち成熟前だった数
+//!   見獲: 区間の終わりに獲物が見えている肉食の割合     視内: 肉食の視野の円の中にいる草食の数の平均（視野角は無視）
+//!   走: 肉食の最後の tick の速さ ÷ 最高速度 の平均     体力/疲: 肉食の体力の平均と、0.2 を切った割合
+//!   得/体t: 区間内に肉食 1 体が 1 tick に獲物から得たエネルギー     増/体t: 肉食 1 体のエネルギーの 1 tick あたりの増減
+//!   飢近: エネルギーが繁殖に必要な量の 1 割を切っている肉食の割合
+//!   費用（肉食 1 体の 1 tick あたり ×1000）: 基=基礎代謝 維=速さの維持 温=体温 目=目 移=移動 他=シグナル・脳・記憶 襲=襲う費用
+//!   得/体t（×1000 にすると比べやすい）と、これらの合計との差が、狩りの収支
 
 use sim::params::Params;
-use sim::world::{CARNIVORE, Census, HERBIVORE, World, death, state};
+use sim::genome::IN_PREY_NEAR;
+use sim::world::{CARNIVORE, Census, HERBIVORE, World, death, state, torus_delta};
 
 fn main() {
     let mut ticks: u64 = 80_000;
@@ -45,12 +53,14 @@ fn main() {
 
     let mut w = World::new(seed, params);
     println!(
-        "{:>6} {:>6} {:>5} {:>6} | {:>4} {:>4} {:>4} {:>3} {:>5} | {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>3} | {:>4} {:>4} {:>4} | {:>4} {:>4} {:>4} | {:>5} {:>4} {:>4} | {:>4} {:>4} {:>4} | {:>5} | {:>11} | {:>9} | {:>11} | {:>9}",
+        "{:>6} {:>6} {:>5} {:>6} | {:>4} {:>4} {:>4} {:>3} {:>5} | {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>3} | {:>4} {:>4} {:>4} | {:>4} {:>4} {:>4} | {:>5} {:>4} {:>4} | {:>4} {:>4} {:>4} | {:>5} | {:>11} | {:>9} | {:>11} | {:>9} | {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>4} | {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4}",
         "tick", "草食", "肉食", "植物", "生", "餓", "寿", "傷", "食われ", "襲撃/体", "成功", "見込", "比", "守", "協", "干", "分",
-        "見えず", "追跡", "求愛", "蓄え", "弱", "幼", "獲得/殺", "草蓄", "繁可", "大きさ", "速度", "視野", "系統", "争", "争死", "仲争", "仲死"
+        "見えず", "追跡", "求愛", "蓄え", "弱", "幼", "獲得/殺", "草蓄", "繁可", "大きさ", "速度", "視野", "系統", "争", "争死", "仲争", "仲死", "幼餓", "見獲", "視内", "走", "体力", "疲", "得/体t", "増/体t", "飢近", "基", "維", "温", "目", "移", "他", "襲"
     );
     let mut last = Census::default();
     let mut last_gain = 0.0f64;
+    let carn_energy = |w: &World| (0..w.count()).filter(|&i| w.kind[i] == CARNIVORE).map(|i| w.energy[i] as f64).sum::<f64>();
+    let mut last_energy = carn_energy(&w);
     for tick in 1..=ticks {
         w.step();
         if tick % every != 0 {
@@ -63,7 +73,22 @@ fn main() {
         let kills = (c.kills - last.kills) as f64;
         let per_hunt = |now: f64, before: f64| if hunts > 0.0 { (now - before) / hunts } else { f64::NAN };
 
+        let inputs = w.brain_inputs();
         let carns: Vec<usize> = (0..w.count()).filter(|&i| w.kind[i] == CARNIVORE).collect();
+        let herbs: Vec<usize> = (0..w.count()).filter(|&i| w.kind[i] == HERBIVORE).collect();
+        // 視野の円の中の草食の数（肉食 1 体あたり）
+        let in_view = carns.iter().map(|&i| {
+            let r2 = w.traits[i].vision * w.traits[i].vision;
+            herbs.iter().filter(|&&j| {
+                let dx = torus_delta(w.xs[j] - w.xs[i], w.width);
+                let dy = torus_delta(w.ys[j] - w.ys[i], w.height);
+                dx * dx + dy * dy <= r2
+            }).count() as f64
+        }).sum::<f64>() / carns.len().max(1) as f64;
+        let energy_now = carn_energy(&w);
+        // 費用は区間の終わりの肉食の数で割る（区間の途中で減っていると、やや大きめに出る）
+        let per_carn_tick = 1000.0 / (carns.len().max(1) as f64 * every as f64);
+        let cost = |k: usize| (w.census.costs[CARNIVORE as usize][k] - last.costs[CARNIVORE as usize][k]) * per_carn_tick;
         let n = carns.len().max(1) as f64;
         let share = |f: &dyn Fn(usize) -> bool| carns.iter().filter(|&&i| f(i)).count() as f64 / n;
         let mean = |f: &dyn Fn(usize) -> f32| carns.iter().map(|&i| f(i) as f64).sum::<f64>() / n;
@@ -76,7 +101,7 @@ fn main() {
         };
 
         println!(
-            "{tick:>6} {:>6} {:>5} {:>6.0} | {:>4} {:>4} {:>4} {:>3} {:>5} | {:>5.2} {:>4.2} {:>4.2} {:>4.2} {:>4.1} {:>4.1} {:>4.2} {:>3.1} | {:>4.2} {:>4.2} {:>4.2} | {:>4.2} {:>4.2} {:>4.2} | {:>5.2} {:>4.2} {:>4.2} | {:>4.2} {:>4.2} {:>4.1} | {:>2}/{:<2} | {:>5}/{:<5} | {:>4}/{:<4} | {:>5}/{:<5} | {:>4}/{:<4}",
+            "{tick:>6} {:>6} {:>5} {:>6.0} | {:>4} {:>4} {:>4} {:>3} {:>5} | {:>5.2} {:>4.2} {:>4.2} {:>4.2} {:>4.1} {:>4.1} {:>4.2} {:>3.1} | {:>4.2} {:>4.2} {:>4.2} | {:>4.2} {:>4.2} {:>4.2} | {:>5.2} {:>4.2} {:>4.2} | {:>4.2} {:>4.2} {:>4.1} | {:>2}/{:<2} | {:>5}/{:<5} | {:>4}/{:<4} | {:>5}/{:<5} | {:>4}/{:<4} | {:>4} {:>4.2} {:>4.1} {:>4.2} {:>4.2} {:>4.2} {:>6.4} {:>6.4} {:>4.2} | {:>4.1} {:>4.1} {:>4.1} {:>4.1} {:>4.1} {:>4.1} {:>4.1}",
             w.count_kind(HERBIVORE),
             carns.len(),
             w.plants.total(),
@@ -118,7 +143,19 @@ fn main() {
             c.kin_fights[HERBIVORE as usize] - last.kin_fights[HERBIVORE as usize],
             d(carn, death::KIN_FOUGHT),
             d(HERBIVORE as usize, death::KIN_FOUGHT),
+            c.juvenile_deaths[carn][death::STARVED as usize] - last.juvenile_deaths[carn][death::STARVED as usize],
+            share(&|i| inputs[i][IN_PREY_NEAR] > 0.0),
+            in_view,
+            mean(&|i| (w.vel[i].0.hypot(w.vel[i].1)) / w.traits[i].max_speed.max(1e-3)),
+            mean(&|i| w.stamina[i]),
+            share(&|i| w.stamina[i] < 0.2),
+            (w.ledger.carn_gain - last_gain) / (n * every as f64),
+            (energy_now - last_energy) / (n * every as f64),
+            share(&|i| w.energy[i] < 0.1 * w.repro_threshold(i)),
+            cost(0), cost(1), cost(2), cost(4), cost(7), cost(3) + cost(5) + cost(6),
+            (c.carn_size_attack_cost.iter().sum::<f64>() - last.carn_size_attack_cost.iter().sum::<f64>()) * per_carn_tick,
         );
+        last_energy = energy_now;
         last = c;
         last_gain = w.ledger.carn_gain;
         if carns.is_empty() {
