@@ -22,6 +22,7 @@ sim/                       Rust クレート（WASM とネイティブの両方�
   examples/herb_size.rs    草食を大人の大きさで段階に分け、段階ごとの誕生・襲われた数・死因を出す
   examples/seasonal.rs     季節の効き方を見る
   examples/resume.rs       保存ファイルから画面なしで続きを進める
+  examples/memory_use.rs   保存ファイルの個体の脳が、記憶の入力（と比較用に遠くの景色の入力）をどれだけ使っているかを、入力を 0 にしたときの出力の変化で測る
 web/src/
   main.ts                  エントリ。描画ループ、選択、世界の広さ、保存と読み込み
   worker.ts                WASM を読み込んで sim を回す Web Worker。長期の統計の記録に新しい標本が入るたびに差分を送る
