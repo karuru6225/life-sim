@@ -66,6 +66,7 @@ export const SIM_PARAMS = {
   turn_cost: 0.002,
   turn_noise: 0.15,
   cover_strength: 0.85,
+  motion_reveal: 0.8,
   conceal_size_power: 0.3333,
   body_energy: 3,
   brain_cost: 0.0001,

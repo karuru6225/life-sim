@@ -43,6 +43,13 @@ fn main() {
         c.kills as f64 / hunts * 100.0,
         c.hunt_escape / hunts
     );
+    let noticed = c.hunt_noticed as f64;
+    println!(
+        "  襲われた獲物のうち天敵が見えていた {:.1}%（見えていた獲物の成功 {:.1}%、見えていなかった獲物の成功 {:.1}%）",
+        noticed / hunts * 100.0,
+        c.kill_noticed as f64 / noticed.max(1.0) * 100.0,
+        (c.kills - c.kill_noticed) as f64 / (c.hunts as f64 - noticed).max(1.0) * 100.0
+    );
 
     // 天敵への反応
     let inputs = w.brain_inputs();
