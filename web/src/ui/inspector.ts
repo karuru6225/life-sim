@@ -22,6 +22,7 @@ export const INPUT_LABELS = [
   '気温の差', '季節', '仲間のシグナル', '呼び声・前', '呼び声・右', '呼び声の大きさ', '死角の見張り',
   '足元の死体', '死体の方向・前', '死体の方向・右', '死体の新しさ',
   '敵・前', '敵・右', '敵の近さ', '敵の大きさ比', '敵の数', '攻撃された', '一人の時間', '食べ物の乏しさ', '遠くの食べ物・前', '遠くの食べ物・右',
+  '覚えた場所・前', '覚えた場所・右', '覚えた場所の良さ',
 ];
 /** 脳の出力の名前（sim/src/genome.rs の OUT_* の並び） */
 export const OUTPUT_LABELS = [
@@ -122,6 +123,7 @@ export class Inspector {
           <dt>視野</dt><dd data-k="vision">–</dd>
           <dt title="繁殖のとき、手持ちのエネルギーのうち子に渡す割合。渡した量が多いほど、次の繁殖までの休みが長い">子への投資</dt><dd data-k="invest">–</dd>
           <dt title="一度に産む子の数。子に渡すエネルギーを等分するので、多く産むほど 1 体は小さく生まれる">一度に産む数</dt><dd data-k="litter">–</dd>
+          <dt title="覚えた食べ物の場所の良さが 1/e に薄れるまでの時間。長いほど維持費がかかる。覚えた場所の方向を脳が使うかどうかは進化しだい">記憶の長さ</dt><dd data-k="memory">–</dd>
           <dt title="使っている中間ニューロンの数（1 層目は最大 16、2 層目は最大 16）。多いほど複雑な判断ができるが、維持費がかかる">脳</dt><dd data-k="brain">–</dd>
           <dt title="肉食は、自分の大きさに対してこの範囲の大きさの獲物だけを狙う">好みの獲物</dt><dd data-k="preyRange">–</dd>
           <dt title="生存に影響しない遺伝子。系統の見分けに使う">標識色</dt><dd><i class="dot" data-k="hue"></i> <button type="button" class="link-button" data-k="lineage">この系統を見る</button></dd>
@@ -344,6 +346,14 @@ export class Inspector {
       const base = Math.floor(litter);
       const p = Math.round((litter - base) * 100);
       this.el.litter.textContent = p === 0 ? `${base} 体` : `${base} 体（${p}% で ${base + 1} 体）`;
+    }
+    const memory = v[INSPECT.memory];
+    if (memory === undefined) {
+      this.el.memory.textContent = '–';
+    } else {
+      const dist = v[INSPECT.memoryDistance];
+      const recalled = dist < 0 ? '何も覚えていない' : `良さ ${Math.round(v[INSPECT.recalled] * 100)}% の場所が ${Math.round(dist)} px 先`;
+      this.el.memory.textContent = `${Math.round(memory)} tick（${recalled}）`;
     }
     this.el.hue.style.background = HUE_PALETTE[hueIndex(v[INSPECT.hue])];
     this.el.brain.textContent = `1 層目 ${v[INSPECT.brain1]}・2 層目 ${v[INSPECT.brain2]} ニューロン`;

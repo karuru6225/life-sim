@@ -332,6 +332,12 @@ export const INSPECT = {
   alone: 58,
   /** 一度に産む数 */
   litter: 59,
+  /** 記憶の長さ（tick） */
+  memory: 60,
+  /** 覚えている食べ物の場所の今の良さ（0〜1） */
+  recalled: 61,
+  /** 覚えている場所までの距離（px。覚えていなければ −1） */
+  memoryDistance: 62,
 } as const;
 
 export const HERBIVORE = 0;

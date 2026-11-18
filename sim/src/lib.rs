@@ -18,7 +18,7 @@ use world::history::KIND_LEN;
 use world::{CARNIVORE, HERBIVORE, LINEAGE_STATS, RENDER_STRIDE, SIZE_HIST_BINS, World};
 
 /// inspect() が書き込む配列の要素数。各要素の意味は inspect() のコメントを参照
-const INSPECT_LEN: usize = 60;
+const INSPECT_LEN: usize = 63;
 /// summary() が書き込む配列の要素数。各要素の意味は summary() のコメントを参照
 const SUMMARY_LEN: usize = 31;
 /// history_export() が書き込む記録 1 つの要素数: tick, 区間の長さ, 草食の値, 肉食の値
@@ -410,6 +410,19 @@ pub extern "C" fn inspect() -> *const f64 {
             out[57] = watch.priorities[4] as f64;
             out[58] = w.alone[i] as f64;
             out[59] = t.litter as f64;
+            out[60] = t.memory as f64;
+            out[61] = w.recalled_value(i) as f64;
+            out[62] = {
+                // 覚えている場所までの距離（覚えていなければ −1）
+                let m = w.memory[i];
+                if m.value > 0.0 {
+                    let dx = world::torus_delta(m.x - w.xs[i], w.width);
+                    let dy = world::torus_delta(m.y - w.ys[i], w.height);
+                    (dx * dx + dy * dy).sqrt() as f64
+                } else {
+                    -1.0
+                }
+            };
             out[35] = w.vigilance[i] as f64;
             out[36] = w.natal[i] as f64;
             out[37] = w.habitat_fit(i, w.terrain.soil_at(w.xs[i], w.ys[i])) as f64;
