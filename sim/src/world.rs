@@ -622,6 +622,10 @@ impl World {
                 genome::set_attack_bias(&mut g, bias);
                 let kin_bias = p.initial_kin_attack_bias + world.rng.gaussian() * p.initial_kin_attack_spread;
                 genome::set_kin_attack_bias(&mut g, kin_bias);
+                // 警戒の水準も初期個体ごとにばらつかせる（0 なら乱数を引かない）
+                if kind == HERBIVORE && p.initial_vigilance_spread > 0.0 {
+                    genome::set_vigilance_bias(&mut g, world.rng.gaussian() * p.initial_vigilance_spread);
+                }
                 world.spawn(x, y, kind, energy, 0, &g);
                 // 初期の世代がそろって老いないよう、年齢をばらつかせる（大人として置くので成長度はそのまま）。
                 // 0 のときは乱数を引かない（乱数の流れを、この仕組みがなかったときと同じにする）

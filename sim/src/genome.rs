@@ -605,6 +605,11 @@ pub fn set_attack_bias(g: &mut [f32], bias: f32) {
     out_bias(g, OUT_ATTACK, bias);
 }
 
+/// 「警戒」の出力の基準値を設定する（初期個体ごとにばらつかせるため）
+pub fn set_vigilance_bias(g: &mut [f32], bias: f32) {
+    out_bias(g, OUT_VIGILANCE, bias);
+}
+
 /// 「仲間を攻撃する」の出力の基準値を設定する（初期個体ごとにばらつかせるため）
 pub fn set_kin_attack_bias(g: &mut [f32], bias: f32) {
     out_bias(g, OUT_ATTACK_KIN, bias);
