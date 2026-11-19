@@ -56,6 +56,11 @@ fn main() {
     let herbs: Vec<usize> = (0..w.count()).filter(|&i| w.kind[i] == HERBIVORE).collect();
     let seeing = herbs.iter().filter(|&&i| inputs[i][genome::IN_PRED_NEAR] > 0.0).count();
     println!("\n今、天敵が見えている草食 {:.1}%", seeing as f64 / herbs.len().max(1) as f64 * 100.0);
+    // 警戒の度合い（0〜1。高いほど天敵に遠くから気づけるが、一口が小さい）
+    let vig: Vec<f32> = herbs.iter().map(|&i| w.vigilance[i]).collect();
+    let mean = vig.iter().sum::<f32>() / vig.len().max(1) as f32;
+    let high = vig.iter().filter(|&&v| v >= 0.5).count() as f64 / vig.len().max(1) as f64 * 100.0;
+    println!("草食の警戒の平均 {mean:.3}（0.5 以上の個体 {high:.1}%）");
 
     // [逃げる優先度, 食べる優先度, 逃げる ÷ 優先度の合計, 速さ, 逃げる > 食べる の個体]
     let measure = |g: &[f32], input: &[f32; N_IN]| {
