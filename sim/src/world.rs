@@ -1574,6 +1574,7 @@ impl World {
         // 動いている天敵には、警戒していなくても動きの度合いだけ注意が向く（警戒と動きの大きい方）
         let vmin = self.params.vigilance_min_range;
         let vigilance = self.vigilance[i];
+        let attention_sum = self.params.attention_sum > 0.5;
         let (mut similar, mut similar_d2, mut similar_count): (Seen, f32, u32) = (None, f32::MAX, 0);
         let (mut family, mut family_d2): (Seen, f32) = (None, f32::MAX);
         let (my_id, my_parents) = (self.id[i], self.parents[i]);
@@ -1616,7 +1617,8 @@ impl World {
             // 相手の見えにくさ（隠れの強さ・足元の草・シグナル・大きさを build_grid で掛け合わせたもの）
             let mut r = vision * (1.0 - cover_j);
             if my_kind == HERBIVORE && kind_j != my_kind {
-                let attention = vigilance.max(self.motion.get(j).copied().unwrap_or(0.0));
+                let motion = self.motion.get(j).copied().unwrap_or(0.0);
+                let attention = if attention_sum { vigilance + (1.0 - vigilance) * motion } else { vigilance.max(motion) };
                 r *= vmin + (1.0 - vmin) * attention;
             }
             if d2 < r * r && j != i && self.alive[j] && in_view(dx, dy, d2) {

@@ -146,6 +146,7 @@ export const SIM_PARAMS = {
 
   // 警戒（草食）
   vigilance_min_range: 0.5,
+  attention_sum: 0,
   vigilance_bite_cost: 0.5,
 
   // 肉食どうしの協力と干渉
