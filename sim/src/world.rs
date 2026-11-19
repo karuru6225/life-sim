@@ -2404,9 +2404,12 @@ impl World {
         let d = (dx * dx + dy * dy).sqrt().max(1e-3);
         let away = ((vx * dx + vy * dy) / d).max(0.0);
         let escape = (away / self.traits[i].max_speed.max(1e-3)).min(1.0);
-        let chance = p.hunt_success * by_size * (1.0 - p.escape_strength * escape)
+        // 気づいていた獲物は身をかわしやすく、気づいていない獲物は仕留めやすい
+        let awareness = if self.noticed.get(j).copied().unwrap_or(false) { 1.0 - p.alert_dodge } else { 1.0 + p.stealth_bonus };
+        let chance = (p.hunt_success * by_size * (1.0 - p.escape_strength * escape) * awareness
             / (1.0 + p.guard_strength * guards as f32)
-            / (1.0 + p.carn_interference * rivals as f32);
+            / (1.0 + p.carn_interference * rivals as f32))
+            .min(if p.stealth_bonus > 0.0 { 0.95 } else { 1.0 });
         HuntOdds { chance, escape, size_ratio: ratio, guards, allies: helpers as u32, rivals }
     }
 
@@ -4836,6 +4839,21 @@ mod tests {
         let p = hunting_world(0.5).params.escape_strength;
         assert!((half - still * (1.0 - 0.5 * p)).abs() < 1e-6, "肉食の半分の速さで遠ざかる: {still} → {half}");
         assert!((chance((2.0 * max, 0.0)) - still * (1.0 - p)).abs() < 1e-6, "肉食より速ければ下げ幅は上限");
+    }
+
+    #[test]
+    fn 天敵に気づいていた獲物は身をかわしやすい() {
+        let mut w = hunting_world(0.5);
+        w.params.alert_dodge = 0.3;
+        w.build_grid();
+        w.noticed = vec![false, false];
+        let unaware = w.hunt_chance(0, 1);
+        w.noticed = vec![false, true];
+        let aware = w.hunt_chance(0, 1);
+        assert!((aware - unaware * 0.7).abs() < 1e-6, "気づいていれば 3 割下がる: {unaware} → {aware}");
+        w.params.stealth_bonus = 0.2;
+        w.noticed = vec![false, false];
+        assert!((w.hunt_chance(0, 1) - (unaware * 1.2).min(0.95)).abs() < 1e-6, "気づかれていなければ 2 割上がる（上限 0.95）");
     }
 
     #[test]
