@@ -912,6 +912,12 @@ impl World {
         self.params.gestation_load * self.gest_energy[i] / (self.params.body_energy * self.traits[i].adult_size).max(1e-6)
     }
 
+    /// 体の重さ（蓄えの重さ ＋ お腹の子の重さ）。最高速度が 1 / (1 + 重さ) 倍、移動の費用が (1 + 重さ) 倍になる
+    pub fn body_load(&self, i: usize) -> f32 {
+        let fat = self.params.fat_load * self.energy[i].max(0.0) / (self.params.body_energy * self.traits[i].adult_size).max(1e-6);
+        fat + self.gestation_load(i)
+    }
+
     /// 繁殖できる状態か（成熟していて、エネルギーが足りていて、前の繁殖から十分たっている）
     /// 動ける度合い（0〜1）。成長度が immobile_growth 以下の子は動けず、自分では食べられない。mobile_growth 以上なら 1
     pub fn mobility(&self, i: usize) -> f32 {
@@ -2016,7 +2022,7 @@ impl World {
         let jv = self.params.juvenile_speed;
         let vigor = self.vigor(i);
         let speed = t.max_speed * throttle * vigor * (jv + (1.0 - jv) * self.growth[i]) * self.mobility(i)
-            / (1.0 + self.gestation_load(i));
+            / (1.0 + self.body_load(i));
 
         // 行きたい方向へ曲がる。1 tick に曲がれる角度には上限がある
         let (turn_cos, turn_sin) = self.turn_limit(i, speed);
@@ -2485,7 +2491,13 @@ impl World {
         // 体温を保つ費用: 好みの気温との差に比例し、大きいほど体積あたりは割安
         let temp_here = self.terrain.temperature_at(self.xs[i], self.ys[i]);
         let nest_here = self.nest[self.plants.cell_index(self.xs[i], self.ys[i])];
-        let thermal = p.thermo_cost * (temp_here - t.temp_pref).abs() * t.thermal_scale * (1.0 - p.nest_insulation * nest_here);
+        // 蓄え（脂肪）は断熱になる
+        let fat = (self.energy[i] / self.energy_cap(i).max(1e-6)).clamp(0.0, 1.0);
+        let thermal = p.thermo_cost
+            * (temp_here - t.temp_pref).abs()
+            * t.thermal_scale
+            * (1.0 - p.nest_insulation * nest_here)
+            * (1.0 - p.fat_insulation * fat);
         // 基本の代謝は動いている度合いに応じて変わる（止まっていれば rest_metabolism 倍。待ち伏せや休息で消費を抑えられる）
         let activity = (speed / t.max_speed).clamp(0.0, 1.0);
         let basal = metabolism * t.size_pow075 * (p.rest_metabolism + (1.0 - p.rest_metabolism) * activity);
@@ -2499,7 +2511,7 @@ impl World {
         // 記憶の維持費は記憶の長さに比例
         let memory = p.memory_cost * t.memory / 1000.0 * t.size_pow075;
         // 移動は大きさの move_size_power 乗（約 0.7 乗。体重あたりは大きいほど割安）と速度の 2 乗に比例する
-        let movement = p.move_cost * t.size.max(0.01).powf(p.move_size_power) * speed * speed * (1.0 + self.gestation_load(i));
+        let movement = p.move_cost * t.size.max(0.01).powf(p.move_size_power) * speed * speed * (1.0 + self.body_load(i));
         let parts = [basal, upkeep, thermal, signal, eye, brain, memory, movement];
         let cost = parts.iter().sum::<f32>().min(self.energy[i]);
         // 内訳は、持っている分で頭打ちになったときは同じ割合で縮めて数える
@@ -3732,6 +3744,7 @@ mod tests {
             let run = |speed: f32| {
                 let mut w = empty_world();
                 w.params.herb_metabolism = 0.0;
+                w.params.fat_load = 0.0; // 蓄えの重さは別のテストで確かめる
                 w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, size, 2.0, 30.0, 0.0));
                 w.live(0, speed, false, Mate::Missing);
                 5.0 - w.energy[0]
@@ -3741,6 +3754,30 @@ mod tests {
         let (unit, big) = (moving(1.0), moving(2.0));
         assert!((unit - empty_world().params.move_cost).abs() < 1e-6, "大きさ 1・速さ 1 で move_cost");
         assert!((big / unit - 2.0f32.powf(0.7)).abs() < 1e-3, "大きさの 0.7 乗: {big} / {unit}");
+    }
+
+    #[test]
+    fn 蓄えは重く_移動の費用が増え_寒さには強くなる() {
+        // 動いたときの消費と、止まっているときの体温の費用を、蓄えの多い個体と少ない個体で比べる
+        let cost = |energy: f32, speed: f32, cold: f32| {
+            let mut w = empty_world();
+            w.params.herb_metabolism = 0.0;
+            w.spawn(100.0, 100.0, HERBIVORE, energy, 0, &genome::initial(true, 1.0, 2.0, 30.0, 0.0));
+            w.traits[0].temp_pref = w.terrain.temperature_at(100.0, 100.0) + cold;
+            w.live(0, speed, false, Mate::Missing);
+            (energy - w.energy[0], w.body_load(0))
+        };
+        let p = empty_world().params;
+        let (lean, fat) = (2.0, 2.0 * p.herb_repro_threshold);
+        let load = cost(fat, 0.0, 0.0).1;
+        // live の後なので、その tick の代謝の分だけ蓄えが減っている
+        assert!((load - p.fat_load * fat / p.body_energy).abs() < 1e-3, "重さ = fat_load × 蓄え ÷ 体: {load}");
+        let run = |e: f32| cost(e, 1.0, 0.0).0 - cost(e, 0.0, 0.0).0;
+        assert!(run(fat) > run(lean) * 1.1, "太っていると移動の費用が増える: {} / {}", run(fat), run(lean));
+        let warm = |e: f32| cost(e, 0.0, 10.0).0 - cost(e, 0.0, 0.0).0;
+        let full = (fat / (p.herb_repro_threshold * p.energy_cap_ratio)).min(1.0);
+        assert!((warm(fat) / warm(lean) - (1.0 - p.fat_insulation * full) / (1.0 - p.fat_insulation * lean / (p.herb_repro_threshold * p.energy_cap_ratio))).abs() < 1e-3,
+            "太っているほど体温の費用が小さい: {} / {}", warm(fat), warm(lean));
     }
 
     #[test]
@@ -4719,6 +4756,7 @@ mod tests {
     fn 巣の中では体温の費用が下がり見つかりにくい() {
         let cost_and_conceal = |nest: f32| {
             let mut w = nest_world();
+            w.params.fat_insulation = 0.0; // 巣の断熱だけを見る
             let c = w.plants.cell_index(100.0, 100.0);
             w.nest[c] = nest;
             w.traits[0].temp_pref = w.terrain.temperature_at(100.0, 100.0) - 10.0;

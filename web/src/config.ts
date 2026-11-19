@@ -113,6 +113,8 @@ export const SIM_PARAMS = {
   feed_efficiency: 0.7,
   feed_range: 8,
   gestation_load: 0.1,
+  fat_load: 0.02,
+  fat_insulation: 0.3,
 
   // 持久力
   herb_cruise: 0.7,
