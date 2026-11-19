@@ -58,6 +58,8 @@ pub mod state {
     pub const FIGHT_KIN: u8 = 10;
     /// 巣を作った
     pub const BUILD: u8 = 11;
+    /// 子に与えた
+    pub const FEED: u8 = 12;
 }
 
 /// 死因（観察用）
@@ -88,6 +90,8 @@ const CARRION_MIN: f32 = 0.1;
 /// これより出来の悪い巣は崩れて消える
 const NEST_MIN: f32 = 0.01;
 
+/// 妊娠していない（または無性生殖の）ときの相手の遺伝子の置き場所
+pub const NO_SLOT: u32 = u32::MAX;
 /// 巣を覚えていないときの home の値
 /// 体力がこれを切ると、出せる速さの上限が下がり始める
 const STAMINA_FADE: f32 = 0.2;
@@ -277,6 +281,11 @@ pub struct Census {
     /// 繁殖できる状態（成熟・蓄え十分・休み明け）だった個体 × tick を、[繁殖を望まなかった, 望んだが相手がいなかった, 交配を試みた]
     /// に分けた数 [種類]。観察用で、保存ファイルには入れない
     pub ready: [[u64; 3]; 2],
+    /// 子に与えた回数（個体 × tick）と、子の蓄えになった量 [種類]（観察用。保存しない）
+    pub feeds: [u64; 2],
+    pub fed: [f64; 2],
+    /// 生まれたときの成長度の合計 [種類]（観察用。保存しない。births で割ると平均）
+    pub birth_growth: [f64; 2],
 }
 
 /// step_deaths で、死体の奪い合いのけがで死んだことを表す死因（census の死因の集計では death::INJURED に数える）
@@ -354,6 +363,10 @@ struct Senses {
     rival_count: u32,
     /// 見えている獲物（好みの大きさの範囲のもの）の数（肉食のみ）
     prey_count: u32,
+    /// 見えている親子（自分の親か、自分の子）のうち最寄り
+    family: Seen,
+    /// 自分の幼い子のうち最寄り（匂いや声でわかるので、隠れや視野角によらず視野の距離の内なら気づく）
+    child: Seen,
 }
 
 /// 知覚と脳の判断（行動の前の段階）。tick の始めの世界だけを見て作るので、全個体を並列に作れる
@@ -473,6 +486,18 @@ pub struct World {
     pub vel: Vec<(f32, f32)>,
     /// 体力（0〜1）。巡航の速さを超えて走ると減り、それより遅ければ戻る
     pub stamina: Vec<f32>,
+    /// 最後に子を産んだ場所と、それを覚えている最後の tick（子が育つまで。0 なら覚えていない）
+    pub den: Vec<(f32, f32)>,
+    pub den_until: Vec<u64>,
+    /// 妊娠: 産む tick（0 なら妊娠していない）、お腹の子に渡したエネルギー、子の数、相手の id、相手の遺伝子の置き場所（NO_SLOT なら無性生殖）
+    pub gest_due: Vec<u64>,
+    pub gest_energy: Vec<f32>,
+    pub gest_litter: Vec<u8>,
+    pub gest_mate: Vec<u32>,
+    gest_slot: Vec<u32>,
+    /// 妊娠中の個体が交配した相手の遺伝子（GENOME_LEN ずつ。きょうだいは産むときにそれぞれ交叉する）と、空いている置き場所
+    mate_genomes: Vec<f32>,
+    free_slots: Vec<u32>,
     /// tick の始めに写した vel（前の tick の動き）。狩りで獲物が逃げていたかを見るのに使う（行動の順番で結果が変わらないように）
     prev_vel: Vec<(f32, f32)>,
     /// tick の途中で死んだ個体は false にしておき、tick の最後にまとめて取り除く
@@ -539,15 +564,16 @@ impl World {
     pub fn new(seed: u64, params: Params) -> Self {
         let mut world = World::empty(seed, params);
         let p = world.params.clone();
-        for (kind, count, size, speed, vision, fov, energy) in [
-            (HERBIVORE, p.herb_initial, p.herb_initial_size, p.herb_initial_speed, p.herb_initial_vision, p.herb_initial_fov, p.herb_initial_energy),
-            (CARNIVORE, p.carn_initial, p.carn_initial_size, p.carn_initial_speed, p.carn_initial_vision, p.carn_initial_fov, p.carn_initial_energy),
+        for (kind, count, size, speed, vision, fov, energy, litter) in [
+            (HERBIVORE, p.herb_initial, p.herb_initial_size, p.herb_initial_speed, p.herb_initial_vision, p.herb_initial_fov, p.herb_initial_energy, p.herb_initial_litter),
+            (CARNIVORE, p.carn_initial, p.carn_initial_size, p.carn_initial_speed, p.carn_initial_vision, p.carn_initial_fov, p.carn_initial_energy, p.carn_initial_litter),
         ] {
             // 仲間の入力へのランダムな配線は、種類ごとに 1 回だけ引いて全員で共有する。
             // 個体ごとに引くと初期個体どうしの遺伝的距離が大きすぎて、最初から互いに繁殖できなくなる
             let mut g = genome::initial(kind == HERBIVORE, size, speed, vision, 0.0);
             g[genome::G_FOV] = fov.to_radians();
             g[genome::G_MEMORY] = p.memory_initial;
+            g[genome::G_LITTER] = litter;
             genome::add_kin_wiring(&mut g, &mut world.rng);
             if p.memory_wiring != 0.0 {
                 genome::add_memory_wiring(&mut g, p.memory_wiring);
@@ -555,8 +581,38 @@ impl World {
             if p.nest_wiring != 0.0 {
                 genome::add_nest_wiring(&mut g, p.nest_wiring);
             }
-            for _ in 0..count as usize {
-                let (x, y) = world.random_position();
+            if kind == CARNIVORE && p.carn_family_wiring != 0.0 {
+                genome::add_family_wiring(&mut g, p.carn_family_wiring);
+            }
+            if p.feed_wiring != 0.0 {
+                genome::add_feed_wiring(&mut g, p.feed_wiring);
+            }
+            // 初期個体の組ごとの (一度に産む数, 子への投資)。組に分けないときは乱数を引かない
+            let groups = p.founder_groups.max(0.0) as usize;
+            let founders: Vec<(f32, f32)> = (0..groups)
+                .map(|_| {
+                    let litter = world.rng.range(p.founder_litter_min, p.founder_litter_max.max(p.founder_litter_min));
+                    let invest = world.rng.range(p.founder_invest_min, p.founder_invest_max.max(p.founder_invest_min));
+                    (litter, invest)
+                })
+                .collect();
+            for n in 0..count as usize {
+                let (x, y) = if groups > 0 {
+                    // 組 k の個体は、東西に groups 等分した k 番目の帯に置く
+                    let k = n % groups;
+                    g[genome::G_LITTER] = founders[k].0;
+                    g[genome::G_INVEST] = founders[k].1;
+                    let band = world.width / groups as f32;
+                    loop {
+                        let (_, y) = world.random_position();
+                        let x = band * (k as f32 + world.rng.f32());
+                        if !world.terrain.is_water(x, y) {
+                            break (x, y);
+                        }
+                    }
+                } else {
+                    world.random_position()
+                };
                 // 初期個体は 1 体ずつ違う標識色にする。系統の広がりが色で見える
                 g[genome::G_HUE] = world.rng.f32();
                 // 初期個体は、置かれた場所の気候に適応している
@@ -640,6 +696,15 @@ impl World {
             home: Vec::new(),
             vel: Vec::new(),
             stamina: Vec::new(),
+            den: Vec::new(),
+            den_until: Vec::new(),
+            gest_due: Vec::new(),
+            gest_energy: Vec::new(),
+            gest_litter: Vec::new(),
+            gest_mate: Vec::new(),
+            gest_slot: Vec::new(),
+            mate_genomes: Vec::new(),
+            free_slots: Vec::new(),
             prev_vel: Vec::new(),
             vigilance: Vec::new(),
             natal: Vec::new(),
@@ -742,6 +807,13 @@ impl World {
         self.home.push(NO_HOME);
         self.vel.push((0.0, 0.0));
         self.stamina.push(1.0);
+        self.den.push((0.0, 0.0));
+        self.den_until.push(0);
+        self.gest_due.push(0);
+        self.gest_energy.push(0.0);
+        self.gest_litter.push(0);
+        self.gest_mate.push(0);
+        self.gest_slot.push(NO_SLOT);
         self.vigilance.push(0.5);
         self.natal.push(self.terrain.soil_at(x, y));
         self.cover.push(0.0);
@@ -829,12 +901,49 @@ impl World {
 
     /// 体そのものが持つエネルギー（body_energy × 大人の大きさ × 成長度）
     pub fn body_energy(&self, i: usize) -> f32 {
-        self.params.body_energy * self.traits[i].adult_size * self.growth[i]
+        self.params.body_energy * self.traits[i].adult_size * self.growth[i] + self.gest_energy[i]
+    }
+
+    /// お腹の子の重さ（gestation_load × お腹の子のエネルギー ÷ 大人の体のエネルギー）。妊娠していなければ 0
+    pub fn gestation_load(&self, i: usize) -> f32 {
+        if self.gest_energy[i] <= 0.0 {
+            return 0.0;
+        }
+        self.params.gestation_load * self.gest_energy[i] / (self.params.body_energy * self.traits[i].adult_size).max(1e-6)
     }
 
     /// 繁殖できる状態か（成熟していて、エネルギーが足りていて、前の繁殖から十分たっている）
+    /// 動ける度合い（0〜1）。成長度が immobile_growth 以下の子は動けず、自分では食べられない。mobile_growth 以上なら 1
+    pub fn mobility(&self, i: usize) -> f32 {
+        let (lo, hi) = (self.params.immobile_growth, self.params.mobile_growth);
+        let g = self.growth[i];
+        if hi <= lo {
+            return if g > lo { 1.0 } else { 0.0 };
+        }
+        let x = ((g - lo) / (hi - lo)).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    }
+
+    /// 親 i が子 j に蓄えを分け与える。渡した量の feed_efficiency 倍が子の蓄えになり、残りは熱として失う。与えたら true
+    fn feed(&mut self, i: usize, j: usize) -> bool {
+        let p = &self.params;
+        let eff = p.feed_efficiency.clamp(0.01, 1.0);
+        let room = (self.energy_cap(j) - self.energy[j]).max(0.0);
+        let amount = (p.feed_rate * self.traits[i].size_pow075).min(self.energy[i]).min(room / eff);
+        if amount <= 0.0 {
+            return false;
+        }
+        self.energy[i] -= amount;
+        self.energy[j] += amount * eff;
+        self.ledger.lost_metabolism += (amount * (1.0 - eff)) as f64;
+        let k = self.kind[i] as usize;
+        self.census.feeds[k] += 1;
+        self.census.fed[k] += (amount * eff) as f64;
+        true
+    }
+
     pub fn can_breed(&self, i: usize) -> bool {
-        self.growth[i] >= 1.0 && self.energy[i] >= self.repro_threshold(i) && self.rest[i] == 0
+        self.growth[i] >= 1.0 && self.energy[i] >= self.repro_threshold(i) && self.rest[i] == 0 && self.gest_due[i] == 0
     }
 
     /// 蓄えられるエネルギーの上限（いまの大きさに比例。幼体は小さい）
@@ -1049,7 +1158,7 @@ impl World {
         let (rivals, _) = self.carnivore_neighbors(i);
         let p = &self.params;
         let eff = p.carn_efficiency * fresh;
-        let bite = p.carn_scavenge_bite * self.traits[i].size / (1.0 + p.carn_interference * rivals as f32);
+        let bite = p.carn_scavenge_bite * self.traits[i].size / (1.0 + p.carn_interference * rivals as f32) * self.mobility(i);
         let take = bite.min(self.carrion[c]).min(room / eff.max(1e-6));
         self.carrion[c] -= take;
         let gain = take * eff;
@@ -1460,6 +1569,9 @@ impl World {
         let vmin = self.params.vigilance_min_range;
         let vigilance = self.vigilance[i];
         let (mut similar, mut similar_d2, mut similar_count): (Seen, f32, u32) = (None, f32::MAX, 0);
+        let (mut family, mut family_d2): (Seen, f32) = (None, f32::MAX);
+        let (my_id, my_parents) = (self.id[i], self.parents[i]);
+        let (mut child, mut child_d2): (Seen, f32) = (None, f32::MAX);
         // 成熟した仲間の最寄り（[標識色が近い, 問わない]）
         let mut mate: [Seen; 2] = [None, None];
         let mut mate_d2 = [f32::MAX; 2];
@@ -1489,6 +1601,11 @@ impl World {
                 let push = 1.0 - d / space;
                 sep_dx -= dx / d * push;
                 sep_dy -= dy / d * push;
+            }
+            // 自分の幼い子（初期個体の親の id は 0 なので、my_id が 0 でなければ当てはまらない）
+            if kind_j == my_kind && j != i && d2 < child_d2 && self.growth[j] < 1.0 && self.alive[j] && self.parents[j].contains(&my_id) {
+                child_d2 = d2;
+                child = Some((j, dx, dy, d2));
             }
             // 相手の見えにくさ（隠れの強さ・足元の草・シグナル・大きさを build_grid で掛け合わせたもの）
             let mut r = vision * (1.0 - cover_j);
@@ -1552,6 +1669,13 @@ impl World {
                             rival = Some((j, dx, dy, d2));
                         }
                     }
+                    // 親子: j が自分の親か、自分が j の親（初期個体の親の id は 0 なので当てはまらない）
+                    let pj = self.parents[j];
+                    let is_family = pj[0] == my_id || pj[1] == my_id || (self.id[j] != 0 && my_parents.contains(&self.id[j]));
+                    if is_family && d2 < family_d2 {
+                        family_d2 = d2;
+                        family = Some((j, dx, dy, d2));
+                    }
                     if self.growth[j] >= 1.0 {
                         for (k, ok) in [is_similar, true].into_iter().enumerate() {
                             if ok && d2 < mate_d2[k] {
@@ -1585,6 +1709,8 @@ impl World {
             rival,
             rival_count,
             prey_count,
+            family,
+            child,
         }
     }
 
@@ -1664,6 +1790,8 @@ impl World {
             (senses.predator, genome::IN_PRED_FWD),
             (senses.prey, genome::IN_PREY_FWD),
             (senses.kin, genome::IN_KIN_FWD),
+            (senses.family, genome::IN_FAMILY_FWD),
+            (senses.child, genome::IN_CHILD_FWD),
         ] {
             if let Some((_, dx, dy, d2)) = seen {
                 let d = d2.sqrt().max(1e-3);
@@ -1783,6 +1911,22 @@ impl World {
             input[genome::IN_NEST_AWAY] = 1.0;
         }
         input[genome::IN_STAMINA] = self.stamina[i];
+        input[genome::IN_GROWTH] = self.growth[i];
+        input[genome::IN_GESTATION] = self.gest_energy[i] / self.repro_threshold(i);
+        if let Some((j, ..)) = senses.child {
+            input[genome::IN_CHILD_HUNGER] = (1.0 - self.energy[j] / self.energy_cap(j).max(1e-6)).clamp(0.0, 1.0);
+        }
+        // 最後に子を産んだ場所（その場所にいれば 0）
+        if self.tick < self.den_until[i] {
+            let dx = torus_delta(self.den[i].0 - x, self.width);
+            let dy = torus_delta(self.den[i].1 - y, self.height);
+            let d = (dx * dx + dy * dy).sqrt();
+            if d > 1.0 {
+                let (f, r) = to_local(dx / d, dy / d);
+                input[genome::IN_DEN_FWD] = f;
+                input[genome::IN_DEN_RIGHT] = r;
+            }
+        }
 
         lap!(2);
         let out = genome::think(self.genome(i), &input);
@@ -1871,7 +2015,8 @@ impl World {
         // 幼体は遅い。飢えた個体と老いた個体も遅い
         let jv = self.params.juvenile_speed;
         let vigor = self.vigor(i);
-        let speed = t.max_speed * throttle * vigor * (jv + (1.0 - jv) * self.growth[i]);
+        let speed = t.max_speed * throttle * vigor * (jv + (1.0 - jv) * self.growth[i]) * self.mobility(i)
+            / (1.0 + self.gestation_load(i));
 
         // 行きたい方向へ曲がる。1 tick に曲がれる角度には上限がある
         let (turn_cos, turn_sin) = self.turn_limit(i, speed);
@@ -1936,6 +2081,18 @@ impl World {
             }
         }
 
+        // 届く距離にいる自分の幼い子に与える（与えた tick は動かず、食べない）
+        if out[genome::OUT_FEED] > 0.0
+            && let Some((j, _, _, d2)) = senses.child
+            && self.alive[j]
+        {
+            let reach = self.params.feed_range * t.size;
+            if d2 < reach * reach && self.feed(i, j) {
+                self.state[i] = state::FEED;
+                return (0.0, wants_child, mate);
+            }
+        }
+
         let wants_build = out[genome::OUT_BUILD] > 0.0;
         if self.kind[i] == HERBIVORE {
             let ate = wants_eat && self.graze(i);
@@ -1958,6 +2115,7 @@ impl World {
             // 判断のあとで、同じ tick にほかの肉食が先に仕留めていることがある
             if wants_eat && let Some((j, _, _, d2)) = senses.prey
                 && self.alive[j]
+                && self.mobility(i) > 0.0
             {
                 match self.try_hunt(i, j, d2) {
                     Hunt::Caught => {
@@ -2053,7 +2211,8 @@ impl World {
         let bite = self.params.herb_bite
             * self.traits[i].size
             * (1.0 - self.params.vigilance_bite_cost * self.vigilance[i])
-            * fit;
+            * fit
+            * self.mobility(i);
         // 届く層のうち、取れる量 × 質 が最も大きい層から食べる。硬い層ほど身になる割合が低い。
         // 地面の草は、口の大きさで決まる食べ残す高さより上しか取れない
         let (reach, floor) = (self.reach(i), self.graze_floor(i));
@@ -2125,6 +2284,8 @@ impl World {
         // 獲物の価値は、蓄えと体の両方
         let prey = self.energy[j] + self.body_energy(j);
         let (_, mut eaters) = self.carnivore_neighbors(i);
+        // 動けない子は獲物のところへ来られない（親が与える）
+        eaters.retain(|&k| self.mobility(k) > 0.0);
         eaters.push(i);
         self.census.kills += 1;
         self.census.kill_noticed += noticed as u64;
@@ -2278,11 +2439,12 @@ impl World {
             return;
         }
         self.alive[i] = false;
-        // 体は死体になる（食べられた場合は、狩った側が体ごと食べ、残りは try_hunt が死体にする）
+        // 体は死体になる（食べられた場合は、狩った側が体ごと食べ、残りは try_hunt が死体にする）。お腹の子も体に含む
         if cause != death::EATEN {
             let body = self.body_energy(i);
             self.drop_carrion(self.xs[i], self.ys[i], body);
         }
+        self.end_pregnancy(i);
         self.census.deaths[self.kind[i] as usize][cause as usize] += 1;
         self.step_deaths.push((self.id[i], cause));
         self.recent_deaths.push_back(DeathRecord { tick: self.tick, kind: self.kind[i], cause, hue: self.traits[i].hue });
@@ -2337,7 +2499,7 @@ impl World {
         // 記憶の維持費は記憶の長さに比例
         let memory = p.memory_cost * t.memory / 1000.0 * t.size_pow075;
         // 移動は大きさの move_size_power 乗（約 0.7 乗。体重あたりは大きいほど割安）と速度の 2 乗に比例する
-        let movement = p.move_cost * t.size.max(0.01).powf(p.move_size_power) * speed * speed;
+        let movement = p.move_cost * t.size.max(0.01).powf(p.move_size_power) * speed * speed * (1.0 + self.gestation_load(i));
         let parts = [basal, upkeep, thermal, signal, eye, brain, memory, movement];
         let cost = parts.iter().sum::<f32>().min(self.energy[i]);
         // 内訳は、持っている分で頭打ちになったときは同じ割合で縮めて数える
@@ -2381,6 +2543,10 @@ impl World {
             self.energy[i] = 0.0;
             self.die(i, death::OLD_AGE);
             return;
+        }
+        // 妊娠期間が終わったら産む
+        if self.gest_due[i] != 0 && self.tick >= self.gest_due[i] {
+            self.give_birth(i);
         }
         // 成熟するまで繁殖できない。繁殖したあとしばらくも繁殖できない
         if self.can_breed(i) {
@@ -2466,11 +2632,54 @@ impl World {
         // 一度に産む数: 整数部分は必ず、端数は確率で 1 体増やす
         let mean = self.traits[i].litter;
         let litter = mean.floor() as u32 + (self.rng.f32() < mean.fract()) as u32;
-        self.children[i] += litter;
-        // 休み = 基本の休み × 渡した量 ÷ (繁殖に必要な量の半分)。0.1〜3 倍に収める
-        let base_rest = if self.kind[i] == HERBIVORE { self.params.herb_repro_rest } else { self.params.carn_repro_rest };
+        // 休み = 基本の休み × 渡した量 ÷ (繁殖に必要な量の半分)。0.1〜3 倍に収める。妊娠期間も同じ比で伸び縮みする
+        let herb = self.kind[i] == HERBIVORE;
+        let base_rest = if herb { self.params.herb_repro_rest } else { self.params.carn_repro_rest };
         let ratio = (given / (0.5 * self.repro_threshold(i))).clamp(0.1, 3.0);
         self.rest[i] = (base_rest * ratio) as u16;
+        let gestation = if herb { self.params.herb_gestation } else { self.params.carn_gestation } * self.traits[i].adult_pow025 * ratio;
+
+        // 身ごもる。相手の遺伝子は産むときまで写しておく（相手が死んでも子は生まれる）
+        self.gest_energy[i] = given;
+        self.gest_litter[i] = litter.min(u8::MAX as u32) as u8;
+        self.gest_mate[i] = mate.map(|j| self.id[j]).unwrap_or(0);
+        self.gest_due[i] = self.tick + (gestation.max(0.0) as u64).max(1);
+        if let Some(j) = mate {
+            let slot = match self.free_slots.pop() {
+                Some(s) => s,
+                None => {
+                    self.mate_genomes.resize(self.mate_genomes.len() + GENOME_LEN, 0.0);
+                    (self.mate_genomes.len() / GENOME_LEN - 1) as u32
+                }
+            };
+            let at = slot as usize * GENOME_LEN;
+            self.mate_genomes[at..at + GENOME_LEN].copy_from_slice(&self.genomes[j * GENOME_LEN..(j + 1) * GENOME_LEN]);
+            self.gest_slot[i] = slot;
+        }
+        if gestation < 1.0 {
+            self.give_birth(i);
+        }
+    }
+
+    /// 妊娠を終える（産んだか、親が死んだ）。お腹の子のエネルギーは呼ぶ側で扱う
+    fn end_pregnancy(&mut self, i: usize) {
+        if self.gest_slot[i] != NO_SLOT {
+            self.free_slots.push(self.gest_slot[i]);
+            self.gest_slot[i] = NO_SLOT;
+        }
+        self.gest_due[i] = 0;
+        self.gest_energy[i] = 0.0;
+        self.gest_litter[i] = 0;
+        self.gest_mate[i] = 0;
+    }
+
+    /// お腹の子を産む
+    fn give_birth(&mut self, i: usize) {
+        let given = self.gest_energy[i];
+        let litter = self.gest_litter[i].max(1) as u32;
+        let mate_id = self.gest_mate[i];
+        let slot = self.gest_slot[i];
+        self.children[i] += litter;
 
         let m = Mutation {
             rate: self.params.mutation_rate,
@@ -2482,18 +2691,21 @@ impl World {
             neuron_flip: self.params.mutation_neuron,
             size_sigma: if self.kind[i] == CARNIVORE { self.params.mutation_carn_size_sigma } else { self.params.mutation_trait_sigma },
         };
-        let mate_id = mate.map(|j| self.id[j]).unwrap_or(0);
         let spread = self.params.birth_spread;
+        // 産んだ場所を、子が育つまで覚えておく
+        let maturity = if self.kind[i] == HERBIVORE { self.params.herb_maturity } else { self.params.carn_maturity };
+        self.den[i] = (self.xs[i], self.ys[i]);
+        self.den_until[i] = self.tick + (maturity * self.traits[i].adult_pow025) as u64;
         // きょうだいは、それぞれ別に交叉と変異をする（遺伝子が少しずつ違う）
         for _ in 0..litter {
             let genome_at = self.births_genomes.len();
             let mine = &self.genomes[i * GENOME_LEN..(i + 1) * GENOME_LEN];
-            match mate {
-                Some(j) => {
-                    let theirs = &self.genomes[j * GENOME_LEN..(j + 1) * GENOME_LEN];
-                    genome::crossover(mine, theirs, &mut self.rng, &mut self.births_genomes);
-                }
-                None => self.births_genomes.extend_from_slice(mine),
+            if slot != NO_SLOT {
+                let at = slot as usize * GENOME_LEN;
+                let theirs = &self.mate_genomes[at..at + GENOME_LEN];
+                genome::crossover(mine, theirs, &mut self.rng, &mut self.births_genomes);
+            } else {
+                self.births_genomes.extend_from_slice(mine);
             }
             genome::mutate(&mut self.births_genomes[genome_at..], &m, &mut self.rng);
             let x = self.xs[i] + self.rng.range(-spread, spread);
@@ -2517,6 +2729,8 @@ impl World {
                 home: self.home[i],
             });
         }
+        // お腹の子のエネルギーは births に移った
+        self.end_pregnancy(i);
     }
 
     fn apply_births(&mut self) {
@@ -2540,6 +2754,7 @@ impl World {
             if self.terrain.is_water(x, y) {
                 (x, y) = (b.parent_x, b.parent_y);
             }
+            self.census.birth_growth[b.kind as usize] += growth as f64;
             self.spawn_grown(x, y, b.kind, reserve, b.generation, g, traits, growth);
             *self.parents.last_mut().unwrap() = b.parents;
             *self.home.last_mut().unwrap() = b.home;
@@ -2580,6 +2795,13 @@ impl World {
             self.home.swap_remove(i);
             self.vel.swap_remove(i);
             self.stamina.swap_remove(i);
+            self.den.swap_remove(i);
+            self.den_until.swap_remove(i);
+            self.gest_due.swap_remove(i);
+            self.gest_energy.swap_remove(i);
+            self.gest_litter.swap_remove(i);
+            self.gest_mate.swap_remove(i);
+            self.gest_slot.swap_remove(i);
             self.vigilance.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
@@ -2872,7 +3094,34 @@ mod tests {
         p.world_height = 480.0;
         p.herb_initial = 600.0;
         p.carn_initial = 40.0;
+        // 繁殖のテストは交配した tick に産むとして書いてある（妊娠は専用のテストで確かめる）
+        p.herb_gestation = 0.0;
+        p.carn_gestation = 0.0;
         p
+    }
+
+    #[test]
+    fn 初期個体を組に分けると_組ごとに産む数と投資が決まり_東西の帯に並ぶ() {
+        let mut p = small_params();
+        p.founder_groups = 4.0;
+        let w = World::new(1, p.clone());
+        let band = p.world_width / 4.0;
+        for kind in [HERBIVORE, CARNIVORE] {
+            let mut values = [None; 4];
+            for i in (0..w.count()).filter(|&i| w.kind[i] == kind) {
+                let k = (w.xs[i] / band) as usize;
+                let t = &w.traits[i];
+                assert!((p.founder_litter_min..=p.founder_litter_max).contains(&t.litter));
+                assert!((p.founder_invest_min..=p.founder_invest_max).contains(&t.invest));
+                let v = *values[k].get_or_insert((t.litter, t.invest));
+                assert_eq!(v, (t.litter, t.invest), "同じ帯（組）の個体は同じ値");
+            }
+            let distinct: Vec<_> = values.iter().flatten().collect();
+            assert!(distinct.windows(2).any(|v| v[0] != v[1]), "組ごとに値が違う");
+        }
+        // 分けなければ、全員が既定の値
+        let w = World::new(1, small_params());
+        assert!((0..w.count()).all(|i| w.traits[i].litter == 1.0 && w.traits[i].invest == 0.5));
     }
 
     #[test]
@@ -2999,6 +3248,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 草食 0 と相手 1 を置き、0 を身ごもらせた世界（妊娠期間 100 tick）
+    fn pregnant_world() -> World {
+        let mut w = empty_world();
+        w.params.herb_gestation = 100.0;
+        let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        w.spawn(100.0, 100.0, HERBIVORE, 15.0, 0, &g);
+        w.spawn(103.0, 100.0, HERBIVORE, 15.0, 0, &g);
+        w.ledger.initial = w.total_energy();
+        w.reproduce(0, 1.0, Some(1));
+        w
+    }
+
+    #[test]
+    fn 身ごもると重くなり_期間が過ぎると相手が死んでいても産む() {
+        let mut w = pregnant_world();
+        let (mother, father) = (w.id[0], w.id[1]);
+        assert_eq!(w.count(), 2, "すぐには産まない");
+        assert!(w.gest_due[0] > w.tick && w.gest_energy[0] > 0.0);
+        // 渡した量 ÷ 大人の体のエネルギー × 0.1 だけ重い。最高速度は 1 / (1 + 重さ) 倍
+        let load = w.params.gestation_load * w.gest_energy[0] / (w.params.body_energy * w.traits[0].adult_size);
+        assert!((w.gestation_load(0) - load).abs() < 1e-6 && load > 0.05, "重さ {load}");
+        assert!(w.brain_inputs()[0][genome::IN_GESTATION] > 0.0);
+        assert!(!w.can_breed(0), "妊娠中は繁殖できない");
+        // 相手が死んでも、写しておいた遺伝子で子は生まれる
+        w.ledger.lost_death += w.energy[1] as f64; // 蓄えは消えたことにする（帳簿の上で）
+        w.energy[1] = 0.0;
+        w.die(1, death::OLD_AGE);
+        let due = w.gest_due[0];
+        while w.tick < due + 1 {
+            w.step();
+        }
+        let m = w.index_of(mother).unwrap();
+        assert!(w.count() >= 2, "産んだ");
+        let child = (0..w.count()).find(|&k| w.parents[k][0] == mother).expect("子がいる");
+        assert_eq!(w.parents[child], [mother, father]);
+        assert_eq!((w.gest_due[m], w.gest_energy[m], w.gestation_load(m)), (0, 0.0, 0.0), "産んだら軽くなる");
+        let gap = (w.total_energy() - w.ledger.expected_total()).abs();
+        assert!(gap < 1e-3, "帳簿が合う（差 {gap}）");
+        // 相手の遺伝子の置き場所は空く
+        assert_eq!(w.free_slots.len(), 1);
+    }
+
+    #[test]
+    fn 妊娠中に死ぬとお腹の子も死体になる() {
+        let mut w = pregnant_world();
+        let carried = w.gest_energy[0];
+        let before = w.carrion.iter().sum::<f32>();
+        w.ledger.lost_death += w.energy[0] as f64;
+        w.energy[0] = 0.0;
+        w.die(0, death::FOUGHT);
+        let dropped = w.carrion.iter().sum::<f32>() - before;
+        assert!(dropped >= carried + w.params.body_energy - 1e-4, "体とお腹の子が死体になる: {dropped}");
+        w.step();
+        assert_eq!(w.count(), 1, "子は生まれない");
+        let gap = (w.total_energy() - w.ledger.expected_total()).abs();
+        assert!(gap < 1e-3, "帳簿が合う（差 {gap}）");
     }
 
     #[test]
@@ -3222,6 +3529,97 @@ mod tests {
     }
 
     #[test]
+    fn 親子は互いの方向がわかり_他人には反応しない() {
+        let mut w = empty_world();
+        let g = genome::initial(false, 1.0, 1.8, 48.0, 0.3);
+        // 0 が親、1 が 0 の子（成長途中）、2 は他人。全員が互いの正面に入るよう、東向きに並べて 0 と 1 は向かい合わせる
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &g);
+        w.spawn(110.0, 100.0, CARNIVORE, 5.0, 0, &g);
+        w.spawn(105.0, 103.0, CARNIVORE, 5.0, 0, &g);
+        for (i, h) in [(0, (1.0, 0.0)), (1, (-1.0, 0.0)), (2, (0.0, -1.0))] {
+            w.hx[i] = h.0;
+            w.hy[i] = h.1;
+        }
+        w.parents[1] = [w.id[0], 0];
+        w.growth[1] = 0.5;
+        let inputs = w.brain_inputs();
+        assert!(inputs[0][genome::IN_FAMILY_NEAR] > 0.5 && inputs[0][genome::IN_FAMILY_FWD] > 0.9, "親から子が見える");
+        assert!(inputs[1][genome::IN_FAMILY_NEAR] > 0.5 && inputs[1][genome::IN_FAMILY_FWD] > 0.9, "子から親が見える");
+        assert_eq!(inputs[2][genome::IN_FAMILY_NEAR], 0.0, "他人には親子がいない");
+        assert_eq!(inputs[1][genome::IN_GROWTH], 0.5);
+        assert_eq!(inputs[0][genome::IN_GROWTH], 1.0);
+    }
+
+    /// 成長度 growth の個体を加え、その番号を返す（テスト用）
+    fn spawn_young(w: &mut World, x: f32, y: f32, kind: u8, energy: f32, g: &[f32], growth: f32) -> usize {
+        let t = genome::traits(g, w.params.max_turn);
+        w.spawn_grown(x, y, kind, energy, 0, g, t, growth);
+        w.count() - 1
+    }
+
+    #[test]
+    fn 未熟な子は動けず自分では食べない() {
+        let mut w = empty_world();
+        let g = genome::initial(true, 1.0, 1.3, 30.0, 0.0);
+        let small = spawn_young(&mut w, 100.0, 100.0, HERBIVORE, 0.2, &g, 0.1);
+        let big = spawn_young(&mut w, 300.0, 300.0, HERBIVORE, 0.2, &g, 0.5);
+        assert_eq!(w.mobility(small), 0.0);
+        assert_eq!(w.mobility(big), 1.0);
+        let mid = spawn_young(&mut w, 500.0, 500.0, HERBIVORE, 0.2, &g, 0.3);
+        assert!((w.mobility(mid) - 0.5).abs() < 1e-6, "中間はなめらか");
+        let (small_id, big_id) = (w.id[small], w.id[big]);
+        let (x0, y0, e0) = (w.xs[small], w.ys[small], w.energy[small]);
+        let big_e0 = w.energy[big];
+        for _ in 0..20 {
+            w.step();
+        }
+        let (s, b) = (w.index_of(small_id).unwrap(), w.index_of(big_id).unwrap());
+        assert_eq!((w.xs[s], w.ys[s]), (x0, y0), "動けない");
+        assert!(w.energy[s] < e0, "自分では食べられない: {} → {}", e0, w.energy[s]);
+        assert!(w.energy[b] > big_e0, "動ける子は食べる: {} → {}", big_e0, w.energy[b]);
+    }
+
+    #[test]
+    fn 親は届く距離の自分の幼い子に与え_帳簿は合う() {
+        let mut w = empty_world();
+        let mut g = genome::initial(false, 1.0, 1.8, 48.0, 0.0);
+        genome::add_feed_wiring(&mut g, 4.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 16.0, 0, &g);
+        let child = spawn_young(&mut w, 103.0, 100.0, CARNIVORE, 0.2, &g, 0.1);
+        let stranger = spawn_young(&mut w, 97.0, 100.0, CARNIVORE, 0.2, &g, 0.1);
+        w.parents[child] = [w.id[0], 0];
+        w.ledger.initial = w.total_energy();
+        let (parent_id, child_id, stranger_id) = (w.id[0], w.id[child], w.id[stranger]);
+        let inputs = w.brain_inputs();
+        assert!(inputs[0][genome::IN_CHILD_NEAR] > 0.9 && inputs[0][genome::IN_CHILD_HUNGER] > 0.9, "親は自分の子に気づく");
+        assert_eq!(inputs[child][genome::IN_CHILD_NEAR], 0.0, "子には子がいない");
+        for _ in 0..10 {
+            w.step();
+        }
+        let (p, c, s) = (w.index_of(parent_id).unwrap(), w.index_of(child_id).unwrap(), w.index_of(stranger_id).unwrap());
+        assert!(w.energy[c] > 0.2 + 0.05, "子は与えられて蓄えが増える: {}", w.energy[c]);
+        assert!(w.energy[s] < 0.2, "他人の子には与えない: {}", w.energy[s]);
+        assert!(w.energy[p] < 16.0);
+        assert!(w.census.feeds[CARNIVORE as usize] > 0);
+        let gap = (w.total_energy() - w.ledger.expected_total()).abs();
+        assert!(gap < 1e-3, "帳簿が合う（差 {gap}）");
+    }
+
+    #[test]
+    fn 産んだ場所の方向を子が育つまで覚えている() {
+        let mut w = empty_world();
+        let g = genome::initial(false, 1.0, 1.8, 48.0, 0.0);
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &g);
+        (w.hx[0], w.hy[0]) = (1.0, 0.0);
+        assert_eq!(w.brain_inputs()[0][genome::IN_DEN_FWD], 0.0, "産んでいなければ覚えていない");
+        w.den[0] = (150.0, 100.0);
+        w.den_until[0] = w.tick + 100;
+        assert!(w.brain_inputs()[0][genome::IN_DEN_FWD] > 0.99, "前方にある");
+        w.den_until[0] = w.tick;
+        assert_eq!(w.brain_inputs()[0][genome::IN_DEN_FWD], 0.0, "子が育ったら忘れる");
+    }
+
+    #[test]
     fn 近づきすぎた個体どうしは離れる() {
         // 離れる力がある場合とない場合で、同じ条件から動かした後の距離を比べる（ほかの欲求の影響を打ち消す）
         let distance = |weight: f32| {
@@ -3231,10 +3629,13 @@ mod tests {
             let g = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
             w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &g);
             w.spawn(101.5, 100.0, HERBIVORE, 5.0, 0, &g);
+            // 離れたあと、仲間どうしで寄り戻ることがあるので、最後の距離ではなく 20 tick のあいだの最大の距離で比べる
+            let mut far = 0.0f32;
             for _ in 0..20 {
                 w.step();
+                far = far.max((torus_delta(w.xs[1] - w.xs[0], w.width).powi(2) + torus_delta(w.ys[1] - w.ys[0], w.height).powi(2)).sqrt());
             }
-            (torus_delta(w.xs[1] - w.xs[0], w.width).powi(2) + torus_delta(w.ys[1] - w.ys[0], w.height).powi(2)).sqrt()
+            far
         };
         let (with, without) = (distance(1.5), distance(0.0));
         assert!(with > without + 1.0, "離れる力あり {with} / なし {without}");

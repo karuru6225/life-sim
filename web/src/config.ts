@@ -13,6 +13,11 @@ export const SIM_PARAMS = {
   herb_initial: 25000,
   carn_initial: 1600,
   initial_age_spread: 0,
+  founder_groups: 0,
+  founder_litter_min: 1,
+  founder_litter_max: 3,
+  founder_invest_min: 0.3,
+  founder_invest_max: 0.7,
   plant_initial_ratio: 0.5,
 
   // 地形（リセット時のみ反映）
@@ -81,6 +86,8 @@ export const SIM_PARAMS = {
   nest_insulation: 0.7,
   nest_hide: 0.9,
   nest_wiring: 0,
+  carn_family_wiring: 0,
+  feed_wiring: 0,
   energy_cap_ratio: 2,
   birth_spread: 6,
   rest_metabolism: 0.5,
@@ -98,8 +105,14 @@ export const SIM_PARAMS = {
   signal_exposure: 0.5,
 
   // 成長
-  min_birth_growth: 0.2,
+  min_birth_growth: 0.05,
   juvenile_speed: 0.6,
+  immobile_growth: 0.2,
+  mobile_growth: 0.4,
+  feed_rate: 0.02,
+  feed_efficiency: 0.7,
+  feed_range: 8,
+  gestation_load: 0.1,
 
   // 持久力
   herb_cruise: 0.7,
@@ -165,6 +178,7 @@ export const SIM_PARAMS = {
   // 草食（形質は初期個体の値。以後は遺伝子として進化する）
   herb_initial_size: 1,
   herb_initial_speed: 1.3,
+  herb_initial_litter: 1,
   herb_initial_vision: 30,
   herb_mate_range: 12,
   habitat_tolerance: 0.15,
@@ -178,12 +192,14 @@ export const SIM_PARAMS = {
   herb_max_age: 2400,
   herb_initial_fov: 300,
   herb_repro_rest: 600,
+  herb_gestation: 150,
   herb_maturity: 600,
   herb_initial_energy: 5,
 
   // 肉食（形質は初期個体の値。以後は遺伝子として進化する）
   carn_initial_size: 1,
   carn_initial_speed: 1.8,
+  carn_initial_litter: 1,
   carn_initial_vision: 48,
   carn_mate_range: 20,
   carn_attack_range: 6,
@@ -194,6 +210,7 @@ export const SIM_PARAMS = {
   carn_max_age: 3600,
   carn_initial_fov: 120,
   carn_repro_rest: 900,
+  carn_gestation: 200,
   carn_maturity: 900,
   carn_initial_energy: 8,
 };

@@ -148,12 +148,33 @@ pub const IN_NEST_HERE: usize = 52;
 pub const IN_NEST_AWAY: usize = 53;
 /// 自分の体力（0〜1）。巡航の速さを超えて走ると減り、0.2 を切ると速さの上限が巡航の速さまで下がっていく
 pub const IN_STAMINA: usize = 54;
-pub const N_IN: usize = 55;
+// 親子の見分け（匂いや声で、自分の親・自分の子を見分ける）
+/// 見えている親子（自分の親か、自分の子）のうち最寄りの方向（自分基準の前方・右方成分）
+pub const IN_FAMILY_FWD: usize = 55;
+pub const IN_FAMILY_RIGHT: usize = 56;
+/// 最寄りの親子が見えていれば 0.5〜1（近いほど大きい）、見えていなければ 0
+pub const IN_FAMILY_NEAR: usize = 57;
+/// 自分の成長度（生まれたとき 0 に近く、成熟すると 1）
+pub const IN_GROWTH: usize = 58;
+// 子育て（親が自分の幼い子を、匂いや声で見分ける。草に隠れていても、視野角の外でも、視野の距離の内ならわかる）
+/// 最寄りの自分の幼い子の方向（自分基準の前方・右方成分）
+pub const IN_CHILD_FWD: usize = 59;
+pub const IN_CHILD_RIGHT: usize = 60;
+/// 最寄りの自分の幼い子がいれば 0.5〜1（近いほど大きい）、いなければ 0
+pub const IN_CHILD_NEAR: usize = 61;
+/// 最寄りの自分の幼い子の空腹度（1 − 蓄え ÷ 蓄えの上限）。いなければ 0
+pub const IN_CHILD_HUNGER: usize = 62;
+/// 最後に子を産んだ場所の方向（巣穴の場所を覚えているのにあたる）。覚えていないか、その場所にいれば 0
+pub const IN_DEN_FWD: usize = 63;
+pub const IN_DEN_RIGHT: usize = 64;
+/// お腹の子のエネルギー ÷ 繁殖に必要な量（妊娠していなければ 0）
+pub const IN_GESTATION: usize = 65;
+pub const N_IN: usize = 66;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
 /// 中間 1 層目と 2 層目のニューロンの最大数
-pub const H1: usize = 16;
+pub const H1: usize = 20;
 pub const H2: usize = 16;
 pub const N_HIDDEN: usize = H1 + H2;
 /// 初期の脳で使う 1 層目のニューロンの数（0〜7 番）。2 層目は使わない
@@ -196,7 +217,9 @@ pub const OUT_ATTACK: usize = 13;
 pub const OUT_ATTACK_KIN: usize = 14;
 /// 正なら、ほかに何もしなかった tick に、今いるマスで巣を作る（止まり、エネルギーと材料の茂み・枝を使う）
 pub const OUT_BUILD: usize = 15;
-pub const N_OUT: usize = 16;
+/// 正なら、届く距離にいる自分の幼い子に蓄えを分け与える（与えた tick は動かず、食べない）
+pub const OUT_FEED: usize = 16;
+pub const N_OUT: usize = 17;
 
 /// 欲求の数（食べる・繁殖・逃げる・仲間・追い払う・自由）。最後の「自由」の方向は脳の出力から取る
 pub const N_DRIVES: usize = 6;
@@ -489,6 +512,8 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     out_bias(&mut g, OUT_DIR_FWD, 0.3);
     // 巣は作らない（作るかどうかは進化に任せる。add_nest_wiring で初期配線を入れられる）
     out_bias(&mut g, OUT_BUILD, -1.0);
+    // 子に与えない（与えるかどうかは進化に任せる。add_feed_wiring で初期配線を入れられる）
+    out_bias(&mut g, OUT_FEED, -1.0);
 
     // 優先度の基本: 普段は食べる、繁殖できる状態なら繁殖、天敵が見えたら逃げるを最優先。
     // 仲間に寄る欲求は弱くしておき、強めるかどうかは進化に任せる
@@ -538,6 +563,14 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
         out_bias(&mut g, OUT_THROTTLE, 2.8);
         wire_out(&mut g, OUT_THROTTLE, h_prey, 0.5);
         wire_out(&mut g, OUT_THROTTLE, h_close, 4.0);
+        // 反撃を受ける大きさの獲物（大きさの比がおよそ 1.3 倍より上）は襲わない。反撃は 1.2 倍から始まり、
+        // 育ちきっていない体（大きさ 0.6 前後）で大人の草食を襲うと、比は 1.4〜1.6 になり、少ない蓄えでは反撃に耐えられない。
+        // 中間ニューロン 12 が「獲物が大きすぎる」を表す（比 1 で −0.78、1.35 で 0、1.6 で +0.71。獲物が見えていなければ −0.93）。
+        // 「食べる」の基準値はこの分を差し引いて、比が 1 前後のときと獲物がいないときは、この配線がない場合とほぼ同じ値（2 前後）になるようにする
+        g[ACT + H_PREY_BIG] = 1.0;
+        wire_hidden(&mut g, H_PREY_BIG, IN_PREY_SIZE, 10.0);
+        hidden_bias(&mut g, H_PREY_BIG, -13.5);
+        wire_out(&mut g, OUT_EAT, H_PREY_BIG, -4.0);
     }
     // 繁殖期: 日射の多い季節と、周りの仲間が繁殖シグナルを出しているときは、繁殖の欲求が強まる
     let h_mood = 5;
@@ -559,9 +592,12 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     }
     // 繁殖できるときは繁殖し、食べられるときは食べる
     out_bias(&mut g, OUT_REPRODUCE, 2.0);
-    out_bias(&mut g, OUT_EAT, 2.0);
+    out_bias(&mut g, OUT_EAT, if herbivore { 2.0 } else { 2.0 - 3.2 });
     g
 }
+
+/// 肉食の初期の脳で「獲物が大きすぎる」を表す中間ニューロン
+const H_PREY_BIG: usize = 12;
 
 /// 「攻撃する」の出力の基準値を設定する。初期個体ごとにばらつかせ、攻撃する個体としない個体の両方を用意するため
 /// （全員が攻撃しないと、攻撃が得か損かを選択が試せない）
@@ -609,6 +645,17 @@ pub fn add_kin_wiring(g: &mut [f32], rng: &mut Rng) {
         IN_NEST_HERE,
         IN_NEST_AWAY,
         IN_STAMINA,
+        IN_FAMILY_FWD,
+        IN_FAMILY_RIGHT,
+        IN_FAMILY_NEAR,
+        IN_GROWTH,
+        IN_CHILD_FWD,
+        IN_CHILD_RIGHT,
+        IN_CHILD_NEAR,
+        IN_CHILD_HUNGER,
+        IN_DEN_FWD,
+        IN_DEN_RIGHT,
+        IN_GESTATION,
     ];
     for h in [6, 7] {
         for &k in &kin_inputs {
@@ -632,6 +679,45 @@ pub fn add_memory_wiring(g: &mut [f32], weight: f32) {
     wire_out(g, OUT_DIR_FWD, h_fwd, weight);
     wire_out(g, OUT_DIR_RIGHT, h_right, weight);
 }
+
+/// 親についていく初期配線（肉食）: 中間ニューロン 13, 14 で親子の方向（前・右）を自由な移動の方向に重み weight でつなぎ、
+/// 中間ニューロン 15 で、子のうち（成長度がおよそ 0.7 まで）は自由な移動の優先度を上げる。大人では優先度が配線のない場合と
+/// ほぼ同じになるよう、基準値で打ち消す。子が親のそばにいれば、親が仕留めた獲物を分けてもらえる（分け合いは同じ系統の近くの仲間）。
+/// 大人も自分の子が見えていれば、少しそちらへ寄る。初期の向きを与えるだけで、強めるか、弱めるか、ニューロンごと捨てるかは進化に任せる
+pub fn add_family_wiring(g: &mut [f32], weight: f32) {
+    let (h_fwd, h_right, h_young) = (13, 14, 15);
+    for h in [h_fwd, h_right, h_young] {
+        g[ACT + h] = 1.0;
+    }
+    wire_hidden(g, h_fwd, IN_FAMILY_FWD, 4.0);
+    wire_hidden(g, h_right, IN_FAMILY_RIGHT, 4.0);
+    wire_out(g, OUT_DIR_FWD, h_fwd, weight);
+    wire_out(g, OUT_DIR_RIGHT, h_right, weight);
+    // 子のうちは +0.9 前後、成長度 0.7 で 0、大人（成長度 1）で −0.86
+    wire_hidden(g, h_young, IN_GROWTH, -20.0);
+    hidden_bias(g, h_young, 14.0);
+    wire_out(g, OUT_PRI_FREE, h_young, 3.0);
+    let base = g[W3 + OUT_PRI_FREE * W3_ROW + N_HIDDEN];
+    out_bias(g, OUT_PRI_FREE, base + 3.0 * 0.857);
+}
+
+/// 子に与える初期配線: 中間ニューロン 16 を使い始め、自分の幼い子が空腹で、自分の蓄えが繁殖に要る量に届いていれば与える向きに、
+/// 出力「与える」へ重み weight でつなぐ。子がいなければ空腹度は 0 なので与えない。
+/// 産んだ場所へ戻る配線は入れない（戻るか、連れて歩くか、与えるのをやめるかは進化に任せる）
+pub fn add_feed_wiring(g: &mut [f32], weight: f32) {
+    let h = H_FEED;
+    g[ACT + h] = 1.0;
+    // 蓄えが繁殖に要る量に届いていて（空腹度 0.9 なら蓄え 1 以上）、子が空腹なら与える。
+    // 蓄えが足りないうちは与えない（与えすぎると親が飢え、子も育たない）
+    wire_hidden(g, h, IN_CHILD_HUNGER, 2.0);
+    wire_hidden(g, h, IN_ENERGY, 8.0);
+    hidden_bias(g, h, -9.5);
+    wire_out(g, OUT_FEED, h, weight);
+    out_bias(g, OUT_FEED, -0.1 * weight);
+}
+
+/// 子に与える初期配線で使う中間ニューロン
+const H_FEED: usize = 16;
 
 /// 巣作りの初期配線: 中間ニューロン 10 を使い始め、繁殖できる状態で、巣から離れていなければ（巣にいるか、まだ巣がなければ）
 /// 巣を作る向きに、出力「作る」へ重み weight でつなぐ。巣を持つ個体は自分の巣でだけ作る（手入れする）ので、通りかかるマスごとに作り始めない。
@@ -878,6 +964,66 @@ mod tests {
                 assert_eq!(hidden[h], 0.0, "使っていないニューロンは 0");
             }
         }
+    }
+
+    #[test]
+    fn 親についていく配線は子のうちだけ親の方へ向かわせる() {
+        let mut g = initial(false, 1.0, 1.8, 48.0, 0.3);
+        let plain = g.clone();
+        add_family_wiring(&mut g, 2.0);
+        let mut x = input();
+        x[IN_ENERGY] = 0.5;
+        // 親が右にいる
+        x[IN_FAMILY_RIGHT] = 1.0;
+        x[IN_FAMILY_NEAR] = 0.8;
+        let none = [(0.0, 0.0); N_DRIVES];
+        let mut young = x;
+        young[IN_GROWTH] = 0.3;
+        let (_, r) = mix_drives(&think(&g, &young), &none);
+        assert!(r > 0.5, "子は親の方（右）へ向かう: {r}");
+        // 大人では自由な移動の優先度が配線のない場合とほぼ同じ
+        let mut adult = x;
+        adult[IN_GROWTH] = 1.0;
+        let (p, q) = (priorities(&think(&g, &adult))[5], priorities(&think(&plain, &adult))[5]);
+        assert!((p - q).abs() < 0.02, "大人の自由な移動の優先度: 配線あり {p} / なし {q}");
+        let (py, _) = (priorities(&think(&g, &young))[5], 0);
+        assert!(py > p + 0.3, "子の自由な移動の優先度 {py} は大人 {p} より高い");
+    }
+
+    #[test]
+    fn 与える初期配線は空腹の子がいて蓄えに余裕があるときだけ与える() {
+        let mut g = initial(true, 1.0, 1.3, 30.0, 0.0);
+        assert!(think(&g, &input())[OUT_FEED] < 0.0, "初期の脳は与えない");
+        add_feed_wiring(&mut g, 4.0);
+        let feed = |hunger: f32, energy: f32| {
+            let mut x = input();
+            x[IN_CHILD_HUNGER] = hunger;
+            x[IN_ENERGY] = energy;
+            think(&g, &x)[OUT_FEED]
+        };
+        assert!(feed(0.9, 1.0) > 0.0, "空腹の子がいて、蓄えが繁殖に要る量ほどあれば与える");
+        assert!(feed(0.5, 1.2) > 0.0, "蓄えに余裕があれば、それほど空腹でない子にも与える");
+        assert!(feed(0.9, 0.9) < 0.0, "蓄えが繁殖に要る量に届かなければ与えない");
+        assert!(feed(0.3, 1.0) < 0.0, "子がそれほど空腹でなければ与えない");
+        assert!(feed(0.0, 1.1) < 0.0, "子がいなければ与えない");
+    }
+
+    #[test]
+    fn 初期の肉食は反撃を受ける大きさの獲物を襲わない() {
+        let g = initial(false, 1.0, 1.8, 48.0, 0.3);
+        let mut x = input();
+        x[IN_ENERGY] = 0.5;
+        x[IN_PREY_NEAR] = 0.9;
+        let eat = |ratio: f32| {
+            let mut x = x;
+            x[IN_PREY_SIZE] = ratio;
+            think(&g, &x)[OUT_EAT]
+        };
+        assert!(eat(1.0) > 1.0 && eat(1.2) > 0.0, "同じくらいの獲物は襲う");
+        assert!(eat(1.5) < 0.0 && eat(3.0) < 0.0, "反撃を受ける大きさの獲物は襲わない");
+        let mut none = x;
+        none[IN_PREY_NEAR] = 0.0;
+        assert!(think(&g, &none)[OUT_EAT] > 1.0, "獲物がいなくても食べる（死体）");
     }
 
     #[test]

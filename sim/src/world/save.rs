@@ -20,12 +20,35 @@ use crate::genome::{H1, H2, N_OUT, N_TRAITS};
 /// ファイルの先頭の印
 const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
-pub const FORMAT_VERSION: u32 = 8;
-/// 読み込める最も古い形式の番号（形式 6 までは脳の入力に体力がなく、遺伝子の並びが違うので読めない）
-/// 形式 7 は、狩りで獲物が天敵に気づいていたかの集計がない。読むときは 0 にする
-const OLDEST_FORMAT: u32 = 7;
+pub const FORMAT_VERSION: u32 = 9;
+/// 読み込める最も古い形式の番号（形式 8 までは脳に親子と子育ての入力・出力がなく、遺伝子の並びが違うので読めない）
+const OLDEST_FORMAT: u32 = 9;
 /// 死因の数（Census の配列の長さ）
 const N_CAUSES: usize = 8;
+
+/// 遺伝子: 0 でない値の位置のビット列と、その値
+fn write_genome(w: &mut Writer, g: &[f32]) {
+    let mut bits = vec![0u8; GENOME_LEN.div_ceil(8)];
+    for (k, v) in g.iter().enumerate() {
+        if v.to_bits() != 0 {
+            bits[k / 8] |= 1 << (k % 8);
+        }
+    }
+    w.0.extend_from_slice(&bits);
+    for v in g {
+        if v.to_bits() != 0 {
+            w.f32(*v);
+        }
+    }
+}
+
+fn read_genome(r: &mut Reader, genome: &mut [f32]) -> Result<(), String> {
+    let bits = r.take(GENOME_LEN.div_ceil(8))?.to_vec();
+    for (k, v) in genome.iter_mut().enumerate() {
+        *v = if bits[k / 8] & (1 << (k % 8)) != 0 { r.f32()? } else { 0.0 };
+    }
+    Ok(())
+}
 
 struct Writer(Vec<u8>);
 
@@ -224,19 +247,20 @@ impl World {
             w.f32(self.vel[i].0);
             w.f32(self.vel[i].1);
             w.f32(self.stamina[i]);
-            // 遺伝子: 0 でない値の位置のビット列と、その値
-            let g = self.genome(i);
-            let mut bits = vec![0u8; GENOME_LEN.div_ceil(8)];
-            for (k, v) in g.iter().enumerate() {
-                if v.to_bits() != 0 {
-                    bits[k / 8] |= 1 << (k % 8);
-                }
-            }
-            w.0.extend_from_slice(&bits);
-            for v in g {
-                if v.to_bits() != 0 {
-                    w.f32(*v);
-                }
+            w.f32(self.den[i].0);
+            w.f32(self.den[i].1);
+            w.u64(self.den_until[i]);
+            write_genome(&mut w, self.genome(i));
+            // 妊娠（相手の遺伝子の写しがあれば、それも書く）
+            w.u64(self.gest_due[i]);
+            w.f32(self.gest_energy[i]);
+            w.u8(self.gest_litter[i]);
+            w.u32(self.gest_mate[i]);
+            let slot = self.gest_slot[i];
+            w.u8((slot != NO_SLOT) as u8);
+            if slot != NO_SLOT {
+                let at = slot as usize * GENOME_LEN;
+                write_genome(&mut w, &self.mate_genomes[at..at + GENOME_LEN]);
             }
         }
         // 長期の統計の記録。読み飛ばせるよう、先にバイト数を書く
@@ -308,10 +332,8 @@ impl World {
         }
         c.hunts = r.u64()?;
         c.kills = r.u64()?;
-        if version >= 8 {
-            c.hunt_noticed = r.u64()?;
-            c.kill_noticed = r.u64()?;
-        }
+        c.hunt_noticed = r.u64()?;
+        c.kill_noticed = r.u64()?;
         c.hunt_ratio = r.f64()?;
         c.hunt_guards = r.f64()?;
         c.hunt_allies = r.f64()?;
@@ -361,13 +383,22 @@ impl World {
             let home = r.u32()?;
             let vel = (r.f32()?, r.f32()?);
             let stamina = r.f32()?;
+            let den = (r.f32()?, r.f32()?);
+            let den_until = r.u64()?;
             if home != NO_HOME && home as usize >= cells {
                 return Err(format!("覚えている巣のマスが壊れている（{home}）"));
             }
-            let bits = r.take(GENOME_LEN.div_ceil(8))?.to_vec();
-            for (k, v) in genome.iter_mut().enumerate() {
-                *v = if bits[k / 8] & (1 << (k % 8)) != 0 { r.f32()? } else { 0.0 };
-            }
+            read_genome(&mut r, &mut genome)?;
+            let (gest_due, gest_energy, gest_litter, gest_mate) = (r.u64()?, r.f32()?, r.u8()?, r.u32()?);
+            let gest_slot = if r.u8()? != 0 {
+                let slot = (world.mate_genomes.len() / GENOME_LEN) as u32;
+                world.mate_genomes.resize(world.mate_genomes.len() + GENOME_LEN, 0.0);
+                let at = slot as usize * GENOME_LEN;
+                read_genome(&mut r, &mut world.mate_genomes[at..at + GENOME_LEN])?;
+                slot
+            } else {
+                NO_SLOT
+            };
             if kind > CARNIVORE {
                 return Err(format!("個体の種類が壊れている（{kind}）"));
             }
@@ -396,6 +427,13 @@ impl World {
             world.home.push(home);
             world.vel.push(vel);
             world.stamina.push(stamina);
+            world.den.push(den);
+            world.den_until.push(den_until);
+            world.gest_due.push(gest_due);
+            world.gest_energy.push(gest_energy);
+            world.gest_litter.push(gest_litter);
+            world.gest_mate.push(gest_mate);
+            world.gest_slot.push(gest_slot);
             world.vigilance.push(vigilance);
             world.natal.push(natal);
             world.cover.push(cover);
@@ -560,6 +598,10 @@ mod tests {
         assert_eq!(a.home, b.home);
         assert_eq!(a.vel, b.vel);
         assert_eq!(a.stamina, b.stamina);
+        assert_eq!(a.den, b.den);
+        assert_eq!(a.den_until, b.den_until);
+        assert_eq!(a.gest_due, b.gest_due);
+        assert_eq!(a.gest_energy, b.gest_energy);
         assert_eq!(a.ledger.expected_total(), b.ledger.expected_total());
         assert!(a.history.len() > 0, "記録が溜まっている");
         assert_eq!(a.history, b.history, "長期の統計の記録も続く");

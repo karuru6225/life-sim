@@ -350,7 +350,7 @@ export const HERBIVORE = 0;
 export const CARNIVORE = 1;
 
 /** sim/src/world.rs の state と一致させること */
-export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6, COURT: 7, SCAVENGE: 8, FIGHT: 9, FIGHT_KIN: 10, BUILD: 11 } as const;
+export const STATE = { WANDER: 0, GRAZE: 1, SEEK: 2, FLEE: 3, CHASE: 4, EAT: 5, MISSED: 6, COURT: 7, SCAVENGE: 8, FIGHT: 9, FIGHT_KIN: 10, BUILD: 11, FEED: 12 } as const;
 
 /** sim/src/world.rs の death と一致させること */
 export const DEATH = { STARVED: 1, OLD_AGE: 2, EATEN: 3, INJURED: 4, SICK: 5, FOUGHT: 6, KIN_FOUGHT: 7 } as const;
