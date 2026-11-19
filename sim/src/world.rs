@@ -274,6 +274,9 @@ pub struct Census {
     pub herb_size_take: [f64; HERB_SIZE_BINS],
     /// 生きる費用の内訳の合計 [種類][COST_NAMES の順]。観察用で、保存ファイルには入れない（読み込むと 0 から数え直す）
     pub costs: [[f64; 8]; 2],
+    /// 繁殖できる状態（成熟・蓄え十分・休み明け）だった個体 × tick を、[繁殖を望まなかった, 望んだが相手がいなかった, 交配を試みた]
+    /// に分けた数 [種類]。観察用で、保存ファイルには入れない
+    pub ready: [[u64; 3]; 2],
 }
 
 /// census.costs の項目の名前
@@ -456,6 +459,8 @@ pub struct World {
     pub parents: Vec<[u32; 2]>,
     /// 生涯の記録
     pub life: Vec<Life>,
+    /// 直前の step で死んだ個体の (id, 死因)。観察用で、保存ファイルには入れない（step の始めに空にする）
+    pub step_deaths: Vec<(u32, u8)>,
     /// 覚えている食べ物の場所
     pub memory: Vec<Memory>,
     /// 覚えている巣のマス（植物のマスの番号。NO_HOME なら覚えていない）
@@ -638,6 +643,7 @@ impl World {
             signal: Vec::new(),
             parents: Vec::new(),
             life: Vec::new(),
+            step_deaths: Vec::new(),
             alive: Vec::new(),
             terrain,
             carrion: vec![0.0; plants.biomass.len()],
@@ -1314,6 +1320,7 @@ impl World {
 
     /// 1 tick 進める
     pub fn step(&mut self) {
+        self.step_deaths.clear();
         #[cfg(feature = "profile")]
         let mut laps = profile::Laps::start();
         // profile 機能のときだけ、前の区切りからの時間を段 k に足す
@@ -2267,6 +2274,7 @@ impl World {
             self.drop_carrion(self.xs[i], self.ys[i], body);
         }
         self.census.deaths[self.kind[i] as usize][cause as usize] += 1;
+        self.step_deaths.push((self.id[i], cause));
         self.recent_deaths.push_back(DeathRecord { tick: self.tick, kind: self.kind[i], cause, hue: self.traits[i].hue });
         if self.growth[i] < 1.0 {
             self.census.juvenile_deaths[self.kind[i] as usize][cause as usize] += 1;
@@ -2365,6 +2373,10 @@ impl World {
             return;
         }
         // 成熟するまで繁殖できない。繁殖したあとしばらくも繁殖できない
+        if self.can_breed(i) {
+            let k = if !wants_child { 0 } else if matches!(mate, Mate::Missing) { 1 } else { 2 };
+            self.census.ready[self.kind[i] as usize][k] += 1;
+        }
         if wants_child && self.can_breed(i) {
             // 交配を試みたら（成功しても失敗しても）、しばらく次の繁殖はできない
             if !matches!(mate, Mate::Missing) {
