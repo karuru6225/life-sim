@@ -8,6 +8,7 @@
 //!   準備済の内訳: 繁殖を望まなかった・望んだが相手がいなかった・交配を試みた の割合
 //!   待ち: 交配 1 回あたり、繁殖できる状態で相手を待った tick 数（相手がいなかった tick ÷ 試みた tick）
 //!   蓄え: 大人で休み明けの肉食の、エネルギー ÷ 繁殖に要る量 の平均
+//!   子:見え/近く: 区間の終わりに、成熟していない肉食のうち、親子が見えている割合と、すぐ近く（近さ 0.8 以上 ＝ 視野の 4 割以内）にいる割合
 //!
 //! 最後の表（生まれた区間ごとの一生。死んだ個体だけ。初期 = 世界を作ったときに置いた個体）:
 //!   数: 死んだ個体の数   成熟: 成熟まで生きた割合   繁殖: 一度でも産んだ割合
@@ -16,6 +17,7 @@
 //!   寿命比: 死んだときの年齢 ÷ その個体の寿命   殺/体: 一生に仕留めた獲物の数
 //!   死因: 餓死・老衰・獲物の反撃でけが・死体の奪い合いでけが・敵（系統の違う肉食）との争い・仲間との争い の割合
 
+use sim::genome::IN_FAMILY_NEAR;
 use sim::params::Params;
 use sim::world::{CARNIVORE, STEP_DEATH_CARRION_FIGHT, World, death};
 use std::collections::HashMap;
@@ -94,8 +96,8 @@ fn main() {
     let mut last_ready = w.census.ready[CARNIVORE as usize];
 
     println!(
-        "{:>6} {:>5} | {:>6} {:>5} {:>8} {:>6} | {:>8} {:>8} {:>8} {:>5} | {:>5} | {:>5} {:>5}",
-        "tick", "肉食", "成熟前", "休み", "蓄え不足", "準備済", "望まない", "相手なし", "試みた", "待ち", "蓄え", "生", "死"
+        "{:>6} {:>5} | {:>6} {:>5} {:>8} {:>6} | {:>8} {:>8} {:>8} {:>5} | {:>5} | {:>5} {:>5} | {:>6} {:>6}",
+        "tick", "肉食", "成熟前", "休み", "蓄え不足", "準備済", "望まない", "相手なし", "試みた", "待ち", "蓄え", "生", "死", "子:見え", "子:近く"
     );
     let (mut born_window, mut died_window) = (0u32, 0u32);
     for tick in 1..=ticks {
@@ -163,11 +165,16 @@ fn main() {
 
         if tick % every == 0 {
             let total = blocks.iter().sum::<u64>().max(1) as f64;
+            let inputs = w.brain_inputs();
+            let young: Vec<usize> = (0..w.count()).filter(|&i| w.kind[i] == CARNIVORE && w.growth[i] < 1.0).collect();
+            let ny = young.len().max(1) as f64;
+            let seen = young.iter().filter(|&&i| inputs[i][IN_FAMILY_NEAR] > 0.0).count() as f64 / ny;
+            let close = young.iter().filter(|&&i| inputs[i][IN_FAMILY_NEAR] >= 0.8).count() as f64 / ny;
             let ready = w.census.ready[CARNIVORE as usize];
             let d: Vec<u64> = (0..3).map(|k| ready[k] - last_ready[k]).collect();
             let rt = d.iter().sum::<u64>().max(1) as f64;
             println!(
-                "{tick:>6} {:>5} | {:>6.2} {:>5.2} {:>8.2} {:>6.2} | {:>8.2} {:>8.2} {:>8.2} {:>5.0} | {:>5.2} | {:>5} {:>5}",
+                "{tick:>6} {:>5} | {:>6.2} {:>5.2} {:>8.2} {:>6.2} | {:>8.2} {:>8.2} {:>8.2} {:>5.0} | {:>5.2} | {:>5} {:>5} | {:>6.2} {:>6.2}",
                 w.count_kind(CARNIVORE),
                 blocks[0] as f64 / total,
                 blocks[1] as f64 / total,
@@ -180,6 +187,8 @@ fn main() {
                 fill_sum / fill_n.max(1) as f64,
                 born_window,
                 died_window,
+                seen,
+                close,
             );
             blocks = [0; 4];
             (fill_sum, fill_n) = (0.0, 0);
