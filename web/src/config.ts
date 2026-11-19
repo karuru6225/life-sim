@@ -176,6 +176,9 @@ export const SIM_PARAMS = {
   mutation_weight_sigma: 0.1,
   mutation_neuron: 0.003,
   mutation_hue_sigma: 0.01,
+  mutation_big_chance: 0,
+  mutation_big_scale: 6,
+  inherit_blend: 0,
 
   // 草食（形質は初期個体の値。以後は遺伝子として進化する）
   herb_initial_size: 1,

@@ -2702,7 +2702,10 @@ impl World {
             temp_sigma: self.params.mutation_temp_sigma,
             neuron_flip: self.params.mutation_neuron,
             size_sigma: if self.kind[i] == CARNIVORE { self.params.mutation_carn_size_sigma } else { self.params.mutation_trait_sigma },
+            big_chance: self.params.mutation_big_chance,
+            big_scale: self.params.mutation_big_scale,
         };
+        let blend = self.params.inherit_blend > 0.5;
         let spread = self.params.birth_spread;
         // 産んだ場所を、子が育つまで覚えておく
         let maturity = if self.kind[i] == HERBIVORE { self.params.herb_maturity } else { self.params.carn_maturity };
@@ -2715,7 +2718,7 @@ impl World {
             if slot != NO_SLOT {
                 let at = slot as usize * GENOME_LEN;
                 let theirs = &self.mate_genomes[at..at + GENOME_LEN];
-                genome::crossover(mine, theirs, &mut self.rng, &mut self.births_genomes);
+                genome::crossover_with(mine, theirs, blend, &mut self.rng, &mut self.births_genomes);
             } else {
                 self.births_genomes.extend_from_slice(mine);
             }

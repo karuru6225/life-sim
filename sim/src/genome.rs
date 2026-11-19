@@ -805,11 +805,20 @@ pub fn hue_distance(a: f32, b: f32) -> f32 {
 /// 出力ニューロンへ入る重みのまとまり）で、どちらかの親からそのまま受け継ぐ。脳の重みを 1 個ずつ混ぜると、
 /// ニューロンへ入る重みが両親の寄せ集めになり、親が持っていた機能が壊れやすいため
 pub fn crossover(a: &[f32], b: &[f32], rng: &mut Rng, out: &mut Vec<f32>) {
+    crossover_with(a, b, false, rng, out);
+}
+
+/// 交叉。blend なら、標識色以外の形質を「両親の平均 ＋ 両親の差の半分を標準偏差とするばらつき」にする（量的な形質の受け継ぎ方）。
+/// そうでなければ、形質ごとに片方の親の値をそのまま受け継ぐ。脳はどちらでもニューロン単位で片方の親のもの
+pub fn crossover_with(a: &[f32], b: &[f32], blend: bool, rng: &mut Rng, out: &mut Vec<f32>) {
     let start = out.len();
     out.extend_from_slice(a);
     let child = &mut out[start..];
     for k in 0..N_TRAITS {
-        if rng.f32() < 0.5 {
+        if blend && k != G_HUE {
+            let (mid, half) = (0.5 * (a[k] + b[k]), 0.5 * (a[k] - b[k]).abs());
+            child[k] = mid + rng.gaussian() * half;
+        } else if rng.f32() < 0.5 {
             child[k] = b[k];
         }
     }
@@ -846,6 +855,16 @@ pub struct Mutation {
     pub neuron_flip: f32,
     /// 大きさの変異の大きさ（現在値に対する割合）。種類ごとに変えられるよう、ほかの形質とは分ける
     pub size_sigma: f32,
+    /// 変異のうち効き目の大きい変異になる割合と、その大きさ（ふだんの何倍か）。割合が 0 なら乱数を引かない
+    pub big_chance: f32,
+    pub big_scale: f32,
+}
+
+impl Mutation {
+    /// この変異の大きさの倍率（まれに big_scale 倍）
+    fn scale(&self, rng: &mut Rng) -> f32 {
+        if self.big_chance > 0.0 && rng.f32() < self.big_chance { self.big_scale } else { 1.0 }
+    }
 }
 
 /// 遺伝子に変異を加える
@@ -858,12 +877,14 @@ pub fn mutate(g: &mut [f32], m: &Mutation, rng: &mut Rng) {
         if rng.f32() >= m.trait_rate {
             continue;
         }
+        let s = m.scale(rng);
         if k == G_TEMP_PREF {
-            g[k] += rng.gaussian() * m.temp_sigma;
+            g[k] += rng.gaussian() * m.temp_sigma * s;
         } else if k == G_SIZE {
-            g[k] *= 1.0 + rng.gaussian() * m.size_sigma;
+            // 大きい変異でも符号が変わらないよう、0.1 倍を下限にする
+            g[k] *= (1.0 + rng.gaussian() * m.size_sigma * s).max(0.1);
         } else {
-            g[k] *= 1.0 + rng.gaussian() * m.trait_sigma;
+            g[k] *= (1.0 + rng.gaussian() * m.trait_sigma * s).max(0.1);
         }
     }
     // 中間ニューロンを使い始める／やめる
@@ -876,7 +897,8 @@ pub fn mutate(g: &mut [f32], m: &Mutation, rng: &mut Rng) {
     // 使い始めたときに何もしない状態から育つ
     let mut weight = |g: &mut [f32], k: usize| {
         if rng.f32() < m.rate {
-            g[k] += rng.gaussian() * m.weight_sigma;
+            let s = m.scale(rng);
+            g[k] += rng.gaussian() * m.weight_sigma * s;
         }
     };
     for h in 0..H1 {
@@ -1006,6 +1028,46 @@ mod tests {
         assert!(feed(0.9, 0.9) < 0.0, "蓄えが繁殖に要る量に届かなければ与えない");
         assert!(feed(0.3, 1.0) < 0.0, "子がそれほど空腹でなければ与えない");
         assert!(feed(0.0, 1.1) < 0.0, "子がいなければ与えない");
+    }
+
+    #[test]
+    fn 両親の平均で受け継ぐと子の形質は両親の間に散らばる() {
+        let mut rng = Rng::new(1);
+        let mut a = initial(true, 1.0, 1.0, 30.0, 0.2);
+        let mut b = a.clone();
+        a[G_SIZE] = 1.0;
+        b[G_SIZE] = 2.0;
+        b[G_HUE] = 0.7;
+        let (mut sum, mut sq, mut between, n) = (0.0f32, 0.0f32, 0, 2000);
+        for _ in 0..n {
+            let mut out = Vec::new();
+            crossover_with(&a, &b, true, &mut rng, &mut out);
+            let v = out[G_SIZE];
+            sum += v;
+            sq += (v - 1.5) * (v - 1.5);
+            between += (v > 1.05 && v < 1.95) as u32;
+            assert!(out[G_HUE] == 0.2 || out[G_HUE] == 0.7, "標識色は片方の親から");
+        }
+        assert!((sum / n as f32 - 1.5).abs() < 0.03, "平均は両親の中間");
+        assert!(((sq / n as f32).sqrt() - 0.5).abs() < 0.03, "ばらつきは片方を選ぶ場合と同じ（差の半分）");
+        assert!(between > n / 2, "中間の値の子が生まれる");
+    }
+
+    #[test]
+    fn 大きい変異はまれに起き_ふだんの変異より大きい() {
+        let g0 = initial(true, 1.0, 1.0, 30.0, 0.0);
+        let big = |chance: f32| {
+            let m = Mutation { rate: 0.0, trait_rate: 1.0, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.0, temp_sigma: 0.5, neuron_flip: 0.0, size_sigma: 0.05, big_chance: chance, big_scale: 6.0 };
+            let mut rng = Rng::new(3);
+            (0..4000).filter(|_| {
+                let mut g = g0.clone();
+                mutate(&mut g, &m, &mut rng);
+                (g[G_SIZE] - 1.0).abs() > 0.2
+            }).count()
+        };
+        assert_eq!(big(0.0), 0, "ふだんの変異（±5%）では 20% を超えない");
+        let n = big(0.05);
+        assert!(n > 60 && n < 200, "5% の変異が 6 倍になると、20% を超える変化がまれに起きる: {n}");
     }
 
     #[test]
@@ -1180,7 +1242,7 @@ mod tests {
 
     #[test]
     fn 遺伝的距離は同じなら0で変異を重ねるほど大きい() {
-        let m = Mutation { rate: 0.02, trait_rate: 0.1, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0, size_sigma: 0.05 };
+        let m = Mutation { rate: 0.02, trait_rate: 0.1, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0, size_sigma: 0.05, big_chance: 0.0, big_scale: 1.0 };
         let base = initial(true, 1.0, 1.3, 30.0, 0.3);
         assert_eq!(genetic_distance(&base, &base, 0.05, 0.1, 0.5), 0.0);
         let mut rng = Rng::new(1);
@@ -1232,7 +1294,7 @@ mod tests {
 
     #[test]
     fn 使っていないニューロンの重みは変異しない() {
-        let m = Mutation { rate: 1.0, trait_rate: 1.0, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0, size_sigma: 0.05 };
+        let m = Mutation { rate: 1.0, trait_rate: 1.0, trait_sigma: 0.05, weight_sigma: 0.1, hue_sigma: 0.01, temp_sigma: 0.5, neuron_flip: 0.0, size_sigma: 0.05, big_chance: 0.0, big_scale: 1.0 };
         let mut g = initial(true, 1.0, 1.3, 30.0, 0.3);
         mutate(&mut g, &m, &mut Rng::new(3));
         let unused = INITIAL_H1 + 2;
@@ -1274,7 +1336,7 @@ mod tests {
 
     #[test]
     fn 変異は同じ乱数なら同じ結果になる() {
-        let m = Mutation { rate: 0.5, trait_rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02, temp_sigma: 0.5, neuron_flip: 0.1, size_sigma: 0.05 };
+        let m = Mutation { rate: 0.5, trait_rate: 0.5, trait_sigma: 0.1, weight_sigma: 0.2, hue_sigma: 0.02, temp_sigma: 0.5, neuron_flip: 0.1, size_sigma: 0.05, big_chance: 0.0, big_scale: 1.0 };
         let mut a = initial(true, 1.0, 1.3, 30.0, 0.3);
         let mut b = a.clone();
         mutate(&mut a, &m, &mut Rng::new(5));
