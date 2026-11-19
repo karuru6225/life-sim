@@ -14,10 +14,10 @@
 //!   子/体: 1 体が一生に産んだ子の数の平均（産んだ側で数える。1 を下回ると、数が保てない）
 //!   回/体: 一生に産んだ回数の平均   初産: 生まれてから初めて産むまでの tick（産んだ個体の平均）
 //!   寿命比: 死んだときの年齢 ÷ その個体の寿命   殺/体: 一生に仕留めた獲物の数
-//!   死因: 餓死・老衰・反撃でけが・敵（系統の違う肉食）との争い・仲間との争い の割合
+//!   死因: 餓死・老衰・獲物の反撃でけが・死体の奪い合いでけが・敵（系統の違う肉食）との争い・仲間との争い の割合
 
 use sim::params::Params;
-use sim::world::{CARNIVORE, World, death};
+use sim::world::{CARNIVORE, STEP_DEATH_CARRION_FIGHT, World, death};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
@@ -46,7 +46,7 @@ struct Cohort {
     first_birth_age: u64,
     age_ratio: f64,
     kills: u64,
-    causes: [u32; 8],
+    causes: [u32; 9],
 }
 
 fn main() {
@@ -193,8 +193,8 @@ fn main() {
     }
 
     println!(
-        "\n{:>13} {:>5} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} | 死因 {:>5} {:>5} {:>5} {:>5} {:>5}",
-        "生まれ", "数", "成熟", "繁殖", "子/体", "回/体", "初産", "寿命比", "殺/体", "餓死", "老衰", "けが", "敵", "仲間"
+        "\n{:>13} {:>5} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} | 死因 {:>5} {:>5} {:>5} {:>5} {:>5} {:>5}",
+        "生まれ", "数", "成熟", "繁殖", "子/体", "回/体", "初産", "寿命比", "殺/体", "餓死", "老衰", "反撃", "奪合", "敵", "仲間"
     );
     for (k, c) in cohorts.iter().enumerate() {
         if c.n == 0 {
@@ -204,7 +204,7 @@ fn main() {
         let n = c.n as f64;
         let share = |v: u32| v as f64 / n;
         println!(
-            "{label:>13} {:>5} {:>5.2} {:>5.2} {:>6.2} {:>6.2} {:>6.0} {:>6.2} {:>6.1} |      {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2}",
+            "{label:>13} {:>5} {:>5.2} {:>5.2} {:>6.2} {:>6.2} {:>6.0} {:>6.2} {:>6.1} |      {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2}",
             c.n,
             share(c.matured),
             share(c.bred),
@@ -216,6 +216,7 @@ fn main() {
             share(c.causes[death::STARVED as usize]),
             share(c.causes[death::OLD_AGE as usize]),
             share(c.causes[death::INJURED as usize]),
+            share(c.causes[STEP_DEATH_CARRION_FIGHT as usize]),
             share(c.causes[death::FOUGHT as usize]),
             share(c.causes[death::KIN_FOUGHT as usize]),
         );

@@ -279,6 +279,9 @@ pub struct Census {
     pub ready: [[u64; 3]; 2],
 }
 
+/// step_deaths で、死体の奪い合いのけがで死んだことを表す死因（census の死因の集計では death::INJURED に数える）
+pub const STEP_DEATH_CARRION_FIGHT: u8 = 8;
+
 /// census.costs の項目の名前
 pub const COST_NAMES: [&str; 8] = ["基礎代謝", "速さの維持", "体温", "シグナル", "目", "脳", "記憶", "移動"];
 
@@ -459,7 +462,8 @@ pub struct World {
     pub parents: Vec<[u32; 2]>,
     /// 生涯の記録
     pub life: Vec<Life>,
-    /// 直前の step で死んだ個体の (id, 死因)。観察用で、保存ファイルには入れない（step の始めに空にする）
+    /// 直前の step で死んだ個体の (id, 死因)。観察用で、保存ファイルには入れない（step の始めに空にする）。
+    /// 死体の奪い合いのけがで死んだ個体は、死因を STEP_DEATH_CARRION_FIGHT にする
     pub step_deaths: Vec<(u32, u8)>,
     /// 覚えている食べ物の場所
     pub memory: Vec<Memory>,
@@ -1061,6 +1065,12 @@ impl World {
         }
         if self.alive[i] && self.rng.f32() < fight_chance {
             self.hurt(i, fight_damage, death::INJURED);
+            // 観察用: 死因の集計（census）では反撃と同じ「けが」だが、step_deaths では死体の奪い合いを分けて記録する
+            if !self.alive[i]
+                && let Some(last) = self.step_deaths.last_mut()
+            {
+                last.1 = STEP_DEATH_CARRION_FIGHT;
+            }
         }
         true
     }
