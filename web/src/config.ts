@@ -171,6 +171,7 @@ export const SIM_PARAMS = {
   alarm_call: 0,
   alarm_exposure: 1,
   initial_alarm_spread: 0,
+  initial_call_response_spread: 0,
 
   // 系統
   compat_full_distance: 1.2,

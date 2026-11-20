@@ -631,6 +631,9 @@ impl World {
                 if kind == HERBIVORE && p.initial_alarm_spread > 0.0 {
                     genome::set_alarm_bias(&mut g, -4.0 + world.rng.gaussian() * p.initial_alarm_spread);
                 }
+                if kind == CARNIVORE && p.initial_call_response_spread > 0.0 {
+                    genome::set_call_response(&mut g, world.rng.gaussian() * p.initial_call_response_spread);
+                }
                 world.spawn(x, y, kind, energy, 0, &g);
                 // 初期の世代がそろって老いないよう、年齢をばらつかせる（大人として置くので成長度はそのまま）。
                 // 0 のときは乱数を引かない（乱数の流れを、この仕組みがなかったときと同じにする）
@@ -1916,6 +1919,7 @@ impl World {
         let my_size = t.size;
         if let Some((j, _, _, _)) = senses.prey {
             input[genome::IN_PREY_SIZE] = self.traits[j].size / my_size;
+            input[genome::IN_PREY_CALLING] = self.calling[j] as u8 as f32;
         }
         if let Some((j, _, _, _)) = senses.predator {
             input[genome::IN_PRED_SIZE] = self.traits[j].size / my_size;
@@ -4165,6 +4169,25 @@ mod tests {
         w.calling[0] = true;
         w.build_grid();
         assert!(w.sense(1).prey.is_some(), "背後でも声を出した獲物には気づく");
+        assert_eq!(w.brain_inputs()[1][genome::IN_PREY_CALLING], 1.0, "狙う獲物が声を出していると分かる");
+        w.calling[0] = false;
+        face(&mut w, 1, 1.0, 0.0);
+        w.build_grid();
+        let inputs = w.brain_inputs();
+        assert!(w.sense(1).prey.is_some());
+        assert_eq!(inputs[1][genome::IN_PREY_CALLING], 0.0, "静かな獲物");
+        // 反応の配線: 負の重みなら、声を出している獲物には食べる優先度が下がり、静かな獲物には変わらない
+        let mut avoid = carn.clone();
+        genome::set_call_response(&mut avoid, -4.0);
+        let food = |g: &[f32], x: &[f32; genome::N_IN]| genome::priorities(&genome::think(g, x))[0];
+        let quiet = inputs[1];
+        let mut loud = quiet;
+        loud[genome::IN_PREY_CALLING] = 1.0;
+        assert!((food(&avoid, &quiet) - food(&carn, &quiet)).abs() < 1e-6, "静かな獲物への反応は変わらない");
+        assert!(food(&avoid, &loud) < food(&avoid, &quiet) - 0.2, "声を出す獲物は追わない: {} → {}", food(&avoid, &quiet), food(&avoid, &loud));
+        face(&mut w, 1, -1.0, 0.0);
+        w.calling[0] = true;
+        w.build_grid();
         // 声を出すと草に隠れにくくなる
         w.cover = vec![1.0, 0.0, 0.0];
         w.calling[0] = false;

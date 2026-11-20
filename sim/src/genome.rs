@@ -169,7 +169,9 @@ pub const IN_DEN_FWD: usize = 63;
 pub const IN_DEN_RIGHT: usize = 64;
 /// お腹の子のエネルギー ÷ 繁殖に必要な量（妊娠していなければ 0）
 pub const IN_GESTATION: usize = 65;
-pub const N_IN: usize = 66;
+/// 狙っている獲物（最寄りの獲物）が警戒の声を出していれば 1、出していなければ 0（肉食。警戒の声を使わない設定では常に 0）
+pub const IN_PREY_CALLING: usize = 66;
+pub const N_IN: usize = 67;
 /// 「前方が水か」を調べる距離（px）
 pub const WATER_LOOKAHEAD: f32 = 12.0;
 
@@ -615,6 +617,18 @@ pub fn set_attack_bias(g: &mut [f32], bias: f32) {
 pub fn set_alarm_bias(g: &mut [f32], bias: f32) {
     out_bias(g, OUT_ALARM, bias);
 }
+
+/// 肉食の「獲物が声を出している」への反応を配線する（中間ニューロン 17 を使う）。
+/// weight が負なら声を出している獲物を追わなくなり（食べる優先度が下がる）、正なら追いやすくなる。
+/// 声を出していない獲物への反応は変わらない（入力 0 のときニューロンの値は 0）
+pub fn set_call_response(g: &mut [f32], weight: f32) {
+    g[ACT + H_PREY_CALL] = 1.0;
+    wire_hidden(g, H_PREY_CALL, IN_PREY_CALLING, 4.0);
+    wire_out(g, OUT_PRI_FOOD, H_PREY_CALL, weight);
+}
+
+/// 肉食の「獲物が声を出している」への反応に使う中間ニューロン
+const H_PREY_CALL: usize = 17;
 
 /// 「警戒」の出力の基準値を設定する（初期個体ごとにばらつかせるため）
 pub fn set_vigilance_bias(g: &mut [f32], bias: f32) {

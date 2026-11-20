@@ -79,6 +79,31 @@ fn main() {
         calling as f64 / nh * 100.0,
         would_call as f64 / nh * 100.0
     );
+    // 肉食の、声を出している獲物への反応: 獲物（真正面、視野の半分の距離、大きさ比 0.8）を見せ、声の有無で食べる優先度がどう変わるか
+    let carns: Vec<usize> = (0..w.count()).filter(|&i| w.kind[i] == CARNIVORE).collect();
+    let (mut diff_sum, mut avoid, mut chase) = (0.0f64, 0usize, 0usize);
+    for &i in &carns {
+        let mut x = inputs[i];
+        x[genome::IN_PREY_FWD] = 1.0;
+        x[genome::IN_PREY_RIGHT] = 0.0;
+        x[genome::IN_PREY_NEAR] = 0.75;
+        x[genome::IN_PREY_SIZE] = 0.8;
+        x[genome::IN_PREY_CALLING] = 0.0;
+        let quiet = genome::priorities(&genome::think(w.genome(i), &x))[0];
+        x[genome::IN_PREY_CALLING] = 1.0;
+        let loud = genome::priorities(&genome::think(w.genome(i), &x))[0];
+        let d = loud - quiet;
+        diff_sum += d as f64;
+        avoid += (d < -0.1) as usize;
+        chase += (d > 0.1) as usize;
+    }
+    let nc = carns.len().max(1) as f64;
+    println!(
+        "声を出している獲物への肉食の食べる優先度の変化 平均 {:+.3}（下がる個体 {:.1}%、上がる個体 {:.1}%）",
+        diff_sum / nc,
+        avoid as f64 / nc * 100.0,
+        chase as f64 / nc * 100.0
+    );
 
     // [逃げる優先度, 食べる優先度, 逃げる ÷ 優先度の合計, 速さ, 逃げる > 食べる の個体]
     let measure = |g: &[f32], input: &[f32; N_IN]| {
