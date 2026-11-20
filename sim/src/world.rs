@@ -1579,7 +1579,7 @@ impl World {
         let vmin = self.params.vigilance_min_range;
         let vigilance = self.vigilance[i];
         let attention_sum = self.params.attention_sum > 0.5;
-        // 警報: 前の tick に天敵に気づいていた仲間がいれば、注意を alarm_share まで引き上げた距離で天敵を探す。
+        // 警報: 前の tick に天敵に気づいていた仲間がいれば、注意を alarm_share まで引き上げた距離で、視野角を問わず（声で方向が分かる）天敵を探す。
         // 仲間がいるかはループの途中まで分からないので、引き上げた場合の最寄りの天敵も別に覚えておく
         let alarm_share = if my_kind == HERBIVORE { self.params.alarm_share } else { 0.0 };
         let mut warned = false;
@@ -1630,7 +1630,7 @@ impl World {
                 let attention = if attention_sum { vigilance + (1.0 - vigilance) * motion } else { vigilance.max(motion) };
                 if alarm_share > 0.0 && j != i && self.alive[j] {
                     let rw = r * (vmin + (1.0 - vmin) * attention.max(alarm_share));
-                    if d2 < rw * rw && d2 < warn_d2 && in_view(dx, dy, d2) {
+                    if d2 < rw * rw && d2 < warn_d2 {
                         warn_d2 = d2;
                         warn_pred = Some((j, dx, dy, d2));
                     }
@@ -4085,6 +4085,13 @@ mod tests {
         assert!(w.sense(0).predator.is_some(), "天敵に気づいた仲間がいれば気づく");
         w.params.alarm_share = 0.0;
         assert!(w.sense(0).predator.is_none(), "警報なしなら気づかない");
+        // 真後ろ（死角）の天敵: 自分では見えないが、警報があれば気づく
+        face(&mut w, 0, -1.0, 0.0);
+        w.vigilance[0] = 1.0;
+        assert!(w.sense(0).predator.is_none(), "警戒していても死角の天敵は見えない");
+        w.params.alarm_share = 1.0;
+        assert!(w.sense(0).predator.is_some(), "警報があれば死角の天敵にも気づく");
+        w.params.alarm_share = 0.0;
         // 死んで詰められても、気づいていたかの記録は個体についていく
         w.params.alarm_share = 1.0;
         w.noticed = vec![false, false, true];
