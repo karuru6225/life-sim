@@ -524,7 +524,7 @@ pub struct World {
     conceal: Vec<f32>,
     /// 動きの度合い（前の tick に動いた量 ÷ 最高速度、0〜1）。build_grid で作る
     motion: Vec<f32>,
-    /// この tick の判断で天敵が見えていたか（草食）。狩りの集計に使う
+    /// この tick の判断で天敵が見えていたか（草食）。狩りの集計と、次の tick の警報に使う
     noticed: Vec<bool>,
     /// 呼び声の場: 成熟した個体の繁殖シグナルを、種類ごとに粗いマス目（call_cell 四方）に足し合わせたもの
     calls: [Vec<f32>; 2],
@@ -1579,6 +1579,11 @@ impl World {
         let vmin = self.params.vigilance_min_range;
         let vigilance = self.vigilance[i];
         let attention_sum = self.params.attention_sum > 0.5;
+        // 警報: 前の tick に天敵に気づいていた仲間がいれば、注意を alarm_share まで引き上げた距離で天敵を探す。
+        // 仲間がいるかはループの途中まで分からないので、引き上げた場合の最寄りの天敵も別に覚えておく
+        let alarm_share = if my_kind == HERBIVORE { self.params.alarm_share } else { 0.0 };
+        let mut warned = false;
+        let (mut warn_pred, mut warn_d2): (Seen, f32) = (None, f32::MAX);
         let (mut similar, mut similar_d2, mut similar_count): (Seen, f32, u32) = (None, f32::MAX, 0);
         let (mut family, mut family_d2): (Seen, f32) = (None, f32::MAX);
         let (my_id, my_parents) = (self.id[i], self.parents[i]);
@@ -1623,7 +1628,17 @@ impl World {
             if my_kind == HERBIVORE && kind_j != my_kind {
                 let motion = self.motion.get(j).copied().unwrap_or(0.0);
                 let attention = if attention_sum { vigilance + (1.0 - vigilance) * motion } else { vigilance.max(motion) };
+                if alarm_share > 0.0 && j != i && self.alive[j] {
+                    let rw = r * (vmin + (1.0 - vmin) * attention.max(alarm_share));
+                    if d2 < rw * rw && d2 < warn_d2 && in_view(dx, dy, d2) {
+                        warn_d2 = d2;
+                        warn_pred = Some((j, dx, dy, d2));
+                    }
+                }
                 r *= vmin + (1.0 - vmin) * attention;
+            }
+            if alarm_share > 0.0 && kind_j == my_kind && j != i && self.alive[j] && self.noticed.get(j).copied().unwrap_or(false) {
+                warned = true;
             }
             if d2 < r * r && j != i && self.alive[j] && in_view(dx, dy, d2) {
                 let rel = if kind_j == my_kind {
@@ -1699,6 +1714,9 @@ impl World {
                 }
             }
         });
+        if warned {
+            best[0] = warn_pred;
+        }
         Senses {
             predator: best[0],
             prey: best[1],
@@ -2794,6 +2812,8 @@ impl World {
         // 後ろから見ていき、死んだ個体の場所に末尾の個体を移す（swap_remove）。
         // 順番を保って詰めると、遺伝子（1 体 GENOME_LEN 個）を毎 tick ほぼ全員分コピーすることになり重い。
         // この方法でも同じ入力なら同じ結果になる（決定論は保たれる）
+        // 天敵に気づいていたかの記録も一緒に詰める（この tick に生まれた個体は気づいていない）
+        self.noticed.resize(self.count(), false);
         for i in (0..self.count()).rev() {
             if self.alive[i] {
                 continue;
@@ -2827,6 +2847,7 @@ impl World {
             self.gest_mate.swap_remove(i);
             self.gest_slot.swap_remove(i);
             self.vigilance.swap_remove(i);
+            self.noticed.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
             self.signal.swap_remove(i);
@@ -4044,6 +4065,32 @@ mod tests {
         assert!(w.sense(0).predator.is_some(), "真横の天敵は見える");
         face(&mut w, 0, -1.0, 0.0);
         assert!(w.sense(0).predator.is_none(), "真後ろの天敵は見えない");
+    }
+
+    #[test]
+    fn 天敵に気づいた仲間がいれば_警戒していない草食も遠くの天敵に気づく() {
+        let carn = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        let herb = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        let mut w = empty_world();
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &herb);
+        w.spawn(100.0 + 0.7 * w.traits[0].vision, 100.0, CARNIVORE, 5.0, 0, &carn);
+        w.spawn(100.0, 110.0, HERBIVORE, 5.0, 0, &herb); // 仲間（自分の真横）
+        face(&mut w, 0, 1.0, 0.0);
+        w.vigilance[0] = 0.0;
+        w.cover = vec![0.0; 3];
+        w.params.alarm_share = 1.0;
+        w.build_grid();
+        assert!(w.sense(0).predator.is_none(), "警戒 0 では視野の半分の先の止まった天敵に気づかない");
+        w.noticed = vec![false, false, true];
+        assert!(w.sense(0).predator.is_some(), "天敵に気づいた仲間がいれば気づく");
+        w.params.alarm_share = 0.0;
+        assert!(w.sense(0).predator.is_none(), "警報なしなら気づかない");
+        // 死んで詰められても、気づいていたかの記録は個体についていく
+        w.params.alarm_share = 1.0;
+        w.noticed = vec![false, false, true];
+        w.alive[1] = false;
+        w.remove_dead();
+        assert_eq!(w.noticed, vec![false, true], "末尾の仲間の記録が死んだ個体の場所に移る");
     }
 
     #[test]

@@ -166,6 +166,7 @@ export const SIM_PARAMS = {
   initial_kin_attack_bias: -1.2,
   initial_kin_attack_spread: 0.6,
   initial_vigilance_spread: 0,
+  alarm_share: 0,
 
   // 系統
   compat_full_distance: 1.2,
