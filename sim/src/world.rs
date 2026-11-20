@@ -1715,8 +1715,11 @@ impl World {
                 }
             }
         });
-        if warned {
-            best[0] = warn_pred;
+        // 自分の目で見つけた天敵と、警報で場所が分かった天敵のうち、近い方
+        if let (true, Some(wp)) = (warned, warn_pred) {
+            if best[0].map_or(true, |b| wp.3 < b.3) {
+                best[0] = Some(wp);
+            }
         }
         Senses {
             predator: best[0],
@@ -4103,6 +4106,10 @@ mod tests {
         assert!(w.sense(0).predator.is_some(), "警報があれば死角の天敵にも気づく");
         w.params.alarm_locate = 0.0;
         assert!(w.sense(0).predator.is_none(), "場所が分からなければ死角の天敵には気づかない");
+        face(&mut w, 0, 1.0, 0.0);
+        w.xs[1] = 100.0 + 0.3 * w.traits[0].vision;
+        w.build_grid();
+        assert!(w.sense(0).predator.is_some(), "警報で場所が分からなくても、自分で見えている天敵には気づく");
         w.params.alarm_locate = 1.0;
         // 場所が分かる割合は、組ごとの値で決まる（だいたい指定した割合になる）
         let n = (0..2000u32).filter(|&k| pair_hash(k, 7) < 0.3).count();
