@@ -465,6 +465,8 @@ pub struct World {
     pub alone: Vec<u16>,
     /// 直前の tick に脳が決めた警戒の度合い（0〜1、草食のみ使う）。天敵に気づける距離と一口の大きさに効く
     pub vigilance: Vec<f32>,
+    /// 直前の tick に警戒の声を出したか（草食、alarm_call が 1 のときだけ）
+    pub calling: Vec<bool>,
     /// 生まれた場所の植生（肥沃度）。草食はこれと大きく違う植生の場所では食べられない
     pub natal: Vec<f32>,
     /// tick の始めに求めた、足元の草の量（上限に対する割合）。隠れの判定に使う
@@ -626,6 +628,9 @@ impl World {
                 if kind == HERBIVORE && p.initial_vigilance_spread > 0.0 {
                     genome::set_vigilance_bias(&mut g, world.rng.gaussian() * p.initial_vigilance_spread);
                 }
+                if kind == HERBIVORE && p.initial_alarm_spread > 0.0 {
+                    genome::set_alarm_bias(&mut g, -4.0 + world.rng.gaussian() * p.initial_alarm_spread);
+                }
                 world.spawn(x, y, kind, energy, 0, &g);
                 // 初期の世代がそろって老いないよう、年齢をばらつかせる（大人として置くので成長度はそのまま）。
                 // 0 のときは乱数を引かない（乱数の流れを、この仕組みがなかったときと同じにする）
@@ -711,6 +716,7 @@ impl World {
             free_slots: Vec::new(),
             prev_vel: Vec::new(),
             vigilance: Vec::new(),
+            calling: Vec::new(),
             natal: Vec::new(),
             cover: Vec::new(),
             signal: Vec::new(),
@@ -819,6 +825,7 @@ impl World {
         self.gest_mate.push(0);
         self.gest_slot.push(NO_SLOT);
         self.vigilance.push(0.5);
+        self.calling.push(false);
         self.natal.push(self.terrain.soil_at(x, y));
         self.cover.push(0.0);
         self.signal.push(0.0);
@@ -1387,6 +1394,7 @@ impl World {
         let (exposure, hide, power) = (self.params.signal_exposure, self.params.cover_strength, self.params.conceal_size_power);
         let nest_hide = self.params.nest_hide;
         let reveal = self.params.motion_reveal;
+        let alarm_exposure = self.params.alarm_exposure;
         self.conceal.clear();
         self.motion.clear();
         for i in 0..self.count() {
@@ -1398,7 +1406,9 @@ impl World {
             // 巣の中では、巣の隠れと足元の草の隠れの大きい方を使う
             let nest = self.nest[self.plants.cell_index(self.xs[i], self.ys[i])];
             let cover = self.cover[i].max(nest_hide * nest) * (1.0 - reveal * motion);
-            let by_cover = 1.0 - hide * cover * (1.0 - exposure * self.signal[i]);
+            // 警戒の声を出した個体も目立つ
+            let calling = if self.calling[i] { alarm_exposure } else { 0.0 };
+            let by_cover = 1.0 - hide * cover * (1.0 - exposure * self.signal[i]) * (1.0 - calling);
             let visible = (by_size * by_cover).clamp(0.05, 1.0);
             self.conceal.push(1.0 - visible);
         }
@@ -1583,6 +1593,9 @@ impl World {
         // 仲間がいるかはループの途中まで分からないので、引き上げた場合の最寄りの天敵も別に覚えておく
         let alarm_share = if my_kind == HERBIVORE { self.params.alarm_share } else { 0.0 };
         let alarm_locate = self.params.alarm_locate;
+        // 声で知らせる形なら、声を出した仲間から警報を受け、肉食は声を出した獲物に視野角の外からも気づく
+        let alarm_call = self.params.alarm_call > 0.5;
+        let carn_hears = alarm_call && my_kind == CARNIVORE;
         let mut warned = false;
         let (mut warn_pred, mut warn_d2): (Seen, f32) = (None, f32::MAX);
         let (mut similar, mut similar_d2, mut similar_count): (Seen, f32, u32) = (None, f32::MAX, 0);
@@ -1638,10 +1651,12 @@ impl World {
                 }
                 r *= vmin + (1.0 - vmin) * attention;
             }
-            if alarm_share > 0.0 && kind_j == my_kind && j != i && self.alive[j] && self.noticed.get(j).copied().unwrap_or(false) {
+            let alarmed = if alarm_call { self.calling.get(j) } else { self.noticed.get(j) };
+            if alarm_share > 0.0 && kind_j == my_kind && j != i && self.alive[j] && alarmed.copied().unwrap_or(false) {
                 warned = true;
             }
-            if d2 < r * r && j != i && self.alive[j] && in_view(dx, dy, d2) {
+            let heard = carn_hears && kind_j != my_kind && self.calling[j];
+            if d2 < r * r && j != i && self.alive[j] && (heard || in_view(dx, dy, d2)) {
                 let rel = if kind_j == my_kind {
                     2
                 } else if my_kind == HERBIVORE {
@@ -2027,6 +2042,7 @@ impl World {
         let drives = [food, mate_dir, flee, kin, unit(senses.rival), (0.0, 0.0)];
         if self.kind[i] == HERBIVORE {
             self.vigilance[i] = genome::vigilance(&out);
+            self.calling[i] = self.params.alarm_call > 0.5 && out[genome::OUT_ALARM] > 0.0;
         }
         self.signal[i] = genome::signal(&out);
         let (mut df, mut dr) = genome::mix_drives(&out, &drives);
@@ -2852,6 +2868,7 @@ impl World {
             self.gest_slot.swap_remove(i);
             self.vigilance.swap_remove(i);
             self.noticed.swap_remove(i);
+            self.calling.swap_remove(i);
             self.natal.swap_remove(i);
             self.cover.swap_remove(i);
             self.signal.swap_remove(i);
@@ -4121,6 +4138,41 @@ mod tests {
         w.alive[1] = false;
         w.remove_dead();
         assert_eq!(w.noticed, vec![false, true], "末尾の仲間の記録が死んだ個体の場所に移る");
+    }
+
+    #[test]
+    fn 声で知らせる形では_声を出した仲間からだけ警報を受け_声を出した個体は目立つ() {
+        let carn = genome::initial(false, 1.0, 1.0, 40.0, 0.0);
+        let herb = genome::initial(true, 1.0, 1.0, 30.0, 0.0);
+        let mut w = empty_world();
+        w.spawn(100.0, 100.0, HERBIVORE, 5.0, 0, &herb);
+        w.spawn(100.0 - 0.7 * w.traits[0].vision, 100.0, CARNIVORE, 5.0, 0, &carn); // 真後ろ
+        w.spawn(100.0, 110.0, HERBIVORE, 5.0, 0, &herb);
+        face(&mut w, 0, 1.0, 0.0);
+        w.cover = vec![0.0; 3];
+        w.params.alarm_share = 1.0;
+        w.params.alarm_call = 1.0;
+        w.build_grid();
+        w.noticed = vec![false, false, true];
+        assert!(w.sense(0).predator.is_none(), "気づいていても声を出さない仲間からは警報を受けない");
+        w.calling[2] = true;
+        assert!(w.sense(0).predator.is_some(), "声を出した仲間から警報を受ける");
+        // 肉食は、声を出した獲物に視野角の外からも気づく
+        face(&mut w, 1, -1.0, 0.0); // 獲物に背を向ける
+        w.calling = vec![false; 3];
+        w.build_grid();
+        assert!(w.sense(1).prey.is_none(), "背後の静かな獲物は見えない");
+        w.calling[0] = true;
+        w.build_grid();
+        assert!(w.sense(1).prey.is_some(), "背後でも声を出した獲物には気づく");
+        // 声を出すと草に隠れにくくなる
+        w.cover = vec![1.0, 0.0, 0.0];
+        w.calling[0] = false;
+        w.build_grid();
+        let hidden = w.conceal[0];
+        w.calling[0] = true;
+        w.build_grid();
+        assert!(w.conceal[0] < hidden - 0.5, "声を出すと草に紛れない: {hidden} → {}", w.conceal[0]);
     }
 
     #[test]

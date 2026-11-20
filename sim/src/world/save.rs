@@ -20,9 +20,9 @@ use crate::genome::{H1, H2, N_OUT, N_TRAITS};
 /// ファイルの先頭の印
 const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
-pub const FORMAT_VERSION: u32 = 10;
+pub const FORMAT_VERSION: u32 = 11;
 /// 読み込める最も古い形式の番号（形式 8 までは脳に親子と子育ての入力・出力がなく、遺伝子の並びが違うので読めない）
-const OLDEST_FORMAT: u32 = 9;
+const OLDEST_FORMAT: u32 = 11;
 /// 死因の数（Census の配列の長さ）
 const N_CAUSES: usize = 8;
 
@@ -262,8 +262,10 @@ impl World {
                 let at = slot as usize * GENOME_LEN;
                 write_genome(&mut w, &self.mate_genomes[at..at + GENOME_LEN]);
             }
-            // 前の tick に天敵に気づいていたか（次の tick の警報に使う。形式 10 から）
+            // 前の tick に天敵に気づいていたか（次の tick の警報に使う）
             w.u8(self.noticed.get(i).copied().unwrap_or(false) as u8);
+            // 警戒の声を出していたか
+            w.u8(self.calling[i] as u8);
         }
         // 長期の統計の記録。読み飛ばせるよう、先にバイト数を書く
         let mut h = Writer(Vec::new());
@@ -401,7 +403,7 @@ impl World {
             } else {
                 NO_SLOT
             };
-            let noticed = version >= 10 && r.u8()? != 0;
+            let (noticed, calling) = (r.u8()? != 0, r.u8()? != 0);
             if kind > CARNIVORE {
                 return Err(format!("個体の種類が壊れている（{kind}）"));
             }
@@ -439,6 +441,7 @@ impl World {
             world.gest_slot.push(gest_slot);
             world.vigilance.push(vigilance);
             world.noticed.push(noticed);
+            world.calling.push(calling);
             world.natal.push(natal);
             world.cover.push(cover);
             world.signal.push(signal);
@@ -607,6 +610,7 @@ mod tests {
         assert_eq!(a.gest_due, b.gest_due);
         assert_eq!(a.gest_energy, b.gest_energy);
         assert_eq!(a.noticed, b.noticed);
+        assert_eq!(a.calling, b.calling);
         assert_eq!(a.ledger.expected_total(), b.ledger.expected_total());
         assert!(a.history.len() > 0, "記録が溜まっている");
         assert_eq!(a.history, b.history, "長期の統計の記録も続く");

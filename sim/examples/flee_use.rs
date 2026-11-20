@@ -61,6 +61,24 @@ fn main() {
     let mean = vig.iter().sum::<f32>() / vig.len().max(1) as f32;
     let high = vig.iter().filter(|&&v| v >= 0.5).count() as f64 / vig.len().max(1) as f64 * 100.0;
     println!("草食の警戒の平均 {mean:.3}（0.5 以上の個体 {high:.1}%）");
+    // 警戒の声: 今出している個体と、天敵（真正面、視野の半分の距離）が見えたら出す個体の割合
+    let calling = herbs.iter().filter(|&&i| w.calling[i]).count();
+    let would_call = herbs
+        .iter()
+        .filter(|&&i| {
+            let mut x = inputs[i];
+            x[genome::IN_PRED_FWD] = 1.0;
+            x[genome::IN_PRED_NEAR] = 0.75;
+            x[genome::IN_PRED_SIZE] = 1.5;
+            genome::think(w.genome(i), &x)[genome::OUT_ALARM] > 0.0
+        })
+        .count();
+    let nh = herbs.len().max(1) as f64;
+    println!(
+        "警戒の声を出している草食 {:.1}%、天敵が見えたら出す草食 {:.1}%",
+        calling as f64 / nh * 100.0,
+        would_call as f64 / nh * 100.0
+    );
 
     // [逃げる優先度, 食べる優先度, 逃げる ÷ 優先度の合計, 速さ, 逃げる > 食べる の個体]
     let measure = |g: &[f32], input: &[f32; N_IN]| {

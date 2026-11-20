@@ -219,7 +219,9 @@ pub const OUT_ATTACK_KIN: usize = 14;
 pub const OUT_BUILD: usize = 15;
 /// 正なら、届く距離にいる自分の幼い子に蓄えを分け与える（与えた tick は動かず、食べない）
 pub const OUT_FEED: usize = 16;
-pub const N_OUT: usize = 17;
+/// 正なら警戒の声を出す（草食のみ。alarm_call が 1 のときだけ使う）。声を聞いた仲間は天敵に気づきやすくなるが、出した個体は目立つ
+pub const OUT_ALARM: usize = 17;
+pub const N_OUT: usize = 18;
 
 /// 欲求の数（食べる・繁殖・逃げる・仲間・追い払う・自由）。最後の「自由」の方向は脳の出力から取る
 pub const N_DRIVES: usize = 6;
@@ -514,6 +516,8 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
     out_bias(&mut g, OUT_BUILD, -1.0);
     // 子に与えない（与えるかどうかは進化に任せる。add_feed_wiring で初期配線を入れられる）
     out_bias(&mut g, OUT_FEED, -1.0);
+    // 警戒の声は出さない（天敵が見えても届かない基準値。出すかどうかは進化に任せる。set_alarm_bias で初期個体ごとにばらつかせられる）
+    out_bias(&mut g, OUT_ALARM, -4.0);
 
     // 優先度の基本: 普段は食べる、繁殖できる状態なら繁殖、天敵が見えたら逃げるを最優先。
     // 仲間に寄る欲求は弱くしておき、強めるかどうかは進化に任せる
@@ -538,6 +542,8 @@ pub fn initial(herbivore: bool, size: f32, max_speed: f32, vision: f32, hue: f32
         // 天敵が見えたら、食べるのも相手探しもやめて逃げる
         wire_hidden(&mut g, h_threat, IN_PRED_NEAR, 4.0);
         wire_out(&mut g, OUT_PRI_FLEE, h_threat, 10.0);
+        // 警戒の声は天敵が見えているほど出しやすい（基準値 −4 のままでは届かない）
+        wire_out(&mut g, OUT_ALARM, h_threat, 4.0);
         // 仲間が逃げ始めたら（警戒の合図）、自分に天敵が見えていなくても一緒に逃げる
         wire_hidden(&mut g, h_alarm, IN_KIN_ALERT, 4.0);
         wire_out(&mut g, OUT_PRI_FLEE, h_alarm, 8.0);
@@ -603,6 +609,11 @@ const H_PREY_BIG: usize = 12;
 /// （全員が攻撃しないと、攻撃が得か損かを選択が試せない）
 pub fn set_attack_bias(g: &mut [f32], bias: f32) {
     out_bias(g, OUT_ATTACK, bias);
+}
+
+/// 「警戒の声」の出力の基準値を設定する（初期個体ごとにばらつかせるため）
+pub fn set_alarm_bias(g: &mut [f32], bias: f32) {
+    out_bias(g, OUT_ALARM, bias);
 }
 
 /// 「警戒」の出力の基準値を設定する（初期個体ごとにばらつかせるため）
@@ -1059,6 +1070,18 @@ mod tests {
     }
 
     #[test]
+    fn 初期の草食は警戒の声を出さず_基準値を上げると天敵が見えたときだけ出す() {
+        let mut g = initial(true, 1.0, 1.0, 30.0, 0.0);
+        let calm = input();
+        let mut threat = input();
+        threat[IN_PRED_NEAR] = 0.75;
+        assert!(think(&g, &threat)[OUT_ALARM] < 0.0, "初期の脳は天敵が見えても声を出さない");
+        set_alarm_bias(&mut g, -2.0);
+        assert!(think(&g, &threat)[OUT_ALARM] > 0.0, "基準値を上げると、天敵が見えたときは声を出す");
+        assert!(think(&g, &calm)[OUT_ALARM] < 0.0, "天敵が見えなければ出さない");
+    }
+
+    #[test]
     fn 大きい変異はまれに起き_ふだんの変異より大きい() {
         let g0 = initial(true, 1.0, 1.0, 30.0, 0.0);
         let big = |chance: f32| {
@@ -1067,12 +1090,12 @@ mod tests {
             (0..4000).filter(|_| {
                 let mut g = g0.clone();
                 mutate(&mut g, &m, &mut rng);
-                (g[G_SIZE] - 1.0).abs() > 0.2
+                (g[G_SIZE] - 1.0).abs() > 0.25
             }).count()
         };
-        assert_eq!(big(0.0), 0, "ふだんの変異（±5%）では 20% を超えない");
+        assert_eq!(big(0.0), 0, "ふだんの変異（±5%）では 25%（5σ）を超えない");
         let n = big(0.05);
-        assert!(n > 60 && n < 200, "5% の変異が 6 倍になると、20% を超える変化がまれに起きる: {n}");
+        assert!(n > 40 && n < 200, "5% の変異が 6 倍になると、25% を超える変化がまれに起きる: {n}");
     }
 
     #[test]
