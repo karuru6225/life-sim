@@ -1582,6 +1582,7 @@ impl World {
         // 警報: 前の tick に天敵に気づいていた仲間がいれば、注意を alarm_share まで引き上げた距離で、視野角を問わず（声で方向が分かる）天敵を探す。
         // 仲間がいるかはループの途中まで分からないので、引き上げた場合の最寄りの天敵も別に覚えておく
         let alarm_share = if my_kind == HERBIVORE { self.params.alarm_share } else { 0.0 };
+        let alarm_locate = self.params.alarm_locate;
         let mut warned = false;
         let (mut warn_pred, mut warn_d2): (Seen, f32) = (None, f32::MAX);
         let (mut similar, mut similar_d2, mut similar_count): (Seen, f32, u32) = (None, f32::MAX, 0);
@@ -1630,7 +1631,7 @@ impl World {
                 let attention = if attention_sum { vigilance + (1.0 - vigilance) * motion } else { vigilance.max(motion) };
                 if alarm_share > 0.0 && j != i && self.alive[j] {
                     let rw = r * (vmin + (1.0 - vmin) * attention.max(alarm_share));
-                    if d2 < rw * rw && d2 < warn_d2 {
+                    if d2 < rw * rw && d2 < warn_d2 && (alarm_locate >= 1.0 || pair_hash(my_id, self.id[j]) < alarm_locate) {
                         warn_d2 = d2;
                         warn_pred = Some((j, dx, dy, d2));
                     }
@@ -3126,6 +3127,15 @@ pub fn torus_delta(d: f32, size: f32) -> f32 {
     }
 }
 
+/// 2 つの id の組から決まる 0〜1 の値（splitmix の混ぜ方）。乱数の流れを変えずに、組ごとのばらつきを作る
+fn pair_hash(a: u32, b: u32) -> f32 {
+    let mut h = ((a as u64) << 32 | b as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^= h >> 31;
+    (h >> 40) as f32 / (1u64 << 24) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4091,6 +4101,12 @@ mod tests {
         assert!(w.sense(0).predator.is_none(), "警戒していても死角の天敵は見えない");
         w.params.alarm_share = 1.0;
         assert!(w.sense(0).predator.is_some(), "警報があれば死角の天敵にも気づく");
+        w.params.alarm_locate = 0.0;
+        assert!(w.sense(0).predator.is_none(), "場所が分からなければ死角の天敵には気づかない");
+        w.params.alarm_locate = 1.0;
+        // 場所が分かる割合は、組ごとの値で決まる（だいたい指定した割合になる）
+        let n = (0..2000u32).filter(|&k| pair_hash(k, 7) < 0.3).count();
+        assert!((500..700).contains(&n), "2000 組のうち 3 割前後: {n}");
         w.params.alarm_share = 0.0;
         // 死んで詰められても、気づいていたかの記録は個体についていく
         w.params.alarm_share = 1.0;
