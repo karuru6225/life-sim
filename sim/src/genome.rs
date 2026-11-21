@@ -622,9 +622,20 @@ pub fn set_alarm_bias(g: &mut [f32], bias: f32) {
 /// weight が負なら声を出している獲物を追わなくなり（食べる優先度が下がる）、正なら追いやすくなる。
 /// 声を出していない獲物への反応は変わらない（入力 0 のときニューロンの値は 0）
 pub fn set_call_response(g: &mut [f32], weight: f32) {
+    wire_prey_call(g);
+    wire_out(g, OUT_PRI_FOOD, H_PREY_CALL, weight);
+}
+
+/// 肉食の「獲物が声を出している」への、襲うかどうか（「食べる」の出力）の反応を配線する。
+/// weight が負なら、声を出している獲物には近くまで来ても襲わなくなる（見つかった獲物はあきらめる）
+pub fn set_call_attack_response(g: &mut [f32], weight: f32) {
+    wire_prey_call(g);
+    wire_out(g, OUT_EAT, H_PREY_CALL, weight);
+}
+
+fn wire_prey_call(g: &mut [f32]) {
     g[ACT + H_PREY_CALL] = 1.0;
     wire_hidden(g, H_PREY_CALL, IN_PREY_CALLING, 4.0);
-    wire_out(g, OUT_PRI_FOOD, H_PREY_CALL, weight);
 }
 
 /// 肉食の「獲物が声を出している」への反応に使う中間ニューロン

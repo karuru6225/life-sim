@@ -634,6 +634,9 @@ impl World {
                 if kind == CARNIVORE && p.initial_call_response_spread > 0.0 {
                     genome::set_call_response(&mut g, world.rng.gaussian() * p.initial_call_response_spread);
                 }
+                if kind == CARNIVORE && p.initial_call_attack_spread > 0.0 {
+                    genome::set_call_attack_response(&mut g, world.rng.gaussian() * p.initial_call_attack_spread);
+                }
                 world.spawn(x, y, kind, energy, 0, &g);
                 // 初期の世代がそろって老いないよう、年齢をばらつかせる（大人として置くので成長度はそのまま）。
                 // 0 のときは乱数を引かない（乱数の流れを、この仕組みがなかったときと同じにする）
@@ -4185,6 +4188,12 @@ mod tests {
         loud[genome::IN_PREY_CALLING] = 1.0;
         assert!((food(&avoid, &quiet) - food(&carn, &quiet)).abs() < 1e-6, "静かな獲物への反応は変わらない");
         assert!(food(&avoid, &loud) < food(&avoid, &quiet) - 0.2, "声を出す獲物は追わない: {} → {}", food(&avoid, &quiet), food(&avoid, &loud));
+        // 襲うかどうかの配線: 負の重みなら、声を出している獲物は襲わない。静かな獲物は今まで通り
+        let mut spare = carn.clone();
+        genome::set_call_attack_response(&mut spare, -4.0);
+        let eat = |g: &[f32], x: &[f32; genome::N_IN]| genome::think(g, x)[genome::OUT_EAT];
+        assert!((eat(&spare, &quiet) - eat(&carn, &quiet)).abs() < 1e-6, "静かな獲物を襲うかは変わらない");
+        assert!(eat(&spare, &loud) < eat(&spare, &quiet) - 2.0, "声を出す獲物は襲わない: {} → {}", eat(&spare, &quiet), eat(&spare, &loud));
         face(&mut w, 1, -1.0, 0.0);
         w.calling[0] = true;
         w.build_grid();
