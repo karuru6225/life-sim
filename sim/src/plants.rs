@@ -179,7 +179,9 @@ impl PlantField {
 
     /// 日射を受けて成長する。受け取ったエネルギーの合計を返す。
     /// 肥沃度 f のマスは、上限が capacity × f、受け取る日射も sunlight × f になる
-    pub fn grow(&mut self, sunlight: f32, capacity: f32) -> f64 {
+    /// shape は育ち方の形（params の plant_regrowth_shape）。0 は空に近いほど速く、1 はロジスティック成長
+    pub fn grow(&mut self, sunlight: f32, capacity: f32, shape: f32) -> f64 {
+        let shape = shape.clamp(0.0, 1.0);
         // 層ごとに、日射と上限を割合で分けて育てる。割合が全部同じ層なら、層に分けないのと同じ量になる
         let mut total = 0.0f64;
         for (c, &f) in self.fertility.iter().enumerate() {
@@ -194,7 +196,9 @@ impl PlantField {
                     continue;
                 }
                 let b = &mut self.layer[k][c];
-                let g = sunlight * s * f * (1.0 - *b / (capacity * s * f)).max(0.0);
+                let x = *b / (capacity * s * f);
+                let rate = if shape > 0.0 { (1.0 - shape) + shape * 4.0 * x.max(0.01) } else { 1.0 };
+                let g = sunlight * s * f * (1.0 - x).max(0.0) * rate;
                 *b += g;
                 grown += g;
             }

@@ -48,6 +48,7 @@ export const SIM_PARAMS = {
   // 植物
   sunlight: 0.08,
   plant_capacity: 10,
+  plant_regrowth_shape: 0,
   plant_share_shrub: 0.3,
   plant_share_tree: 0.2,
   woodland_contrast: 0.8,

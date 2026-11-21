@@ -1482,7 +1482,7 @@ impl World {
         let sunlight = self.params.sunlight * (1.0 + self.params.season_amplitude * self.season());
         self.plants.share = self.params.plant_shares();
         self.plants.woodland = self.params.woodland_contrast;
-        self.ledger.sunlight_in += self.plants.grow(sunlight, self.params.plant_capacity);
+        self.ledger.sunlight_in += self.plants.grow(sunlight, self.params.plant_capacity, self.params.plant_regrowth_shape);
         lap!(0);
 
         self.decay_carrion();
@@ -4850,6 +4850,30 @@ mod tests {
         assert!((taken(1.0, 1.0) - 0.5 * bite).abs() < 1e-4, "{} / {bite}", taken(1.0, 1.0));
         assert!((taken(1.0, 0.25) - bite * 0.0625 / 1.0625).abs() < 1e-4);
         assert!((taken(1.0, 5.0) - bite * 25.0 / 26.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn 育ち方の形を変えると食べ尽くしたマスの回復が遅くなる() {
+        // 地面の草だけで育つとして、上限に対する割合 x のマスが 1 tick に育つ量を、上限 × 日射 × 肥沃度 を単位にして見る
+        let grown = |shape: f32, x: f32| {
+            let mut w = empty_world();
+            let c = w.plants.cell_index(100.0, 100.0);
+            let (s, f) = (w.plants.share_at(c)[0], w.plants.fertility[c]);
+            w.plants.fill(0.0);
+            w.plants.layer[0][c] = x * w.params.plant_capacity * s * f;
+            w.plants.sum_layers();
+            let before = w.plants.layer[0][c];
+            w.plants.grow(0.08, w.params.plant_capacity, shape);
+            (w.plants.layer[0][c] - before) / (0.08 * s * f)
+        };
+        // 0 は今まで通り: 1 − x
+        assert!((grown(0.0, 0.1) - 0.9).abs() < 1e-4);
+        // 1 はロジスティック: 4x(1 − x)。半分で今までの空のときと同じ速さ、ほぼ空ではとても遅い（下限 1%）
+        assert!((grown(1.0, 0.5) - 1.0).abs() < 1e-4);
+        assert!((grown(1.0, 0.1) - 0.36).abs() < 1e-4);
+        assert!((grown(1.0, 0.0) - 0.04).abs() < 1e-4);
+        // 間は混ぜる
+        assert!((grown(0.5, 0.1) - 0.9 * (0.5 + 0.5 * 0.4)).abs() < 1e-4);
     }
 
     #[test]
