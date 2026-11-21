@@ -7,6 +7,8 @@ import { HUE_PALETTE, hueIndex } from '../render/palette';
 export interface InspectorHandlers {
   onClose(): void;
   onToggleFollow(): void;
+  /** 死んだら近くの個体を自動で選び直すかを切り替える */
+  onToggleAutoReselect(): void;
   /** 選択中の個体の系統（標識色の近い個体）の統計を見る */
   onShowLineage(): void;
   /** id の個体を選び直す（親をたどるとき） */
@@ -89,6 +91,7 @@ export class Inspector {
         <i class="dot" data-k="dot"></i>
         <span class="insp-title" data-k="title">–</span>
         <button type="button" data-k="follow" title="この個体をカメラで追う">追従</button>
+        <button type="button" data-k="autoReselect" title="この個体が死んだら、近くの同じ種類の個体を自動で選び直す">次を選ぶ</button>
         <button type="button" class="insp-close" data-k="close" aria-label="閉じる">×</button>
       </div>
       <div class="insp-death" data-k="death"></div>
@@ -166,6 +169,7 @@ export class Inspector {
     }
     this.el.close.addEventListener('click', handlers.onClose);
     this.el.follow.addEventListener('click', handlers.onToggleFollow);
+    this.el.autoReselect.addEventListener('click', handlers.onToggleAutoReselect);
     this.el.lineage.addEventListener('click', handlers.onShowLineage);
     // 親の id のボタン（中身は update で作り直す）
     this.el.parents.addEventListener('click', (e) => {
@@ -188,6 +192,11 @@ export class Inspector {
 
   setFollow(on: boolean): void {
     this.el.follow.classList.toggle('active', on);
+  }
+
+  setAutoReselect(on: boolean): void {
+    this.el.autoReselect.classList.toggle('active', on);
+    this.el.autoReselect.setAttribute('aria-pressed', String(on));
   }
 
   private makeBrainRows(root: HTMLElement, labels: string[]): [HTMLElement, HTMLElement][] {

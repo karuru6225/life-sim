@@ -255,6 +255,14 @@ let reselectTimer: number | null = null;
 let reselectScheduledFor = 0;
 /** 自動選び直しの後も追従を続けるか（死んだ時点で追従していたか） */
 let followAfterReselect = false;
+/** 選択中の個体が死んだら自動で選び直すか（ブラウザに覚えておく） */
+const AUTO_RESELECT_KEY = 'life-sim.autoReselect';
+let autoReselect = true;
+try {
+  autoReselect = localStorage.getItem(AUTO_RESELECT_KEY) !== '0';
+} catch {
+  // 覚えていなくても既定（選び直す）で動く
+}
 /** 結果待ちの選択が、自動選び直しによるものか */
 let pendingAutoSelect = false;
 /** 結果待ちの選択が、系統からのランダムな選択によるものか（選べたら拡大して追う） */
@@ -274,6 +282,11 @@ function cancelReselect(): void {
 /** 死んだ場所 (x, y) の近くから、同じ種類の個体を少し待ってから選び直す */
 function scheduleReselect(deadId: number, x: number, y: number, kind: number): void {
   if (reselectTimer !== null || reselectScheduledFor === deadId) return;
+  if (!autoReselect) {
+    // 選び直さない。切り替えを入れ直せば、次のフレームでここに来て予定する
+    inspector.setNote('自動で選び直さない設定です（「次を選ぶ」で切り替え）');
+    return;
+  }
   reselectScheduledFor = deadId;
   followAfterReselect = following;
   inspector.setNote(`${AUTO_RESELECT.delayMs / 1000} 秒後に近くの個体に切り替えます`);
@@ -303,6 +316,19 @@ const toast = new Toast(document.getElementById('toast')!);
 const inspector = new Inspector(document.getElementById('inspector')!, {
   onClose: () => deselect(),
   onToggleFollow: () => setFollowing(!following),
+  onToggleAutoReselect: () => {
+    autoReselect = !autoReselect;
+    inspector.setAutoReselect(autoReselect);
+    try {
+      localStorage.setItem(AUTO_RESELECT_KEY, autoReselect ? '1' : '0');
+    } catch {
+      // 覚えておけなくても切り替えは効く
+    }
+    // 切った時点で予定していた選び直しは取りやめる
+    // 入れ直したら、死んでいる個体の選び直しを改めて予定できるようにする
+    if (!autoReselect) cancelReselect();
+    reselectScheduledFor = 0;
+  },
   onSelectId: (id) => {
     cancelReselect();
     send({ type: 'selectId', id });
@@ -315,6 +341,8 @@ const inspector = new Inspector(document.getElementById('inspector')!, {
     setLineage({ kind: lastInspect[INSPECT.kind], from: (((hue - w) % 1) + 1) % 1, width: 2 * w });
   },
 });
+
+inspector.setAutoReselect(autoReselect);
 
 const camera = new Camera(world, app.canvas, params.world_width, params.world_height, {
   onClick: (px, py) => {
