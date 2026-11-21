@@ -20,6 +20,7 @@ import { Camera } from './render/camera';
 import { PlantLayer } from './render/plants';
 import { TerrainLayer, type MapMode } from './render/terrain';
 import { SelectionMarker } from './render/selection';
+import { Trail } from './render/trail';
 import { Hud, type Highlight, type HighlightStyle, type Layers } from './ui/hud';
 import { Inspector, Toast } from './ui/inspector';
 import { LineageHistogram, LineagePanel } from './ui/lineage';
@@ -138,11 +139,13 @@ const carnOutline = new AgentLayer(
   params.world_height,
 );
 const marker = new SelectionMarker();
+/** 選択中の個体の、選択してからの移動の履歴 */
+const trail = new Trail(() => [params.world_width, params.world_height]);
 /** 選んだ系統の重心（十字）と広がり（円） */
 const lineageMark = new Graphics();
 /** 選択の印の入れ物。印そのものは選択に合わせて表示を切り替えるので、表示するものの切り替えはこちらで行う */
 const markerLayer = new Container();
-markerLayer.addChild(marker.graphics);
+markerLayer.addChild(trail.graphics, marker.graphics);
 world.addChild(
   herbivores.container,
   carnivores.container,
@@ -340,6 +343,7 @@ function deselect(): void {
   send({ type: 'deselect' });
   inspector.hide();
   marker.hide();
+  trail.clear();
   setFollowing(false);
 }
 
@@ -416,6 +420,7 @@ function resetView(): void {
   hud.clearHistory();
   inspector.hide();
   marker.hide();
+  trail.clear();
   setFollowing(false);
 }
 
@@ -470,6 +475,7 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       break;
     case 'selected':
       selectedId = msg.id;
+      trail.clear();
       if (msg.id === 0) {
         toast.show(pendingAutoSelect ? '近くに代わりの個体がいません' : '近くに個体がいません');
         inspector.hide();
@@ -492,6 +498,8 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const h1 = b?.h1 ?? 0;
         brainWin.setNet(msg.brainNetId, msg.brainNet, b?.input.length ?? 0, h1, (b?.hidden.length ?? 0) - h1, b?.output.length ?? 0);
       }
+      // 移動の履歴は増えた分だけ届くので、これも飛ばされる前に取り込む
+      if (msg.path && msg.inspect && msg.inspect[INSPECT.id] === selectedId) trail.add(msg.path.start, msg.path.points);
       if (latest) returnBuffer(latest);
       latest = msg;
       break;
@@ -594,6 +602,8 @@ function showSelection(v: number[]): void {
   if (status === 0) return; // 選択直後で、まだ結果が来ていない
   if (v[INSPECT.id] !== selectedId) return; // 選び直す前の個体の情報（古いフレーム）
   if (status === 1) lastInspect = v;
+  // 死んだあとも、選び直すまで履歴は残す（どこで死んだかが分かる）
+  trail.draw(camera.scale);
   inspector.update(v);
   if (status === 2) {
     marker.hide(); // 死んだ個体はもういない

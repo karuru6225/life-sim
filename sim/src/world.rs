@@ -182,6 +182,8 @@ pub struct Watch {
     pub input: Vec<f32>,
     /// 直近 ENERGY_HISTORY tick のエネルギー（古い順）
     pub energy_history: Vec<f32>,
+    /// 選択してからの位置（x, y の組を古い順に並べたもの。毎 tick 1 組、WATCH_PATH 組まで）
+    pub path: Vec<f32>,
     /// 死んだときの (死因, tick)
     pub death: Option<(u8, u64)>,
 }
@@ -410,6 +412,8 @@ pub struct Memory {
 
 /// 選択中の個体のエネルギーの履歴に残す tick 数
 pub const ENERGY_HISTORY: usize = 300;
+/// 選択中の個体の移動の履歴に残す位置の数の上限（寿命より十分長い。超えたら記録をやめる）
+pub const WATCH_PATH: usize = 100_000;
 
 struct Birth {
     /// 親の id（繁殖を決めた側, 相手）。無性生殖なら相手は 0
@@ -2599,6 +2603,9 @@ impl World {
                 hist.remove(0);
             }
             hist.push(e);
+            if self.watch.path.len() < 2 * WATCH_PATH {
+                self.watch.path.extend_from_slice(&[self.xs[i], self.ys[i]]);
+            }
         }
 
         if self.energy[i] <= 0.0 {
@@ -3309,6 +3316,26 @@ mod tests {
         w.cover = vec![0.0, 1.0];
         w.build_grid();
         assert!(w.sense(0).prey.is_none(), "草むらの獲物は見えない");
+    }
+
+    #[test]
+    fn 選んだ個体の位置を選んだときから毎_tick_記録し選び直すと空から始める() {
+        let mut w = World::new(11, small_params());
+        // 長く生きそうな個体（草食の先頭）を選ぶ
+        let target = w.id[(0..w.count()).find(|&i| w.kind[i] == HERBIVORE).unwrap()];
+        w.select(target);
+        assert!(w.watch.path.is_empty());
+        let mut n = 0;
+        for _ in 0..50 {
+            w.step();
+            let Some(i) = w.index_of(target) else { break };
+            n += 1;
+            assert_eq!(w.watch.path.len(), 2 * n, "1 tick に 1 組");
+            assert_eq!(&w.watch.path[2 * n - 2..], &[w.xs[i], w.ys[i]], "最後の組は今の位置");
+        }
+        assert!(n > 0);
+        w.select(target);
+        assert!(w.watch.path.is_empty(), "選び直すと空から");
     }
 
     #[test]

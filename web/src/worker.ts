@@ -45,6 +45,8 @@ interface SimExports {
   brain_net_len(): number;
   energy_history_ptr(): number;
   energy_history_len(): number;
+  path_ptr(): number;
+  path_len(): number;
   lineage_stats(kind: number, from: number, width: number): number;
   lineage_len(): number;
   plant_cols(): number;
@@ -91,6 +93,9 @@ let paused = false;
 let watching = false;
 /** 脳の重みを最後に送った個体の id（選んだ個体が変わったら送り直す） */
 let netSentId = -1;
+/** 移動の履歴を最後に送った個体の id と、送り終えた f32 の数（増えた分だけ送る） */
+let pathSentId = -1;
+let pathSent = 0;
 
 // 日射量の自動調整（config.ts の AUTO_SUNLIGHT を参照）
 let autoSunlight = AUTO_SUNLIGHT.enabledByDefault;
@@ -455,6 +460,7 @@ function publish(s: SimExports, now: number): void {
   const inspect = watching ? Array.from(new Float64Array(s.memory.buffer, s.inspect(), s.inspect_len())) : null;
   let brain: { input: number[]; output: number[]; hidden: number[]; h1: number } | null = null;
   let energyHistory: number[] | null = null;
+  let path: { start: number; points: number[] } | null = null;
   let brainNet: number[] | undefined;
   let brainNetId: number | undefined;
   if (watching) {
@@ -471,10 +477,18 @@ function publish(s: SimExports, now: number): void {
       netSentId = id;
     }
     energyHistory = Array.from(new Float32Array(s.memory.buffer, s.energy_history_ptr(), s.energy_history_len()));
+    // 選び直すと履歴は空から始まる。id が変わったか、前に送った長さより短ければ最初から送る
+    const len = s.path_len();
+    if (id !== pathSentId || len < pathSent) {
+      pathSentId = id;
+      pathSent = 0;
+    }
+    path = { start: pathSent / 2, points: Array.from(new Float32Array(s.memory.buffer, s.path_ptr() + pathSent * 4, len - pathSent)) };
+    pathSent = len;
   }
 
   post(
-    { type: 'frame', generation, buffer, agentCount, stride, plantCols, plantRows, tick: s.current_tick(), inspect, brain, energyHistory, brainNet, brainNetId },
+    { type: 'frame', generation, buffer, agentCount, stride, plantCols, plantRows, tick: s.current_tick(), inspect, brain, energyHistory, path, brainNet, brainNetId },
     [buffer],
   );
   dirty = false;

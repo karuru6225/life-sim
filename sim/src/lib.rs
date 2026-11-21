@@ -317,6 +317,18 @@ pub extern "C" fn energy_history_len() -> u32 {
     with_world(|w| w.watch.energy_history.len() as u32)
 }
 
+/// 選択中の個体の、選択してからの位置（x, y の組を古い順、f32 × path_len()）の先頭アドレス
+#[unsafe(no_mangle)]
+pub extern "C" fn path_ptr() -> *const f32 {
+    with_world(|w| w.watch.path.as_ptr())
+}
+
+/// path_ptr() の f32 の数（位置の数の 2 倍）
+#[unsafe(no_mangle)]
+pub extern "C" fn path_len() -> u32 {
+    with_world(|w| w.watch.path.len() as u32)
+}
+
 /// 選択を解除する
 #[unsafe(no_mangle)]
 pub extern "C" fn deselect() {

@@ -101,6 +101,11 @@ export type FromWorker =
       brainNetId?: number;
       /** 選択中の個体の直近のエネルギー（古い順）。選択していなければ null */
       energyHistory: number[] | null;
+      /**
+       * 選択中の個体の、選択してからの位置のうち前のフレームから増えた分（x, y の組を古い順）。
+       * start は points の先頭が何番目の位置か（0 なら最初から送り直し）。選択していなければ null
+       */
+      path: { start: number; points: number[] } | null;
     }
   | {
       type: 'stats';
