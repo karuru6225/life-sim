@@ -534,6 +534,8 @@ pub struct World {
     noticed: Vec<bool>,
     /// 呼び声の場: 成熟した個体の繁殖シグナルを、種類ごとに粗いマス目（call_cell 四方）に足し合わせたもの
     calls: [Vec<f32>; 2],
+    /// 遠くの景色の区画ごとの草食の数（肉食が遠くの獲物を探すのに使う。carn_far_view が 0 なら空。毎 tick 作り直す）
+    prey_map: Vec<f32>,
     call_cols: usize,
     call_rows: usize,
     rng: Rng,
@@ -749,6 +751,7 @@ impl World {
             motion: Vec::new(),
             noticed: Vec::new(),
             calls: [Vec::new(), Vec::new()],
+            prey_map: Vec::new(),
             call_cols: 0,
             call_rows: 0,
             rng: Rng::new(seed),
@@ -1281,6 +1284,29 @@ impl World {
         dir
     }
 
+    /// 肉食 i が遠くの景色で見つけた、獲物（草食）の多い区画の方向（世界の向きの単位ベクトル）。
+    /// 見渡せる距離に 8 方向を比べ、今いる区画より十分に多い方向がなければ None
+    fn far_prey_direction(&self, i: usize) -> Option<(f32, f32)> {
+        if self.prey_map.is_empty() {
+            return None;
+        }
+        let (x, y) = (self.xs[i], self.ys[i]);
+        let range = self.params.carn_far_view * self.traits[i].size.max(0.0).cbrt() * self.view_openness(x, y);
+        let here = self.prey_map[self.plants.landscape_block(x, y)];
+        // 草食の 1 体の差では動かない（今いる区画の 1.2 倍 ＋ 1 体より多いこと）
+        let mut best = here * 1.2 + 1.0;
+        let mut dir = None;
+        const D: f32 = std::f32::consts::FRAC_1_SQRT_2;
+        for (dx, dy) in [(1.0, 0.0), (D, D), (0.0, 1.0), (-D, D), (-1.0, 0.0), (-D, -D), (0.0, -1.0), (D, -D)] {
+            let v = self.prey_map[self.plants.landscape_block(x + dx * range, y + dy * range)];
+            if v > best {
+                best = v;
+                dir = Some((dx, dy));
+            }
+        }
+        dir
+    }
+
     /// 場所 (x, y) の見通しのよさ（遠くを見渡せる距離に掛ける倍率）。枝の層の割合が多いほど低く、全体の平均の割合の場所で 1
     pub fn view_openness(&self, x: f32, y: f32) -> f32 {
         let k = self.params.far_view_tree.max(0.0);
@@ -1326,6 +1352,7 @@ impl World {
         self.plants.update_landscape();
         self.build_grid();
         self.build_calls();
+        self.build_prey_map();
         (0..self.count()).map(|i| self.plan(i).input).collect()
     }
 
@@ -1432,6 +1459,21 @@ impl World {
     }
 
     /// 呼び声の場を作り直す。成熟した個体の、直前の tick の繁殖シグナルを足し合わせる
+    /// 遠くの景色の区画ごとの草食の数を数え直す（肉食の遠くの景色用）
+    fn build_prey_map(&mut self) {
+        self.prey_map.clear();
+        if self.params.carn_far_view <= 0.0 || self.plants.landscape.cols == 0 {
+            return;
+        }
+        self.prey_map.resize(self.plants.landscape.cols * self.plants.landscape.rows, 0.0);
+        for i in 0..self.count() {
+            if self.kind[i] == HERBIVORE {
+                let b = self.plants.landscape_block(self.xs[i], self.ys[i]);
+                self.prey_map[b] += 1.0;
+            }
+        }
+    }
+
     fn build_calls(&mut self) {
         for field in &mut self.calls {
             field.fill(0.0);
@@ -1500,6 +1542,7 @@ impl World {
         lap!(2);
         self.build_grid();
         self.build_calls();
+        self.build_prey_map();
         self.prev_vel.clear();
         self.prev_vel.extend_from_slice(&self.vel);
         lap!(3);
@@ -1843,6 +1886,10 @@ impl World {
                 input[genome::IN_FAR_FWD] = f;
                 input[genome::IN_FAR_RIGHT] = r;
             }
+        } else if let Some((dx, dy)) = self.far_prey_direction(i) {
+            let (f, r) = to_local(dx, dy);
+            input[genome::IN_FAR_FWD] = f;
+            input[genome::IN_FAR_RIGHT] = r;
         }
         lap!(1);
         for (seen, at) in [
@@ -2015,7 +2062,7 @@ impl World {
             if len < 1e-6 { (0.0, 0.0) } else { (f / len, r / len) }
         };
         // 食べ物の方向: 草食は自分の食べられる草の多い方へ。肉食は獲物へ。
-        // 肉食は獲物が見えなくても、獲物を追っている仲間がいればその向きへ（群れの目）
+        // 肉食は獲物が見えなくても、獲物を追っている仲間がいればその向きへ（群れの目）。それもなければ遠くの景色で見つけた獲物の多い方へ
         // 草食は、隣のマスに草の多い方向がなければ、遠くの景色で見つけた場所へ
         let food = if self.kind[i] == HERBIVORE {
             if input[genome::IN_GRAD_FWD] != 0.0 || input[genome::IN_GRAD_RIGHT] != 0.0 {
@@ -2029,7 +2076,9 @@ impl World {
             // 獲物が見えなければ、近くの死体へ
             (input[genome::IN_CARRION_FWD], input[genome::IN_CARRION_RIGHT])
         } else {
-            normalize(to_local(senses.alarm_hx, senses.alarm_hy))
+            // 獲物を追う仲間がいればその向き。いなければ、遠くの景色で見つけた獲物の多い方へ（carn_far_view が 0 なら (0, 0)）
+            let hunt = normalize(to_local(senses.alarm_hx, senses.alarm_hy));
+            if hunt != (0.0, 0.0) { hunt } else { (input[genome::IN_FAR_FWD], input[genome::IN_FAR_RIGHT]) }
         };
         // 逃げる方向: 天敵が見えていればその反対。見えていなくても、逃げている仲間がいればその向き（警戒の合図）
         // 逃げる方向: 天敵が見えていればその反対。敵に攻撃されて負けた直後なら、最寄りの敵の反対。
@@ -4804,6 +4853,33 @@ mod tests {
         let dir = |w: &World, i: usize| w.far_food_direction(i, &w.reach(i), w.graze_floor(i));
         assert_eq!(dir(&w, 0), Some((1.0, 0.0)), "大きさ 1 は 320px 先の草が見える");
         assert_eq!(dir(&w, 1), None, "大きさ 0.3 は見渡せる距離が約 214px で届かない");
+    }
+
+    #[test]
+    fn 肉食は遠くの景色で草食の多い方向がわかり_見えないときはそちらへ向かう() {
+        let mut w = empty_world();
+        w.spawn(100.0, 100.0, CARNIVORE, 5.0, 0, &genome::initial(false, 1.0, 1.0, 40.0, 0.0));
+        // 右（x の正の向き）の 2〜3 区画先に草食を置く（視野 40px の外）
+        for x in [300.0, 320.0, 340.0, 430.0, 450.0, 470.0] {
+            w.spawn(x, 100.0, HERBIVORE, 5.0, 0, &genome::initial(true, 1.0, 1.0, 30.0, 0.0));
+        }
+        // 右を向かせる
+        (w.hx[0], w.hy[0]) = (1.0, 0.0);
+        w.plants.update_landscape();
+        w.build_grid();
+        // 使わない設定（既定）なら、遠くの景色は 0 のまま
+        w.build_prey_map();
+        assert_eq!(w.far_prey_direction(0), None);
+        assert_eq!(w.plan(0).input[genome::IN_FAR_FWD], 0.0);
+        w.params.carn_far_view = 320.0;
+        w.build_prey_map();
+        assert_eq!(w.far_prey_direction(0), Some((1.0, 0.0)));
+        let plan = w.plan(0);
+        assert_eq!(plan.input[genome::IN_PREY_NEAR], 0.0, "獲物は見えていない");
+        assert!((plan.input[genome::IN_FAR_FWD] - 1.0).abs() < 1e-6, "前（右の区画）を指す");
+        // 左を向かせると、遠くの景色は後ろを指す
+        (w.hx[0], w.hy[0]) = (-1.0, 0.0);
+        assert!((w.plan(0).input[genome::IN_FAR_FWD] + 1.0).abs() < 1e-6);
     }
 
     #[test]

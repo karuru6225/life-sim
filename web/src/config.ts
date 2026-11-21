@@ -63,6 +63,7 @@ export const SIM_PARAMS = {
   graze_half_sat: 0,
   far_view: 320,
   far_view_tree: 1.5,
+  carn_far_view: 0,
 
   // 共通
   move_cost: 0.006,
