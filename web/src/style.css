@@ -977,11 +977,17 @@ button:disabled {
   color: var(--text);
 }
 
-.brain-canvas {
+.brain-scroll {
   flex: 1;
   min-height: 0;
-  width: 100%;
   margin-top: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.brain-canvas {
+  display: block;
+  width: 100%;
   cursor: crosshair;
 }
 

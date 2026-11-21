@@ -21,6 +21,10 @@ const MUTED = '#93a3a2';
 const TEXT = '#dde6e4';
 const FONT = "11px ui-monospace, 'Cascadia Mono', Consolas, monospace";
 const LABEL_FONT = "11px system-ui, 'Segoe UI', 'Yu Gothic UI', sans-serif";
+/** 入力・出力の 1 行の最小の高さ（px）。11px の名前と値が重ならない間隔。収まらなければ図を縦にスクロールする */
+const ROW_MIN = 13;
+/** 図の上下の余白（px） */
+const PAD_Y = 10;
 
 type Mode = 'signal' | 'weight';
 
@@ -152,7 +156,9 @@ export class BrainWindow {
         <button type="button" data-mode="weight" title="重みそのもの（生まれつき決まっていて、生涯変わらない）">重み</button>
         <label class="brain-share">強い順に上位 <input type="range" min="0.02" max="1" step="0.02" data-k="share" /> <span data-k="shareValue">–</span></label>
       </div>
-      <canvas class="brain-canvas" data-k="canvas" aria-label="選択中の個体の脳のニューロンとつながり"></canvas>
+      <div class="brain-scroll" data-k="scroll">
+        <canvas class="brain-canvas" data-k="canvas" aria-label="選択中の個体の脳のニューロンとつながり"></canvas>
+      </div>
       <p class="stats-note brain-legend">
         <span><i class="swatch" style="background:${POS}"></i>正（強める）</span>
         <span><i class="swatch" style="background:${NEG}"></i>負（弱める）</span>
@@ -273,6 +279,10 @@ export class BrainWindow {
     if (!this.isOpen) return;
     this.el.who.textContent = this.who || '–';
     const canvas = this.el.canvas as HTMLCanvasElement;
+    // 行の多い列（入力）が ROW_MIN 以上の間隔で並ぶ高さにする。ウインドウより高ければ枠の中で縦にスクロールする
+    const rows = this.net ? Math.max(this.net.nIn, this.net.h1, this.net.h2, this.net.nOut) : 0;
+    const height = `${Math.max(this.el.scroll.clientHeight, rows * ROW_MIN + 2 * PAD_Y)}px`;
+    if (canvas.style.height !== height) canvas.style.height = height;
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
@@ -303,8 +313,8 @@ export class BrainWindow {
     ctx.font = LABEL_FONT;
     const left = valueW + 8 + nameW(INPUT_LABELS) + 12;
     const right = w - (valueW + 8 + nameW(OUTPUT_LABELS) + 12);
-    const top = 10;
-    const bottom = h - 10;
+    const top = PAD_Y;
+    const bottom = h - PAD_Y;
     const xs = [left, left + (right - left) / 3, left + ((right - left) * 2) / 3, right];
     const counts = [net.nIn, net.h1, net.h2, net.nOut];
     this.pos = counts.map((n, c) =>
@@ -362,7 +372,7 @@ export class BrainWindow {
       }
     }
 
-    // 名前と値（入力は左、出力は右）。点の間隔が文字より狭いときは名前を省く
+    // 名前と値（入力は左、出力は右）。図の高さは行の間隔が ROW_MIN 以上になるようにしてある
     ctx.textBaseline = 'middle';
     const label = (c: number, labels: string[], values: number[]) => {
       const n = counts[c];
@@ -371,12 +381,12 @@ export class BrainWindow {
         const p = this.pos[c][i];
         const dim = hv && !(hv.col === c && hv.idx === i) && !net.edges.some((e) => touches(e) && ((e.from.col === c && e.from.idx === i) || (e.to.col === c && e.to.idx === i)));
         ctx.globalAlpha = dim ? 0.45 : 1;
-        if (gap >= 10) {
-          ctx.font = LABEL_FONT;
-          ctx.fillStyle = MUTED;
-          ctx.textAlign = c === 0 ? 'right' : 'left';
-          ctx.fillText(labels[i] ?? `#${i}`, c === 0 ? p.x - 10 : p.x + 10, p.y);
-        }
+        // 念のため: それでも間隔が文字より狭ければ（ウインドウの外で描いたときなど）、名前も値も描かない（重ねて読めなくするより、マウスで見る方がよい）
+        if (gap < ROW_MIN - 0.5) continue;
+        ctx.font = LABEL_FONT;
+        ctx.fillStyle = MUTED;
+        ctx.textAlign = c === 0 ? 'right' : 'left';
+        ctx.fillText(labels[i] ?? `#${i}`, c === 0 ? p.x - 10 : p.x + 10, p.y);
         ctx.font = FONT;
         ctx.fillStyle = TEXT;
         ctx.textAlign = c === 0 ? 'left' : 'right';
