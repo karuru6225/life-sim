@@ -4867,7 +4867,8 @@ mod tests {
         (w.hx[0], w.hy[0]) = (1.0, 0.0);
         w.plants.update_landscape();
         w.build_grid();
-        // 使わない設定（既定）なら、遠くの景色は 0 のまま
+        // 0 にすると使わず、遠くの景色は 0 のまま
+        w.params.carn_far_view = 0.0;
         w.build_prey_map();
         assert_eq!(w.far_prey_direction(0), None);
         assert_eq!(w.plan(0).input[genome::IN_FAR_FWD], 0.0);
