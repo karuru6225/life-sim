@@ -2274,16 +2274,20 @@ impl World {
         // 地面の草は、口の大きさで決まる食べ残す高さより上しか取れない
         let (reach, floor) = (self.reach(i), self.graze_floor(i));
         let quality = self.params.plant_qualities();
+        // 草が少ないほど見つけにくい: 一口のうち取れる割合（graze_half_sat が 0 なら常に 1）
+        let half = self.params.graze_half_sat;
+        let found = |a: f32| if half > 0.0 { let a = a.max(0.0); a * a / (a * a + half * half) } else { 1.0 };
         let (mut layer, mut best) = (0, -1.0);
         for k in 0..LAYERS {
-            let v = quality[k] * self.layer_available(&reach, floor, k, c);
+            let a = self.layer_available(&reach, floor, k, c);
+            let v = quality[k] * a * found(a);
             if v > best {
                 (layer, best) = (k, v);
             }
         }
         let available = self.layer_available(&reach, floor, layer, c);
         let eff = eff * quality[layer];
-        let take = bite.min(available).min(room / eff.max(1e-6));
+        let take = (bite * found(available)).min(available).min(room / eff.max(1e-6));
         let b = herb_size_bin(self.traits[i].adult_size);
         let cs = &mut self.census;
         cs.herb_size_grazes[b] += 1;
@@ -4819,6 +4823,33 @@ mod tests {
         assert!(w.graze(0), "小さい体は短い草を食べる");
         assert!(!w.graze(1), "大きい体は短い草を噛み取れない");
         assert_eq!(w.plants.layer[0][big], before);
+    }
+
+    #[test]
+    fn 草が少ないほど見つけにくく_一口で取れる量が減る() {
+        // 地面の草だけのマスに草食を 1 体置き、食べ残す高さより上にある量 A を変えて、1 回で取れる量を見る
+        let taken = |half: f32, above: f32| {
+            let mut w = empty_world();
+            w.params.herb_metabolism = 0.0;
+            w.params.graze_half_sat = half;
+            w.spawn(100.0, 100.0, HERBIVORE, 1.0, 0, &genome::initial(true, 1.0, 1.0, 30.0, 0.0));
+            let c = w.plants.cell_index(100.0, 100.0);
+            w.plants.fill(0.0);
+            let cap = w.params.plant_capacity * w.plants.ground_cap(c);
+            w.plants.set_cell(c, 0.0);
+            w.plants.layer[0][c] = cap * w.graze_floor(0) + above;
+            w.plants.sum_layers();
+            let before = w.plants.layer[0][c];
+            w.graze(0);
+            before - w.plants.layer[0][c]
+        };
+        let bite = taken(0.0, 5.0);
+        // 今まで通り（0）なら、少しでもあれば一口か残り全部を取る
+        assert!((taken(0.0, 0.05) - 0.05).abs() < 1e-5);
+        // 見つけにくさ h = 1: A = h で一口の半分、A が h の 1/4 なら一口の約 6%、A が h の 5 倍なら一口の約 96%
+        assert!((taken(1.0, 1.0) - 0.5 * bite).abs() < 1e-4, "{} / {bite}", taken(1.0, 1.0));
+        assert!((taken(1.0, 0.25) - bite * 0.0625 / 1.0625).abs() < 1e-4);
+        assert!((taken(1.0, 5.0) - bite * 25.0 / 26.0).abs() < 1e-4);
     }
 
     #[test]

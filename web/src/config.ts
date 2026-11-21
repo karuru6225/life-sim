@@ -59,6 +59,7 @@ export const SIM_PARAMS = {
   graze_floor: 0.1,
   graze_floor_power: 1.5,
   graze_floor_min: 0.03,
+  graze_half_sat: 0,
   far_view: 320,
   far_view_tree: 1.5,
 
