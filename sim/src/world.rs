@@ -1120,6 +1120,18 @@ impl World {
 
     /// 個体 i が今いるマスで巣を作る。茂みと枝を材料にして出来の良さを上げ、エネルギーを使う。
     /// 1 tick 分の材料がない、または巣がもう出来上がっていれば作らず false（わずかに残った材料を拾い続けて止まり続けることがないように）
+    /// i が今いるマスの巣から受けられる得の大きさ（巣の出来の良さ）。nest_private のときは、
+    /// 巣の持ち主と、持ち主の幼い子（成熟前）だけが受けられ、ほかの個体には 0
+    fn nest_benefit(&self, i: usize) -> f32 {
+        let c = self.plants.cell_index(self.xs[i], self.ys[i]);
+        let q = self.nest[c];
+        if q <= 0.0 || self.params.nest_private <= 0.0 {
+            return q;
+        }
+        let owner = self.nest_owner[c];
+        if owner == self.id[i] || (self.growth[i] < 1.0 && self.parents[i].contains(&owner)) { q } else { 0.0 }
+    }
+
     /// x はその tick のうち作るのに使う割合（0〜1）。材料と費用が x 倍になる
     fn build_nest(&mut self, i: usize, x: f32) -> bool {
         let c = self.plants.cell_index(self.xs[i], self.ys[i]);
@@ -1443,7 +1455,7 @@ impl World {
             self.motion.push(motion);
             let by_size = self.traits[i].size.max(0.01).powf(power);
             // 巣の中では、巣の隠れと足元の草の隠れの大きい方を使う
-            let nest = self.nest[self.plants.cell_index(self.xs[i], self.ys[i])];
+            let nest = self.nest_benefit(i);
             let cover = self.cover[i].max(nest_hide * nest) * (1.0 - reveal * motion);
             // 警戒の声を出した個体も目立つ
             let calling = if self.calling[i] { alarm_exposure } else { 0.0 };
@@ -2643,7 +2655,7 @@ impl World {
         let upkeep = p.speed_upkeep * t.max_speed * t.size_pow075;
         // 体温を保つ費用: 好みの気温との差に比例し、大きいほど体積あたりは割安
         let temp_here = self.terrain.temperature_at(self.xs[i], self.ys[i]);
-        let nest_here = self.nest[self.plants.cell_index(self.xs[i], self.ys[i])];
+        let nest_here = self.nest_benefit(i);
         // 蓄え（脂肪）は断熱になる
         let fat = (self.energy[i] / self.energy_cap(i).max(1e-6)).clamp(0.0, 1.0);
         let thermal = p.thermo_cost
@@ -5178,6 +5190,32 @@ mod tests {
         let saved = cost_out - cost_in;
         assert!((saved - w.params.nest_insulation * thermal).abs() < 1e-5, "体温の費用が減る: {cost_out} → {cost_in}");
         assert!(conceal_in > conceal_out + 0.3, "巣の中は見つかりにくい: {conceal_out} → {conceal_in}");
+    }
+
+    #[test]
+    fn 巣を私有にすると得を受けるのは持ち主とその幼い子だけ() {
+        // 自分が持ち主か、親が持ち主か、幼いか
+        let benefit = |owner_is_self: bool, parent_owner: bool, young: bool| {
+            let mut w = nest_world();
+            w.params.nest_private = 1.0;
+            w.params.fat_insulation = 0.0;
+            let c = w.plants.cell_index(100.0, 100.0);
+            w.nest[c] = 1.0;
+            w.nest_owner[c] = if owner_is_self { w.id[0] } else { 999 };
+            if parent_owner {
+                w.parents[0] = [999, 0];
+            }
+            w.growth[0] = if young { 0.5 } else { 1.0 };
+            w.traits[0].temp_pref = w.terrain.temperature_at(100.0, 100.0) - 10.0;
+            w.cover = vec![0.0];
+            w.build_grid();
+            (w.nest_benefit(0), w.conceal[0])
+        };
+        assert_eq!(benefit(true, false, false).0, 1.0, "持ち主は受ける");
+        assert_eq!(benefit(false, true, true).0, 1.0, "持ち主の幼い子は受ける");
+        assert_eq!(benefit(false, true, false).0, 0.0, "育った子は受けない");
+        assert_eq!(benefit(false, false, true).0, 0.0, "よその個体は受けない");
+        assert!(benefit(true, false, false).1 > benefit(false, false, false).1 + 0.3, "隠れも持ち主だけ");
     }
 
     #[test]
