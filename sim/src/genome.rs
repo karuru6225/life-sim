@@ -613,6 +613,11 @@ pub fn set_attack_bias(g: &mut [f32], bias: f32) {
     out_bias(g, OUT_ATTACK, bias);
 }
 
+/// 出力「巣を作る」の基準値を変える（初期個体用。既定の初期の脳は −1）
+pub fn set_build_bias(g: &mut [f32], bias: f32) {
+    out_bias(g, OUT_BUILD, bias);
+}
+
 /// 「警戒の声」の出力の基準値を設定する（初期個体ごとにばらつかせるため）
 pub fn set_alarm_bias(g: &mut [f32], bias: f32) {
     out_bias(g, OUT_ALARM, bias);

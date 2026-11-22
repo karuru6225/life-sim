@@ -89,6 +89,8 @@ export const SIM_PARAMS = {
   nest_insulation: 0.7,
   nest_hide: 0.9,
   nest_wiring: 0,
+  nest_initial_bias: -1,
+  nest_graded: 0,
   carn_family_wiring: 0,
   feed_wiring: 0,
   energy_cap_ratio: 2,

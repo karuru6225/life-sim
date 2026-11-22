@@ -586,6 +586,7 @@ impl World {
             if p.memory_wiring != 0.0 {
                 genome::add_memory_wiring(&mut g, p.memory_wiring);
             }
+            genome::set_build_bias(&mut g, p.nest_initial_bias);
             if p.nest_wiring != 0.0 {
                 genome::add_nest_wiring(&mut g, p.nest_wiring);
             }
@@ -1119,13 +1120,14 @@ impl World {
 
     /// 個体 i が今いるマスで巣を作る。茂みと枝を材料にして出来の良さを上げ、エネルギーを使う。
     /// 1 tick 分の材料がない、または巣がもう出来上がっていれば作らず false（わずかに残った材料を拾い続けて止まり続けることがないように）
-    fn build_nest(&mut self, i: usize) -> bool {
+    /// x はその tick のうち作るのに使う割合（0〜1）。材料と費用が x 倍になる
+    fn build_nest(&mut self, i: usize, x: f32) -> bool {
         let c = self.plants.cell_index(self.xs[i], self.ys[i]);
         let p = &self.params;
         let room = 1.0 - self.nest[c];
         let (bush, branch) = (self.plants.layer[1][c].max(0.0), self.plants.layer[2][c].max(0.0));
         let size = self.traits[i].size;
-        let want = (p.nest_material * size).min(room * p.nest_material_need);
+        let want = (x * p.nest_material * size).min(room * p.nest_material_need);
         if want <= 1e-6 || bush + branch < want {
             return false;
         }
@@ -1138,7 +1140,7 @@ impl World {
         self.nest[c] = (self.nest[c] + take / p.nest_material_need).min(1.0);
         self.nest_owner[c] = self.id[i];
         self.home[i] = c as u32;
-        let cost = (p.nest_build_cost * self.traits[i].size_pow075).min(self.energy[i]);
+        let cost = (x * p.nest_build_cost * self.traits[i].size_pow075).min(self.energy[i]);
         self.energy[i] -= cost;
         self.ledger.lost_metabolism += cost as f64;
         self.census.builds[self.kind[i] as usize] += 1;
@@ -2204,10 +2206,31 @@ impl World {
         }
 
         let wants_build = out[genome::OUT_BUILD] > 0.0;
+        // nest_graded のときは、出力の強さに比例して少しずつ作る（作る割合 x = max(0, softsign(出力))）。
+        // x はその tick のうち作るのに使う時間の割合で、動く速さと一口の大きさが (1 − x) 倍になる
+        let graded = self.params.nest_graded > 0.0;
+        let build_x = if graded { genome::softsign(out[genome::OUT_BUILD]).max(0.0) } else { 0.0 };
         if self.kind[i] == HERBIVORE {
-            let ate = wants_eat && self.graze(i);
+            if graded {
+                let ate = wants_eat && self.graze(i, 1.0 - build_x);
+                let built = build_x > 0.0 && self.build_nest(i, build_x);
+                let speed = if built { speed * (1.0 - build_x) } else { speed };
+                self.state[i] = if built && build_x >= 0.5 {
+                    state::BUILD
+                } else if senses.predator.is_some() {
+                    state::FLEE
+                } else if dominant == DRIVE_MATE {
+                    state::COURT
+                } else if ate {
+                    state::GRAZE
+                } else {
+                    state::SEEK
+                };
+                return (speed, wants_child, mate);
+            }
+            let ate = wants_eat && self.graze(i, 1.0);
             // 食べなかった tick に、作りたければ今いるマスで巣を作る（作る tick は動かない）
-            if !ate && wants_build && self.build_nest(i) {
+            if !ate && wants_build && self.build_nest(i, 1.0) {
                 self.state[i] = state::BUILD;
                 return (0.0, wants_child, mate);
             }
@@ -2244,8 +2267,25 @@ impl World {
                 self.state[i] = state::SCAVENGE;
                 return (0.0, wants_child, mate);
             }
-            // 何も食べなかった tick に、作りたければ今いるマスで巣を作る（作る tick は動かない）
-            if wants_build && self.build_nest(i) {
+            // 何も食べなかった tick に、作りたければ今いるマスで巣を作る（作る tick は動かない）。
+            // nest_graded のときは出力の強さに比例して作り、そのぶん遅く動く
+            if graded {
+                if build_x > 0.0 && self.build_nest(i, build_x) {
+                    if build_x >= 0.5 {
+                        self.state[i] = state::BUILD;
+                        return (speed * (1.0 - build_x), wants_child, mate);
+                    }
+                    let speed = speed * (1.0 - build_x);
+                    self.state[i] = if dominant == DRIVE_MATE {
+                        state::COURT
+                    } else if senses.prey.is_some() {
+                        state::CHASE
+                    } else {
+                        state::WANDER
+                    };
+                    return (speed, wants_child, mate);
+                }
+            } else if wants_build && self.build_nest(i, 1.0) {
                 self.state[i] = state::BUILD;
                 return (0.0, wants_child, mate);
             }
@@ -2308,7 +2348,8 @@ impl World {
         (p.herb_efficiency * self.traits[i].adult_size.max(0.01).powf(p.herb_digest_size_power)).min(0.95)
     }
 
-    fn graze(&mut self, i: usize) -> bool {
+    /// share は一口の大きさに掛ける割合（巣を作りながら食べると、作るのに使った時間の分だけ減る）
+    fn graze(&mut self, i: usize, share: f32) -> bool {
         let room = self.energy_cap(i) - self.energy[i];
         if room <= 0.0 {
             return false;
@@ -2322,7 +2363,8 @@ impl World {
             * self.traits[i].size
             * (1.0 - self.params.vigilance_bite_cost * self.vigilance[i])
             * fit
-            * self.mobility(i);
+            * self.mobility(i)
+            * share;
         // 届く層のうち、取れる量 × 質 が最も大きい層から食べる。硬い層ほど身になる割合が低い。
         // 地面の草は、口の大きさで決まる食べ残す高さより上しか取れない
         let (reach, floor) = (self.reach(i), self.graze_floor(i));
@@ -3848,9 +3890,9 @@ mod tests {
         w.spawn(100.0, 100.0, HERBIVORE, 2.0, 0, &g);
         // 平らな世界の植生は 1。生まれた植生が近ければ食べられる
         w.natal[0] = 0.9;
-        assert!(w.graze(0), "植生の差 0.1 なら食べられる");
+        assert!(w.graze(0, 1.0), "植生の差 0.1 なら食べられる");
         w.natal[0] = 0.5;
-        assert!(!w.graze(0), "植生の差 0.5 では食べられない");
+        assert!(!w.graze(0, 1.0), "植生の差 0.5 では食べられない");
         assert_eq!(w.habitat_fit(0, 1.0), 0.0);
     }
 
@@ -4814,8 +4856,8 @@ mod tests {
             w.plants.layer[2][c] = 5.0;
         }
         w.plants.sum_layers();
-        assert!(w.graze(0));
-        assert!(w.graze(1));
+        assert!(w.graze(0, 1.0));
+        assert!(w.graze(1, 1.0));
         assert_eq!(w.plants.layer[2][small], 5.0, "小さい体は枝に届かない");
         assert!(w.plants.layer[0][small] < 0.01, "小さい体は地面の草を食べる");
         assert!(w.plants.layer[2][big] < 5.0, "大きい体は量の多い枝を食べる");
@@ -4924,8 +4966,8 @@ mod tests {
         let before = w.plants.layer[0][big];
         assert!(w.plants_around(0) > 0.0, "小さい体には短い草が見える");
         assert_eq!(w.plants_around(1), 0.0, "大きい体には食べられる草がない");
-        assert!(w.graze(0), "小さい体は短い草を食べる");
-        assert!(!w.graze(1), "大きい体は短い草を噛み取れない");
+        assert!(w.graze(0, 1.0), "小さい体は短い草を食べる");
+        assert!(!w.graze(1, 1.0), "大きい体は短い草を噛み取れない");
         assert_eq!(w.plants.layer[0][big], before);
     }
 
@@ -4944,7 +4986,7 @@ mod tests {
             w.plants.layer[0][c] = cap * w.graze_floor(0) + above;
             w.plants.sum_layers();
             let before = w.plants.layer[0][c];
-            w.graze(0);
+            w.graze(0, 1.0);
             before - w.plants.layer[0][c]
         };
         let bite = taken(0.0, 5.0);
@@ -5047,7 +5089,7 @@ mod tests {
         let c = w.plants.cell_index(100.0, 100.0);
         let before = w.total_energy();
         let expected_before = w.ledger.expected_total();
-        assert!(w.build_nest(0));
+        assert!(w.build_nest(0, 1.0));
         let p = &w.params;
         let take = p.nest_material * w.traits[0].size;
         assert!((w.nest[c] - take / p.nest_material_need).abs() < 1e-6, "出来の良さ {}", w.nest[c]);
@@ -5061,19 +5103,49 @@ mod tests {
 
         // 出来上がったら作らない。材料がなければ作れない
         w.nest[c] = 1.0;
-        assert!(!w.build_nest(0));
+        assert!(!w.build_nest(0, 1.0));
         w.nest[c] = 0.0;
         w.plants.layer[1][c] = 0.0;
         w.plants.layer[2][c] = 0.0;
         w.plants.sum_layers();
-        assert!(!w.build_nest(0), "草原の草だけでは作れない");
+        assert!(!w.build_nest(0, 1.0), "草原の草だけでは作れない");
+    }
+
+    #[test]
+    fn 巣を作る量を出力に比例させると少しずつ作りそのぶん遅く動く() {
+        // 出力 1 なら作る割合は softsign(1) = 0.5。材料も出来の上がり方も半分
+        let mut w = nest_world();
+        let c = w.plants.cell_index(100.0, 100.0);
+        assert!(w.build_nest(0, 0.5));
+        let p = &w.params;
+        assert!((w.nest[c] - 0.5 * p.nest_material * w.traits[0].size / p.nest_material_need).abs() < 1e-6);
+
+        // 1 tick 進めて、作らない個体と比べる
+        let run = |bias: f32| {
+            let mut w = nest_world();
+            w.params.nest_graded = 1.0;
+            genome::set_build_bias(&mut w.genomes[..GENOME_LEN], bias);
+            let x0 = w.xs[0];
+            let before = w.total_energy();
+            let expected_before = w.ledger.expected_total();
+            w.step();
+            let spent = before - w.total_energy();
+            let booked = expected_before - w.ledger.expected_total();
+            assert!((spent - booked).abs() < 1e-4, "帳尻: 実際 {spent} 帳簿 {booked}");
+            (w.nest[c], (w.xs[0] - x0).abs())
+        };
+        let (nest_off, moved_off) = run(-1.0);
+        let (nest_on, moved_on) = run(1.0);
+        assert_eq!(nest_off, 0.0, "出力が負なら作らない");
+        assert!(nest_on > 0.0, "出力が正なら少し作る");
+        assert!(moved_on < moved_off, "作るぶん遅く動く: {moved_on} / {moved_off}");
     }
 
     #[test]
     fn 巣は崩れて消え覚えていた個体は忘れる() {
         let mut w = nest_world();
         let c = w.plants.cell_index(100.0, 100.0);
-        assert!(w.build_nest(0));
+        assert!(w.build_nest(0, 1.0));
         let q = w.nest[c];
         w.decay_nests();
         assert!((w.nest[c] - q * (1.0 - w.params.nest_decay)).abs() < 1e-7);
@@ -5115,7 +5187,7 @@ mod tests {
         w.cover = vec![0.0];
         w.build_grid();
         assert_eq!(w.plan(0).input[genome::IN_NEST_HERE], 0.0);
-        assert!(w.build_nest(0));
+        assert!(w.build_nest(0, 1.0));
         let input = w.plan(0).input;
         assert!(input[genome::IN_NEST_HERE] > 0.0);
         assert_eq!((input[genome::IN_NEST_FWD], input[genome::IN_NEST_RIGHT]), (0.0, 0.0), "巣のマスにいれば方向は 0");
