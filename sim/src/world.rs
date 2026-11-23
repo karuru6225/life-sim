@@ -644,7 +644,14 @@ impl World {
                 if kind == CARNIVORE && p.initial_call_attack_spread > 0.0 {
                     genome::set_call_attack_response(&mut g, world.rng.gaussian() * p.initial_call_attack_spread);
                 }
-                world.spawn(x, y, kind, energy, 0, &g);
+                if p.initial_brain_scale != 1.0 {
+                    // g は次の初期個体にも使い回すので、写しを弱める
+                    let mut weak = g.clone();
+                    genome::scale_brain(&mut weak, p.initial_brain_scale);
+                    world.spawn(x, y, kind, energy, 0, &weak);
+                } else {
+                    world.spawn(x, y, kind, energy, 0, &g);
+                }
                 // 初期の世代がそろって老いないよう、年齢をばらつかせる（大人として置くので成長度はそのまま）。
                 // 0 のときは乱数を引かない（乱数の流れを、この仕組みがなかったときと同じにする）
                 if p.initial_age_spread > 0.0 {

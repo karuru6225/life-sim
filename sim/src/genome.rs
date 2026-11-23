@@ -375,6 +375,14 @@ pub fn hidden_values(genome: &[f32], input: &[f32; N_IN]) -> [f32; N_HIDDEN] {
     val
 }
 
+/// 脳の重みとバイアスをすべて scale 倍する（中間ニューロンを使うかどうかと、体の形質は変えない）。
+/// 初期の脳を、配線の形はそのままに、softsign が飽和しない弱さから始めるため
+pub fn scale_brain(g: &mut [f32], scale: f32) {
+    for w in &mut g[W1..] {
+        *w *= scale;
+    }
+}
+
 /// 遺伝子のうち脳の部分（表示用）: [中間を使うか N_HIDDEN][1 層目 H1 × (N_IN + 1)][2 層目 H2 × (H1 + 1)][出力 N_OUT × (N_HIDDEN + 1)]。
 /// 各行の最後はバイアス。中間を使うかは正なら使う
 pub fn brain_part(genome: &[f32]) -> &[f32] {
@@ -984,6 +992,20 @@ mod tests {
 
     fn input() -> [f32; N_IN] {
         [0.0; N_IN]
+    }
+
+    #[test]
+    fn 脳を弱めても形質と使うニューロンは変わらず出力の向きは保たれる() {
+        let g = initial(true, 1.0, 1.3, 60.0, 0.0);
+        let mut weak = g.clone();
+        scale_brain(&mut weak, 0.3);
+        assert_eq!(g[..W1], weak[..W1]);
+        let mut i = input();
+        i[IN_PRED_NEAR] = 0.75;
+        let (strong, soft) = (priorities(&think(&g, &i)), priorities(&think(&weak, &i)));
+        // 天敵が見えたら逃げるのが食べるより優先されるのは同じで、差は小さくなる
+        assert!(soft[2] > soft[0], "{soft:?}");
+        assert!(soft[2] - soft[0] < strong[2] - strong[0], "{strong:?} {soft:?}");
     }
 
     #[test]
