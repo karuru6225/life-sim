@@ -20,7 +20,7 @@ use crate::genome::{H1, H2, N_OUT, N_TRAITS};
 /// ファイルの先頭の印
 const MAGIC: &[u8; 8] = b"LSIMWRLD";
 /// 形式の番号。保存する中身の並びを変えたら上げる
-pub const FORMAT_VERSION: u32 = 11;
+pub const FORMAT_VERSION: u32 = 12;
 /// 読み込める最も古い形式の番号（形式 8 までは脳に親子と子育ての入力・出力がなく、遺伝子の並びが違うので読めない）
 const OLDEST_FORMAT: u32 = 11;
 /// 死因の数（Census の配列の長さ）
@@ -163,6 +163,7 @@ impl World {
             l.carn_gain,
             l.lost_decay,
             l.lost_build,
+            l.injected,
         ] {
             w.f64(v);
         }
@@ -323,6 +324,10 @@ impl World {
         l.carn_gain = r.f64()?;
         l.lost_decay = r.f64()?;
         l.lost_build = r.f64()?;
+        // 形式 12 から: 観察のために外から加えた個体が持ち込んだ量（形式 11 にはなく、0 として読む）
+        if version >= 12 {
+            l.injected = r.f64()?;
+        }
         let c = &mut world.census;
         for k in 0..2 {
             for cause in 0..N_CAUSES {

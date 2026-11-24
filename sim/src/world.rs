@@ -138,12 +138,14 @@ pub struct Ledger {
     pub lost_decay: f64,
     /// 巣の材料にした植物の量（巣は熱を保つ構造物で、食べ物にはならない）
     pub lost_build: f64,
+    /// 観察のために外から加えた個体が持ち込んだ量（デバッグの操作。spawn_lineage_at）
+    pub injected: f64,
 }
 
 impl Ledger {
     /// 帳簿の上で、いま世界にあるはずの量
     pub fn expected_total(&self) -> f64 {
-        self.initial + self.sunlight_in
+        self.initial + self.sunlight_in + self.injected
             - self.lost_metabolism
             - self.lost_digestion
             - self.lost_birth
@@ -3121,6 +3123,47 @@ impl World {
         self.id[members[(r.f32() * members.len() as f32) as usize % members.len()]]
     }
 
+    /// 観察のための操作: 種類 kind でいま最も栄えている系統の遺伝子を持つ大人を、(x, y) から radius 以内の陸に n 体加える。
+    /// 最も栄えている系統は、標識色が hue_similar 以内の仲間が最も多い個体を中心に、そこから hue_similar 以内の個体とする
+    /// （群れや狩りの邪魔で使う「同じ系統」と同じ定義）。1 体ごとに系統の個体を 1 体ランダムに選び、遺伝子と世代をそのまま写す（変異しない）。
+    /// エネルギーは初期個体と同じにし、持ち込んだ量（体の分も含む）は帳簿の injected に記録する。
+    /// 加えた系統の中心の標識色を返す。系統がいないか (x, y) が水なら何もせず None
+    pub fn spawn_lineage_at(&mut self, kind: u8, x: f32, y: f32, n: usize, radius: f32, nonce: u64) -> Option<f32> {
+        if self.terrain.is_water(x, y) {
+            return None;
+        }
+        let similar = self.params.hue_similar;
+        let members: Vec<usize> = (0..self.count()).filter(|&i| self.alive[i] && self.kind[i] == kind).collect();
+        let near = |i: usize| {
+            members.iter().filter(|&&j| genome::hue_distance(self.traits[i].hue, self.traits[j].hue) <= similar).count()
+        };
+        let center = *members.iter().max_by_key(|&&i| near(i))?;
+        let hue = self.traits[center].hue;
+        let lineage: Vec<usize> =
+            members.iter().copied().filter(|&j| genome::hue_distance(hue, self.traits[j].hue) <= similar).collect();
+        let energy = if kind == HERBIVORE { self.params.herb_initial_energy } else { self.params.carn_initial_energy };
+        let mut r = Rng::new(nonce ^ self.tick.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        for _ in 0..n {
+            let src = lineage[(r.f32() * lineage.len() as f32) as usize % lineage.len()];
+            let genome = self.genome(src).to_vec();
+            let generation = self.generation[src];
+            // 円の中のランダムな陸。何度引いても水なら、指定した場所に置く
+            let (mut px, mut py) = (x, y);
+            for _ in 0..20 {
+                let (a, d) = (r.range(0.0, std::f32::consts::TAU), radius * r.f32().sqrt());
+                let (cx, cy) = (wrap(x + d * a.cos(), self.width), wrap(y + d * a.sin(), self.height));
+                if !self.terrain.is_water(cx, cy) {
+                    (px, py) = (cx, cy);
+                    break;
+                }
+            }
+            self.spawn(px, py, kind, energy, generation, &genome);
+            let last = self.count() - 1;
+            self.ledger.injected += (self.energy[last] + self.body_energy(last)) as f64;
+        }
+        Some(hue)
+    }
+
     /// 種類 kind の大人の大きさの分布。大きさの範囲（genome::SIZE_RANGE）を、対数で等間隔に SIZE_HIST_BINS 段階に分けて数える
     pub fn adult_size_histogram(&self, kind: u8) -> [u32; SIZE_HIST_BINS] {
         let mut out = [0u32; SIZE_HIST_BINS];
@@ -4551,6 +4594,36 @@ mod tests {
         let picked: std::collections::HashSet<u32> = (0..50).map(|n| w.random_in_lineage(HERBIVORE, 0.05, 0.1, n)).collect();
         assert_eq!(picked, [w.id[0], w.id[1]].into_iter().collect(), "範囲内の 2 体だけが、どちらも選ばれる");
         assert_eq!(w.random_in_lineage(CARNIVORE, 0.0, 1.0, 0), 0);
+    }
+
+    #[test]
+    fn 最も栄えている系統の遺伝子で指定した場所に個体を加えられる() {
+        let mut w = empty_world();
+        // 標識色 0.5 付近の 3 体（大きさで見分ける）と、0.1 の 1 体
+        for (k, hue) in [0.5, 0.52, 0.48, 0.1].iter().enumerate() {
+            let mut g = genome::initial(false, 1.0 + 0.1 * k as f32, 1.0, 40.0, *hue);
+            g[genome::G_HUE] = *hue;
+            w.spawn(50.0 + 40.0 * k as f32, 50.0, CARNIVORE, 5.0, 7, &g);
+        }
+        w.ledger.initial = w.total_energy();
+        let hue = w.spawn_lineage_at(CARNIVORE, 300.0, 200.0, 30, 24.0, 1).expect("加えられる");
+        assert!((hue - 0.5).abs() <= w.params.hue_similar, "中心は 0.5 付近の系統: {hue}");
+        assert_eq!(w.count(), 34);
+        for i in 4..34 {
+            assert_eq!(w.kind[i], CARNIVORE);
+            assert!(genome::hue_distance(w.traits[i].hue, 0.5) <= 0.021, "0.1 の系統は写さない");
+            let (dx, dy) = (torus_delta(w.xs[i] - 300.0, w.width), torus_delta(w.ys[i] - 200.0, w.height));
+            assert!(dx * dx + dy * dy <= 24.0 * 24.0 + 1e-3, "半径の中に置く");
+            assert_eq!((w.growth[i], w.generation[i], w.parents[i]), (1.0, 7, [0, 0]));
+            assert_eq!(w.energy[i], w.params.carn_initial_energy);
+        }
+        let sources: std::collections::HashSet<u32> = (4..34).map(|i| w.traits[i].adult_size.to_bits()).collect();
+        assert!(sources.len() >= 2, "系統の個体から 1 体ずつ選ぶので、遺伝子は 1 通りに限らない");
+        let gap = (w.total_energy() - w.ledger.expected_total()).abs();
+        assert!(gap < 1e-3, "持ち込んだ量は帳簿に記録する（差 {gap}）");
+        // 系統がいない・水の上には加えない
+        assert_eq!(w.spawn_lineage_at(HERBIVORE, 300.0, 200.0, 30, 24.0, 2), None);
+        assert_eq!(w.count(), 34);
     }
 
     #[test]

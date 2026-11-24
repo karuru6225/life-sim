@@ -241,6 +241,13 @@ pub extern "C" fn select_random_in_lineage(kind: u32, hue_from: f32, hue_width: 
     })
 }
 
+/// 観察のための操作: 種類 kind でいま最も栄えている系統の遺伝子を持つ大人を、(x, y) から radius 以内の陸に n 体加える
+/// （World::spawn_lineage_at）。加えた系統の中心の標識色（0〜1）を返す。系統がいないか (x, y) が水なら -1。nonce は呼ぶたびに変える値
+#[unsafe(no_mangle)]
+pub extern "C" fn spawn_lineage(kind: u32, x: f32, y: f32, n: u32, radius: f32, nonce: f64) -> f64 {
+    with_world(|w| w.spawn_lineage_at(kind as u8, x, y, n as usize, radius, nonce as u64).map_or(-1.0, |h| h as f64))
+}
+
 /// 選択中の個体の脳の入力・出力・中間ニューロンの出力（f32 × (brain_inputs() + brain_outputs() + brain_hidden())）の先頭アドレス。
 /// 直前の tick の値。中間ニューロンは、直前の tick の入力で脳を計算し直して求める（使っていないものと、個体が死んでいるときは 0）
 #[unsafe(no_mangle)]
