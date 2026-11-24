@@ -53,6 +53,8 @@ export interface HudHandlers {
   onToggleStats(): void;
   /** 脳のウインドウを開く・閉じる */
   onToggleBrain(): void;
+  /** デバッグ: クリックした場所に肉食を出すモードを切り替える */
+  onToggleSpawn(): void;
   onReset(): void;
   onSpeed(speed: number): void;
   onSunlight(value: number): void;
@@ -169,6 +171,7 @@ export class Hud {
           <button type="button" data-k="load" title="保存したファイル（.lifesim.gz）から世界を読み込む">読み込み</button>
           <button type="button" data-k="stats" title="長期の統計（大きさの分布・個体数と形質・死因と出生）のウインドウを開く・閉じる（G キー）">統計</button>
           <button type="button" data-k="brain" title="選択中の個体の脳（すべてのニューロンとつながり、今の活動）のウインドウを開く・閉じる（B キー）">脳</button>
+          <button type="button" data-k="spawn" title="デバッグ: 押してから地図をクリックすると、いま最も数の多い肉食の系統の遺伝子で、その場所に大人を 30 体出す（もう一度押すか Esc でやめる。C キー）">肉食を出す</button>
           <input type="file" data-k="loadFile" accept=".gz,.lifesim.gz,.lifesim" hidden />
         </div>
         <div class="group" data-k="sizes"><span class="group-label">世界の広さ（選ぶと作り直す）</span></div>
@@ -241,6 +244,7 @@ export class Hud {
     this.el.save.addEventListener('click', handlers.onSave);
     this.el.stats.addEventListener('click', handlers.onToggleStats);
     this.el.brain.addEventListener('click', handlers.onToggleBrain);
+    this.el.spawn.addEventListener('click', handlers.onToggleSpawn);
     const loadFile = this.el.loadFile as HTMLInputElement;
     this.el.load.addEventListener('click', () => loadFile.click());
     loadFile.addEventListener('change', () => {
@@ -453,6 +457,12 @@ export class Hud {
   }
 
   /** 統計のウインドウが開いているかを、ボタンの見た目に反映する */
+  /** 肉食を出すモードのボタンの状態（押されている = クリックで出す） */
+  setSpawnMode(on: boolean): void {
+    this.el.spawn.classList.toggle('active', on);
+    this.el.spawn.setAttribute('aria-pressed', String(on));
+  }
+
   setStatsOpen(open: boolean): void {
     this.el.stats.classList.toggle('active', open);
     this.el.stats.setAttribute('aria-pressed', String(open));

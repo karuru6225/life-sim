@@ -380,6 +380,9 @@ export const MIN_SELECT_SCALE = 0.8;
 /** クリック位置からこの距離（画面上の px）以内の個体を選ぶ */
 export const SELECT_RADIUS_PX = 14;
 
+/** デバッグ: 地図をクリックした場所に、いま最も栄えている肉食の系統の遺伝子で出す個体の数と、散らす半径（ワールド座標の px） */
+export const DEBUG_SPAWN = { count: 30, radius: 24 };
+
 /**
  * 選択中の個体が死んだとき、代わりに近くの個体を自動で選ぶ。
  * 死んだ場所から radius（世界座標の px）以内で、同じ種類の最寄りを優先する

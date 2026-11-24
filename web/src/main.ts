@@ -3,6 +3,7 @@ import {
   AUTO_RESELECT,
   BODY_RADIUS,
   COLORS,
+  DEBUG_SPAWN,
   DIMMED_ALPHA,
   HIGHLIGHT_MIN_RADIUS_PX,
   MIN_BODY_RADIUS_PX,
@@ -162,6 +163,8 @@ let generation = -1;
 let latest: Frame | null = null;
 let speed = 1;
 let paused = false;
+/** デバッグ: 地図のクリックで肉食を出すモード（選択の代わりになる） */
+let spawnMode = false;
 let colorMode: ColorMode = 'kind';
 /** 地図に描く植物の層（-1 は合計、0: 地面の草、1: 茂み、2: 枝） */
 let plantLayer = -1;
@@ -346,6 +349,11 @@ inspector.setAutoReselect(autoReselect);
 
 const camera = new Camera(world, app.canvas, params.world_width, params.world_height, {
   onClick: (px, py) => {
+    if (spawnMode) {
+      const { x, y } = camera.toWorld(px, py);
+      send({ type: 'spawnLineage', kind: CARNIVORE, x, y, count: DEBUG_SPAWN.count, radius: DEBUG_SPAWN.radius });
+      return;
+    }
     if (camera.scale < MIN_SELECT_SCALE) {
       toast.show('拡大すると個体を選べます（ホイールで拡大）');
       return;
@@ -385,6 +393,7 @@ const hud = new Hud(document.getElementById('hud')!, {
   onTogglePause: () => setPaused(!paused),
   onToggleStats: toggleStats,
   onToggleBrain: () => brainWin.toggle(),
+  onToggleSpawn: () => setSpawnMode(!spawnMode),
   onReset: () => start(),
   onSpeed: (s) => {
     speed = s;
@@ -452,6 +461,13 @@ function resetView(): void {
   setFollowing(false);
 }
 
+/** 肉食を出すモードを切り替える */
+function setSpawnMode(on: boolean): void {
+  spawnMode = on;
+  hud.setSpawnMode(on);
+  if (on) toast.show(`地図をクリックすると、いま最も数の多い肉食の系統を ${DEBUG_SPAWN.count} 体出します（Esc でやめる）`);
+}
+
 function setPaused(p: boolean): void {
   paused = p;
   send({ type: 'setPaused', paused });
@@ -516,6 +532,13 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       setFollowing(msg.id !== 0 && ((pendingAutoSelect && followAfterReselect) || pendingRandomPick));
       pendingAutoSelect = false;
       pendingRandomPick = false;
+      break;
+    case 'spawned':
+      toast.show(
+        msg.count > 0
+          ? `肉食を ${msg.count} 体出しました（系統色 ${msg.hue.toFixed(2)}）`
+          : '出せませんでした（水の上か、肉食がいません）',
+      );
       break;
     case 'frame':
       if (msg.generation !== generation) return returnBuffer(msg); // リセット前の古いフレーム
@@ -672,6 +695,8 @@ window.addEventListener('keydown', (e) => {
     setPaused(!paused);
   }
   if (e.code === 'KeyG' && !e.ctrlKey && !e.metaKey && !e.altKey && !(e.target instanceof HTMLInputElement)) toggleStats();
+  if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey && !e.altKey && !(e.target instanceof HTMLInputElement)) setSpawnMode(!spawnMode);
+  if (e.code === 'Escape' && spawnMode) setSpawnMode(false);
   if (e.code === 'KeyB' && !e.ctrlKey && !e.metaKey && !e.altKey && !(e.target instanceof HTMLInputElement)) brainWin.toggle();
 });
 

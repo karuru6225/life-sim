@@ -20,6 +20,8 @@ export type ToWorker =
   | { type: 'selectRandomInLineage'; lineage: LineageSelection }
   /** id の個体を選択する（親や子をたどるとき）。結果は selected で返る */
   | { type: 'selectId'; id: number }
+  /** デバッグ: 種類 kind でいま最も栄えている系統の遺伝子を持つ大人を、(x, y) の周りに count 体出す */
+  | { type: 'spawnLineage'; kind: number; x: number; y: number; count: number; radius: number }
   /** 統計を取る系統を選ぶ（null で解除） */
   | { type: 'setLineage'; lineage: LineageSelection | null }
   /** 地図に描く植物の層（0: 地面の草、1: 茂み、2: 枝、-1: 合計）。フレームの植物量がその層になる */
@@ -73,6 +75,8 @@ export type FromWorker =
     }
   /** select の結果。id が 0 なら近くに個体がいなかった */
   | { type: 'selected'; id: number }
+  /** spawnLineage の結果。hue は出した系統の中心の標識色。出せなかったら -1 */
+  | { type: 'spawned'; kind: number; count: number; hue: number }
   | {
       type: 'frame';
       generation: number;

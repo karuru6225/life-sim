@@ -36,6 +36,7 @@ interface SimExports {
   temperature_now_ptr(): number;
   fertility_now_ptr(): number;
   select_random_in_lineage(kind: number, from: number, width: number, nonce: number): number;
+  spawn_lineage(kind: number, x: number, y: number, n: number, radius: number, nonce: number): number;
   brain_ptr(): number;
   brain_inputs(): number;
   brain_outputs(): number;
@@ -343,6 +344,13 @@ function handle(s: SimExports, msg: ToWorker): void {
       watching = id !== 0;
       dirty = true;
       post({ type: 'selected', id });
+      break;
+    }
+    case 'spawnLineage': {
+      if (!sim) break;
+      const hue = s.spawn_lineage(msg.kind, msg.x, msg.y, msg.count, msg.radius, Math.floor(Math.random() * 2 ** 31));
+      dirty = true; // 一時停止中でもすぐ描けるようにする
+      post({ type: 'spawned', kind: msg.kind, count: hue < 0 ? 0 : msg.count, hue });
       break;
     }
     case 'deselect':
